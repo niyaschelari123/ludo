@@ -20,6 +20,31 @@ export const POWER_UP_ICONS: Record<PowerUpType, string> = {
   portal: '◎',
 }
 
+export const POWER_UP_INFO: {
+  type: PowerUpType
+  label: string
+  description: string
+}[] = [
+  { type: 'tnt', label: 'TNT', description: 'Blasts rival tokens on the same cell back to yard' },
+  { type: 'rocket', label: 'Rocket', description: 'Surge 3 extra steps forward' },
+  { type: 'spring', label: 'Spring', description: 'Bounce 2 extra steps ahead' },
+  { type: 'shield', label: 'Shield', description: 'Blocks the next capture attempt' },
+  { type: 'flame', label: 'Flame', description: 'Grants a bonus roll after this turn' },
+  { type: 'x2', label: 'x2', description: 'Repeats your dice roll as bonus steps' },
+  { type: 'x3', label: 'x3', description: 'Adds double your dice roll as bonus steps' },
+  { type: 'star', label: 'Star', description: 'Lucky tile — triggers a special boost' },
+  { type: 'ice', label: 'Ice', description: 'Pushes rivals on this cell back 3 steps' },
+  { type: 'portal', label: 'Portal', description: 'Warps you halfway around the track' },
+]
+
+export function powerUpLabel(type: PowerUpType) {
+  return POWER_UP_INFO.find((entry) => entry.type === type)?.label ?? type
+}
+
+export function powerUpDescription(type: PowerUpType) {
+  return POWER_UP_INFO.find((entry) => entry.type === type)?.description ?? ''
+}
+
 const POWER_CYCLE: PowerUpType[] = [
   'rocket',
   'x2',

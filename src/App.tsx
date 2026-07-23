@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
-import { onAuthStateChanged, signInAnonymously, type User } from 'firebase/auth'
 import './App.css'
 import {
   getSoundVolume,
@@ -14,29 +13,35 @@ import {
   setSoundVolume,
 } from './audio'
 import { LudoBoard } from './components/LudoBoard'
-import { auth, isFirebaseConfigured } from './firebase'
+import { Dice3D } from './components/Dice3D'
+import { PowerLegend } from './components/PowerLegend'
+import { PowerToast } from './components/PowerToast'
 import {
   createRoom,
   joinRoom,
   leaveRoom,
   moveTokenWithRetry,
+  resolvePendingPower,
   rollDice,
-  startMove,
   startRoom,
   watchRoom,
 } from './game/roomService'
+import { getPlayerId } from './lib/playerId'
 import {
   activeMoveToMovingToken,
   detectMovedToken,
   movableTokens,
   performLocalMove,
+  performLocalResolvePower,
   performLocalRoll,
 } from './game/engine'
-import type { GameMode, MovingToken, Room } from './game/types'
+import type { GameMode, MovingToken, PowerUpType, Room } from './game/types'
 import { moveBaseSignature, movingTokenTarget, tokenMoveDurationMs } from './game/types'
 
+const POWER_TOAST_MS = 1400
+
 function App() {
-  const [user, setUser] = useState<User | null>(null)
+  const userId = getPlayerId()
   const [name, setName] = useState(() => localStorage.getItem('ludo-name') ?? '')
   const [joinCode, setJoinCode] = useState('')
   const [maxPlayers, setMaxPlayers] = useState(6)
@@ -53,9 +58,14 @@ function App() {
   const [diceFace, setDiceFace] = useState(1)
   const [movingToken, setMovingToken] = useState<MovingToken | null>(null)
   const [moveReadyToClear, setMoveReadyToClear] = useState(false)
+  const [powerToast, setPowerToast] = useState<{
+    type: PowerUpType
+    playerName: string
+  } | null>(null)
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
   const rollSyncRef = useRef<Promise<void> | null>(null)
   const moveInFlightRef = useRef(false)
+  const powerResolveInFlightRef = useRef(false)
   const prevRoomRef = useRef<Room | null>(null)
   const remoteAnimSignatureRef = useRef<string | null>(null)
   const movingTokenRef = useRef<MovingToken | null>(null)
@@ -77,20 +87,49 @@ function App() {
     setMovingToken(move)
   }, [])
 
-  useEffect(() => {
-    if (!isFirebaseConfigured) return
-    const unsubscribe = onAuthStateChanged(auth, setUser)
-    if (!auth.currentUser) {
-      void signInAnonymously(auth).catch((reason) => setError(reason.message))
+  const showPowerAndResolve = useCallback(async (roomId: string, baseRoom: Room) => {
+    const pending = baseRoom.game?.pendingPower
+    if (!pending || powerResolveInFlightRef.current) return
+
+    powerResolveInFlightRef.current = true
+    const player = baseRoom.players.find((candidate) => candidate.id === pending.playerId)
+    setPowerToast({
+      type: pending.type,
+      playerName: player?.name ?? 'Player',
+    })
+    await new Promise((resolve) => window.setTimeout(resolve, POWER_TOAST_MS))
+
+    const resolveStartedAt = Date.now()
+    try {
+      const resolvedRoom = performLocalResolvePower(baseRoom, userId)
+      setOptimisticRoom(resolvedRoom)
+
+      const powerMove = resolvedRoom.game?.activeMove
+      if (powerMove) {
+        const animated = activeMoveToMovingToken(powerMove)
+        setMovingToken(animated)
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, tokenMoveDurationMs(animated)),
+        )
+        setMovingToken(null)
+      }
+
+      await resolvePendingPower(roomId, userId, resolveStartedAt)
+    } catch (reason) {
+      setOptimisticRoom(null)
+      setError(reason instanceof Error ? reason.message : 'Failed to apply power.')
+    } finally {
+      powerResolveInFlightRef.current = false
+      window.setTimeout(() => setPowerToast(null), 350)
     }
-    return unsubscribe
-  }, [])
+  }, [userId])
 
   useEffect(() => {
-    if (!roomId || !user) return
+    if (!roomId) return
     localStorage.setItem('ludo-room', roomId)
     return watchRoom(
       roomId,
+      userId,
       (nextRoom) => {
         setRoom(nextRoom)
         if (!nextRoom) {
@@ -101,13 +140,13 @@ function App() {
       },
       setError,
     )
-  }, [roomId, user])
+  }, [roomId, userId])
 
   useEffect(() => {
-    if (!room?.game || !user) return
+    if (!room?.game) return
 
     const active = room.game.activeMove
-    if (active && active.playerId !== user.uid && !moveInFlightRef.current) {
+    if (active && active.playerId !== userId && !moveInFlightRef.current) {
       scheduleRemoteMove(activeMoveToMovingToken(active))
     }
 
@@ -116,11 +155,11 @@ function App() {
     if (!prev?.game || moveInFlightRef.current || movingTokenRef.current) return
 
     const moved = detectMovedToken(prev, room)
-    if (!moved || moved.playerId === user.uid) return
+    if (!moved || moved.playerId === userId) return
     if (remoteAnimSignatureRef.current === moveBaseSignature(moved)) return
 
     scheduleRemoteMove(moved)
-  }, [room, user, scheduleRemoteMove])
+  }, [room, userId, scheduleRemoteMove])
 
   useEffect(() => {
     if (!optimisticRoom?.game || !room?.game) return
@@ -156,7 +195,7 @@ function App() {
   }, [displayRoom?.game?.lastAction])
 
   useEffect(() => {
-    if (!moveReadyToClear || !movingToken || !room?.game || !user) return
+    if (!moveReadyToClear || !movingToken || !room?.game) return
     const serverToken = room.game.tokens.find(
       (token) =>
         token.playerId === movingToken.playerId &&
@@ -166,7 +205,7 @@ function App() {
     if (serverToken?.progress === targetProgress) {
       setMoveReadyToClear(false)
     }
-  }, [moveReadyToClear, movingToken, room, user])
+  }, [moveReadyToClear, movingToken, room])
 
   const perform = useCallback(async (action: () => Promise<void>) => {
     setBusy(true)
@@ -194,14 +233,14 @@ function App() {
   }
   const animateRoll = async () => {
     const baseRoom = optimisticRoom ?? room
-    if (!baseRoom || !user) return
+    if (!baseRoom) return
     setRolling(true)
     setError('')
 
     let nextRoom: Room
     let dice: number
     try {
-      ;({ room: nextRoom, dice } = performLocalRoll(baseRoom, user.uid))
+      ;({ room: nextRoom, dice } = performLocalRoll(baseRoom, userId))
     } catch (reason) {
       setRolling(false)
       setError(reason instanceof Error ? reason.message : 'Something went wrong.')
@@ -210,7 +249,7 @@ function App() {
 
     setDiceFace(dice)
 
-    const sync = rollDice(baseRoom.id, user.uid, dice)
+    const sync = rollDice(baseRoom.id, userId, dice)
       .catch((reason) => {
         setOptimisticRoom(null)
         setError(reason instanceof Error ? reason.message : 'Failed to sync roll.')
@@ -229,9 +268,9 @@ function App() {
   const animateMove = useCallback(async (tokenId: number) => {
     if (moveInFlightRef.current) return
     const baseRoom = optimisticRoom ?? room
-    if (!baseRoom?.game || !user) return
+    if (!baseRoom?.game) return
     const token = baseRoom.game.tokens.find(
-      (candidate) => candidate.playerId === user.uid && candidate.id === tokenId,
+      (candidate) => candidate.playerId === userId && candidate.id === tokenId,
     )
     if (!token) return
     const dice = baseRoom.game.dice ?? 1
@@ -245,7 +284,7 @@ function App() {
 
     let nextRoom: Room
     try {
-      nextRoom = performLocalMove(baseRoom, user.uid, tokenId)
+      nextRoom = performLocalMove(baseRoom, userId, tokenId)
     } catch (reason) {
       moveInFlightRef.current = false
       setError(reason instanceof Error ? reason.message : 'Something went wrong.')
@@ -253,7 +292,7 @@ function App() {
     }
 
     const movedToken = nextRoom.game!.tokens.find(
-      (candidate) => candidate.playerId === user.uid && candidate.id === tokenId,
+      (candidate) => candidate.playerId === userId && candidate.id === tokenId,
     )
     if (!movedToken) {
       moveInFlightRef.current = false
@@ -261,7 +300,7 @@ function App() {
     }
 
     const moving: MovingToken = {
-      playerId: user.uid,
+      playerId: userId,
       id: tokenId,
       fromProgress,
       dice,
@@ -272,23 +311,13 @@ function App() {
     setOptimisticRoom(nextRoom)
     setMovingToken(moving)
 
-    void startMove(
-      baseRoom.id,
-      user.uid,
-      tokenId,
-      fromProgress,
-      dice,
-      startedAt,
-      movedToken.progress,
-    ).catch(() => {
-      // moveToken below still validates the action.
-    })
-
     const waitForRoll = () => rollSyncRef.current ?? Promise.resolve()
     const syncMove = moveTokenWithRetry(
       baseRoom.id,
-      user.uid,
+      userId,
       tokenId,
+      startedAt,
+      movedToken.progress,
       waitForRoll,
     ).then(() => {
       setMoveReadyToClear(true)
@@ -301,6 +330,13 @@ function App() {
           window.setTimeout(resolve, tokenMoveDurationMs(moving)),
         ),
       ])
+
+      if (nextRoom.game?.pendingPower) {
+        setMovingToken(null)
+        moveInFlightRef.current = false
+        await showPowerAndResolve(baseRoom.id, nextRoom)
+        return
+      }
     } catch (reason) {
       setOptimisticRoom(null)
       setError(reason instanceof Error ? reason.message : 'Failed to sync move.')
@@ -308,14 +344,14 @@ function App() {
       setMovingToken(null)
       moveInFlightRef.current = false
     }
-  }, [optimisticRoom, room, user])
+  }, [optimisticRoom, room, userId, showPowerAndResolve])
 
   useEffect(() => {
     if (
       !displayRoom?.game ||
       displayRoom.status !== 'playing' ||
       displayRoom.game.phase !== 'move' ||
-      displayRoom.players[displayRoom.game.turnIndex]?.id !== user?.uid ||
+      displayRoom.players[displayRoom.game.turnIndex]?.id !== userId ||
       movingToken ||
       busy ||
       moveInFlightRef.current ||
@@ -331,7 +367,37 @@ function App() {
       700,
     )
     return () => window.clearTimeout(timer)
-  }, [animateMove, busy, displayRoom, movingToken, rolling, user])
+  }, [animateMove, busy, displayRoom, movingToken, rolling, userId])
+
+  useEffect(() => {
+    const pending = displayRoom?.game?.pendingPower
+    if (pending) {
+      const player = displayRoom?.players.find(
+        (candidate) => candidate.id === pending.playerId,
+      )
+      setPowerToast({
+        type: pending.type,
+        playerName: player?.name ?? 'Player',
+      })
+      return
+    }
+    if (!powerResolveInFlightRef.current) {
+      const timer = window.setTimeout(() => setPowerToast(null), 300)
+      return () => window.clearTimeout(timer)
+    }
+  }, [displayRoom?.game?.pendingPower, displayRoom?.players])
+
+  useEffect(() => {
+    const game = room?.game
+    if (!game || game.phase !== 'power' || !game.pendingPower || !room) return
+    if (room.players[game.turnIndex]?.id !== userId) return
+    if (moveInFlightRef.current || powerResolveInFlightRef.current || movingToken) {
+      return
+    }
+
+    void showPowerAndResolve(room.id, optimisticRoom ?? room)
+  }, [room, optimisticRoom, movingToken, showPowerAndResolve, userId])
+
   const exitRoom = () => {
     localStorage.removeItem('ludo-room')
     setOptimisticRoom(null)
@@ -346,26 +412,18 @@ function App() {
     setRoom(null)
   }
   const confirmLeave = async () => {
-    if (!room || !user) return
-    const succeeded = await perform(() => leaveRoom(room.id, user.uid))
+    if (!room) return
+    const succeeded = await perform(() => leaveRoom(room.id, userId))
     if (succeeded) exitRoom()
   }
 
-  if (!isFirebaseConfigured) {
+  if (roomId && !room) {
     return (
-      <main className="setup-screen">
-        <div className="brand-mark">L</div>
-        <h1>Connect Firebase to begin</h1>
-        <p>
-          Copy <code>.env.example</code> to <code>.env.local</code>, add your
-          Firebase web app values, enable Anonymous Authentication, and create a
-          Firestore database.
-        </p>
+      <main className="loading-screen">
+        {error || 'Reconnecting to room…'}
       </main>
     )
   }
-
-  if (!user) return <main className="loading-screen">Connecting to game server…</main>
 
   if (!roomId || !room) {
     return (
@@ -411,7 +469,9 @@ function App() {
                 disabled={busy || !name.trim() || joinCode.length !== 6}
                 onClick={() => perform(async () => {
                   rememberName()
-                  setRoomId(await joinRoom(user.uid, name, joinCode))
+                  const joined = await joinRoom(userId, name, joinCode)
+                  setRoom(joined)
+                  setRoomId(joined.id)
                 })}
               >Join room</button>
             </div>
@@ -450,7 +510,9 @@ function App() {
               disabled={busy || !name.trim()}
               onClick={() => perform(async () => {
                 rememberName()
-                setRoomId(await createRoom(user.uid, name, maxPlayers, gameMode))
+                const created = await createRoom(userId, name, maxPlayers, gameMode)
+                setRoom(created)
+                setRoomId(created.id)
               })}
             >Create private room</button>
             {error && <p className="error">{error}</p>}
@@ -461,10 +523,11 @@ function App() {
   }
 
   const viewRoom: Room = optimisticRoom ?? room
+  const isPowerMode = (viewRoom.gameMode ?? 'classic') === 'power'
 
   const currentPlayer = viewRoom.game ? viewRoom.players[viewRoom.game.turnIndex] : null
-  const isMyTurn = currentPlayer?.id === user.uid
-  const me = viewRoom.players.find((player) => player.id === user.uid)
+  const isMyTurn = currentPlayer?.id === userId
+  const me = viewRoom.players.find((player) => player.id === userId)
   const activeRanking = viewRoom.game
     ? [...viewRoom.players].sort((first, second) => {
         const firstPlace = viewRoom.game!.winnerIds.indexOf(first.id)
@@ -537,18 +600,18 @@ function App() {
                 )
               })}
             </div>
-            {room.hostId === user.uid ? (
+            {room.hostId === userId ? (
               <button
                 className="start-button"
                 disabled={busy || room.players.length < 2}
-                onClick={() => perform(() => startRoom(room.id, user.uid))}
+                onClick={() => perform(() => startRoom(room.id, userId))}
               >Start game ({room.players.length}/{room.maxPlayers})</button>
             ) : <p className="waiting-text">Waiting for the host to start…</p>}
             {error && <p className="error">{error}</p>}
           </div>
         </section>
       ) : (
-        <section className="game-layout">
+        <section className={`game-layout ${isPowerMode ? 'game-layout--power' : ''}`}>
           <aside className="players-panel">
             <h2>Players</h2>
             {viewRoom.players.map((player, index) => (
@@ -560,7 +623,7 @@ function App() {
                 <div><strong>{player.name}</strong><small>
                   {viewRoom.game?.winnerIds.includes(player.id)
                     ? `Finished #${viewRoom.game.winnerIds.indexOf(player.id) + 1}`
-                    : player.id === user.uid ? 'You' : 'Online'}
+                    : player.id === userId ? 'You' : 'Online'}
                 </small></div>
               </div>
             ))}
@@ -573,22 +636,30 @@ function App() {
             </div>
             <LudoBoard
               room={viewRoom}
-              userId={user.uid}
+              userId={userId}
               movingToken={movingToken}
               onMove={(tokenId) => void animateMove(tokenId)}
               onMoveAnimationComplete={handleMoveAnimationComplete}
+            />
+            <PowerToast
+              type={powerToast?.type ?? 'star'}
+              playerName={powerToast?.playerName ?? ''}
+              visible={powerToast !== null}
             />
           </div>
 
           <aside className="action-panel">
             <span className="eyebrow">TURN CONTROL</span>
-            <div className={`dice ${rolling ? 'rolling' : viewRoom.game?.dice ? 'rolled' : ''}`}>
-              {rolling ? diceFace : viewRoom.game?.dice ?? '•'}
-            </div>
+            <Dice3D
+              value={rolling ? diceFace : viewRoom.game?.dice ?? null}
+              rolling={rolling}
+            />
             {isMyTurn && viewRoom.game?.phase === 'roll' ? (
               <button className="roll-button" disabled={busy || rolling} onClick={() => void animateRoll()}>
                 Roll dice
               </button>
+            ) : viewRoom.game?.phase === 'power' ? (
+              <p className="action-hint">Power tile activating…</p>
             ) : isMyTurn ? (
               <p className="action-hint">Choose a glowing {me?.color} token.</p>
             ) : <p className="action-hint">Waiting for {currentPlayer?.name}…</p>}
@@ -602,20 +673,14 @@ function App() {
               <p>Last token 1–3 steps away: the eighth attempt guarantees the exact roll.</p>
               <p>Three consecutive 6s lose the turn.</p>
               <p>Reach home with an exact roll.</p>
-              {(viewRoom.gameMode ?? 'classic') === 'power' && (
-                <>
-                  <h3 className="power-rules-title">Power tiles</h3>
-                  <p>TNT blasts rivals on the same cell.</p>
-                  <p>Rocket +3, Spring +2, Portal warps ahead.</p>
-                  <p>Shield blocks the next capture.</p>
-                  <p>Flame grants a bonus roll.</p>
-                  <p>x2 / x3 repeat your roll steps.</p>
-                  <p>Ice pushes rivals back 3 steps.</p>
-                </>
-              )}
             </div>
             {error && <p className="error">{error}</p>}
           </aside>
+          {isPowerMode && (
+            <div className="power-legend-bar">
+              <PowerLegend />
+            </div>
+          )}
         </section>
       )}
 
@@ -690,7 +755,7 @@ function App() {
                     <small>
                       {player.leftEarly
                         ? 'LEFT EARLY'
-                        : player.id === user.uid
+                        : player.id === userId
                           ? 'YOU'
                           : ''}
                     </small>

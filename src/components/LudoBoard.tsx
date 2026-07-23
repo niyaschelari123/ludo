@@ -15,6 +15,12 @@ import {
   resolveAnimationProgress,
 } from '../game/types'
 import { PowerUpLayer } from './PowerUpLayer'
+import { FivePlayerBoard } from './FivePlayerBoard'
+import {
+  fivePlayerTokenPoint,
+  FIVE_VIEW_BOX,
+  isFivePlayerBoard,
+} from './fivePlayerLayout'
 
 const SIZE = 600
 const CENTER = SIZE / 2
@@ -443,6 +449,7 @@ export function LudoBoard({
   onMoveAnimationComplete,
 }: Props) {
   const boardCount = boardSeatCount(room)
+  const isFive = isFivePlayerBoard(room)
   const isSquare = room.players.length === 4 && boardCount === 4
   const isSix = boardCount === 6
   const [animatedProgress, setAnimatedProgress] = useState<number | null>(null)
@@ -509,7 +516,9 @@ export function LudoBoard({
       : originalToken
     const position = isSquare
       ? squareTokenPoint(token, room)
-      : radialTokenPoint(token, room)
+      : isFive
+        ? fivePlayerTokenPoint(token, room)
+        : radialTokenPoint(token, room)
     const canSelect =
       movingToken === null &&
       originalToken.playerId === userId &&
@@ -536,9 +545,20 @@ export function LudoBoard({
   })
 
   return (
-    <div className={`board-wrap ${isSquare ? 'square' : 'radial'} ${isSix ? 'six-player-board' : ''}`}>
-      <svg className="ludo-board" viewBox={`0 0 ${SIZE} ${SIZE}`} role="img" aria-label={`${boardCount} player Ludo board`}>
-        {isSquare ? <SquareBoard room={room} /> : <RadialBoard room={room} />}
+    <div className={`board-wrap ${isSquare ? 'square' : isFive ? 'five-player' : 'radial'} ${isSix ? 'six-player-board' : ''}`}>
+      <svg
+        className="ludo-board"
+        viewBox={isFive ? FIVE_VIEW_BOX : `0 0 ${SIZE} ${SIZE}`}
+        role="img"
+        aria-label={`${boardCount} player Ludo board`}
+      >
+        {isSquare ? (
+          <SquareBoard room={room} />
+        ) : isFive ? (
+          <FivePlayerBoard room={room} />
+        ) : (
+          <RadialBoard room={room} />
+        )}
         <PowerUpLayer room={room} />
 
         {displayedTokens.map(

@@ -8,6 +8,10 @@ export const CELLS_PER_PLAYER = 13
 export const HOME_LENGTH = 5
 export const TOKENS_PER_PLAYER = 4
 
+/** Five-player pentagon boards use one extra home cell before the center. */
+export const homeLength = (players: Player[]) =>
+  players.length === 5 ? 6 : HOME_LENGTH
+
 export const trackLength = (players: Player[]) =>
   players.length * CELLS_PER_PLAYER
 
@@ -17,7 +21,7 @@ export const homeEntryProgress = (players: Player[]) =>
   trackLength(players) - 1
 
 export const finishedProgress = (players: Player[]) =>
-  homeEntryProgress(players) + HOME_LENGTH
+  homeEntryProgress(players) + homeLength(players)
 
 export const safeCells = (players: Player[]) =>
   new Set(
@@ -51,6 +55,7 @@ export function createGame(players: Player[], gameMode: GameMode = 'classic'): G
     powerTiles: gameMode === 'power' ? generatePowerTiles(players.length) : {},
     shieldBuff: {},
     pendingExtraTurn: null,
+    pendingPower: null,
   }
 }
 
@@ -260,6 +265,163 @@ export function applyRoll(room: Room, value: number) {
   if (movableTokens(room).length === 0) passTurn(room, game)
 }
 
+function formatMoveAction(
+  player: Player,
+  {
+    captured,
+    reachedHome,
+    sharedProtectedCell,
+    forfeitedProtection,
+  }: {
+    captured: boolean
+    reachedHome: boolean
+    sharedProtectedCell: boolean
+    forfeitedProtection: boolean
+  },
+) {
+  if (captured) return `${player.name} captured a token`
+  if (reachedHome) return `${player.name} brought a token home`
+  if (sharedProtectedCell) return `${player.name} shared a protected cell`
+  if (forfeitedProtection) {
+    return `${player.name} moved and forfeited token protection`
+  }
+  return `${player.name} moved a token`
+}
+
+function completeTurnAfterMove(
+  room: Room,
+  game: GameState,
+  player: Player,
+  dice: number,
+  {
+    captured,
+    reachedHome,
+    allHome,
+  }: {
+    captured: boolean
+    reachedHome: boolean
+    allHome: boolean
+  },
+  preserveActiveMove = false,
+) {
+  if (game.winnerIds.length >= room.players.length - 1) {
+    const lastPlayer = room.players.find(
+      (candidate) => !game.winnerIds.includes(candidate.id),
+    )
+    if (lastPlayer) game.winnerIds.push(lastPlayer.id)
+    room.status = 'finished'
+    return
+  }
+
+  const earnsExtraTurn =
+    dice === 6 ||
+    captured ||
+    reachedHome ||
+    game.pendingExtraTurn === player.id
+  if (game.pendingExtraTurn === player.id) {
+    game.pendingExtraTurn = null
+  }
+  if (!preserveActiveMove) {
+    game.activeMove = null
+  }
+  game.phase = 'roll'
+  game.dice = null
+  if (!earnsExtraTurn || allHome) {
+    passTurn(room, game)
+  }
+}
+
+export function applyPendingPower(room: Room, startedAt = Date.now()) {
+  const game = room.game
+  if (!game || game.phase !== 'power' || !game.pendingPower) {
+    throw new Error('No power to resolve.')
+  }
+
+  const pending = game.pendingPower
+  const player = room.players.find((candidate) => candidate.id === pending.playerId)
+  if (!player) throw new Error('Current player is missing.')
+
+  const token = game.tokens.find(
+    (candidate) =>
+      candidate.playerId === pending.playerId && candidate.id === pending.tokenId,
+  )
+  if (!token) throw new Error('That move is not valid.')
+
+  const dice = game.dice ?? 1
+  const finish = finishedProgress(room.players)
+  const progressBeforePower = token.progress
+  const powerMessage = applyPowerUp(
+    room,
+    player,
+    token,
+    pending.type,
+    pending.landingCell,
+  )
+
+  game.pendingPower = null
+
+  const reachedHomeAfterPower = token.progress === finish
+  const allHome = game.tokens
+    .filter((candidate) => candidate.playerId === player.id)
+    .every((candidate) => candidate.progress >= finish)
+
+  if (allHome && !game.winnerIds.includes(player.id)) {
+    game.winnerIds.push(player.id)
+    game.lastAction = `${player.name} finished in place #${game.winnerIds.length}`
+  } else {
+    game.lastAction = powerMessage
+  }
+
+  if (token.progress !== progressBeforePower) {
+    game.activeMove = {
+      playerId: player.id,
+      tokenId: token.id,
+      fromProgress: progressBeforePower,
+      dice: token.progress - progressBeforePower,
+      startedAt,
+      targetProgress: token.progress,
+    }
+  } else {
+    game.activeMove = null
+  }
+
+  if (game.winnerIds.length >= room.players.length - 1) {
+    const lastPlayer = room.players.find(
+      (candidate) => !game.winnerIds.includes(candidate.id),
+    )
+    if (lastPlayer) game.winnerIds.push(lastPlayer.id)
+    room.status = 'finished'
+    return
+  }
+
+  completeTurnAfterMove(
+    room,
+    game,
+    player,
+    dice,
+    {
+      captured: pending.captured,
+      reachedHome: reachedHomeAfterPower,
+      allHome,
+    },
+    token.progress !== progressBeforePower,
+  )
+}
+
+export function performLocalResolvePower(room: Room, userId: string) {
+  const next = structuredClone(room)
+  const game = next.game
+  if (!game || game.phase !== 'power') {
+    throw new Error('No power to resolve.')
+  }
+  if (next.players[game.turnIndex]?.id !== userId) {
+    throw new Error('It is not your turn.')
+  }
+  applyPendingPower(next)
+  next.updatedAt = Date.now()
+  return next
+}
+
 export function applyMove(room: Room, tokenId: number) {
   const game = room.game
   const dice = game?.dice
@@ -328,7 +490,13 @@ export function applyMove(room: Room, tokenId: number) {
     .filter((candidate) => candidate.playerId === player.id)
     .every((candidate) => candidate.progress >= finish)
 
-  let powerMessage: string | null = null
+  const moveContext = {
+    captured,
+    reachedHome,
+    sharedProtectedCell,
+    forfeitedProtection,
+  }
+
   if (
     (room.gameMode ?? 'classic') === 'power' &&
     landingCell !== null &&
@@ -337,26 +505,27 @@ export function applyMove(room: Room, tokenId: number) {
   ) {
     const powerType = powerUpAtCell(game, landingCell)
     if (powerType) {
-      powerMessage = applyPowerUp(room, player, token, powerType, landingCell)
+      game.pendingPower = {
+        playerId: player.id,
+        tokenId: token.id,
+        type: powerType,
+        landingCell,
+        captured,
+        sharedProtectedCell,
+        forfeitedProtection,
+      }
+      game.phase = 'power'
+      game.activeMove = null
+      game.lastAction = formatMoveAction(player, moveContext)
+      return
     }
   }
-
-  const reachedHomeAfterPower = token.progress === finish
 
   if (allHome && !game.winnerIds.includes(player.id)) {
     game.winnerIds.push(player.id)
     game.lastAction = `${player.name} finished in place #${game.winnerIds.length}`
   } else {
-    game.lastAction = powerMessage
-      ?? (captured
-      ? `${player.name} captured a token`
-      : reachedHome || reachedHomeAfterPower
-        ? `${player.name} brought a token home`
-        : sharedProtectedCell
-          ? `${player.name} shared a protected cell`
-          : forfeitedProtection
-            ? `${player.name} moved and forfeited token protection`
-        : `${player.name} moved a token`)
+    game.lastAction = formatMoveAction(player, moveContext)
   }
 
   if (game.winnerIds.length >= room.players.length - 1) {
@@ -368,21 +537,11 @@ export function applyMove(room: Room, tokenId: number) {
     return
   }
 
-  const earnsExtraTurn =
-    dice === 6 ||
-    captured ||
-    reachedHome ||
-    reachedHomeAfterPower ||
-    game.pendingExtraTurn === player.id
-  if (game.pendingExtraTurn === player.id) {
-    game.pendingExtraTurn = null
-  }
-  game.activeMove = null
-  game.phase = 'roll'
-  game.dice = null
-  if (!earnsExtraTurn || allHome) {
-    passTurn(room, game)
-  }
+  completeTurnAfterMove(room, game, player, dice, {
+    captured,
+    reachedHome,
+    allHome,
+  })
 }
 
 export function detectMovedToken(prev: Room, next: Room): MovingToken | null {

@@ -1,6 +1,7 @@
 import { CELLS_PER_PLAYER } from '../game/engine'
 import { POWER_UP_ICONS, powerTilesList } from '../game/powerUps'
 import type { PowerUpType, Room } from '../game/types'
+import { fivePlayerTrackPoint, isFivePlayerBoard } from './fivePlayerLayout'
 
 const SIZE = 600
 const CENTER = SIZE / 2
@@ -89,12 +90,17 @@ export function PowerUpLayer({ room }: { room: Room }) {
 
   const count = boardSeatCount(room)
   const isSquare = room.players.length === 4 && count === 4
+  const isFive = isFivePlayerBoard(room)
   const tiles = powerTilesList(room.game.powerTiles)
 
   return (
     <g className="power-layer" aria-hidden="true">
       {tiles.map(({ cell, type }) => {
-        const position = isSquare ? squarePoint(cell) : radialPoint(cell, count)
+        const position = isSquare
+          ? squarePoint(cell)
+          : isFive
+            ? fivePlayerTrackPoint(cell)
+            : radialPoint(cell, count)
         if (!position) return null
         return <PowerMarker key={`${cell}-${type}`} x={position.x} y={position.y} type={type} />
       })}

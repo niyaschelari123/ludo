@@ -11,7 +11,7 @@ export const PLAYER_COLORS = [
 
 export type PlayerColor = (typeof PLAYER_COLORS)[number]
 export type RoomStatus = 'lobby' | 'playing' | 'finished'
-export type TurnPhase = 'roll' | 'move'
+export type TurnPhase = 'roll' | 'move' | 'power'
 export type GameMode = 'classic' | 'power'
 export type PowerUpType =
   | 'tnt'
@@ -119,6 +119,16 @@ export const resolveAnimationProgress = (movingToken: MovingToken) => {
   return { progress, done: progress >= target, target }
 }
 
+export interface PendingPower {
+  playerId: string
+  tokenId: number
+  type: PowerUpType
+  landingCell: number
+  captured: boolean
+  sharedProtectedCell: boolean
+  forfeitedProtection: boolean
+}
+
 export interface GameState {
   turnIndex: number
   phase: TurnPhase
@@ -134,6 +144,7 @@ export interface GameState {
   powerTiles?: Record<number, PowerUpType>
   shieldBuff?: Record<string, boolean>
   pendingExtraTurn?: string | null
+  pendingPower?: PendingPower | null
 }
 
 export interface Room {
