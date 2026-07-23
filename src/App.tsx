@@ -18,36 +18,64 @@ import { auth, isFirebaseConfigured } from './firebase'
 import {
   createRoom,
   joinRoom,
-  moveToken,
+  leaveRoom,
+  moveTokenWithRetry,
   rollDice,
+  startMove,
   startRoom,
   watchRoom,
 } from './game/roomService'
-import { movableTokens } from './game/engine'
-import type { Room } from './game/types'
+import {
+  activeMoveToMovingToken,
+  detectMovedToken,
+  movableTokens,
+  performLocalMove,
+  performLocalRoll,
+} from './game/engine'
+import type { GameMode, MovingToken, Room } from './game/types'
+import { moveBaseSignature, movingTokenTarget, tokenMoveDurationMs } from './game/types'
 
 function App() {
   const [user, setUser] = useState<User | null>(null)
   const [name, setName] = useState(() => localStorage.getItem('ludo-name') ?? '')
   const [joinCode, setJoinCode] = useState('')
   const [maxPlayers, setMaxPlayers] = useState(6)
+  const [gameMode, setGameMode] = useState<GameMode>('classic')
   const [roomId, setRoomId] = useState<string | null>(() =>
     localStorage.getItem('ludo-room'),
   )
   const [room, setRoom] = useState<Room | null>(null)
+  const [optimisticRoom, setOptimisticRoom] = useState<Room | null>(null)
+  const displayRoom = optimisticRoom ?? room
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [rolling, setRolling] = useState(false)
   const [diceFace, setDiceFace] = useState(1)
-  const [movingToken, setMovingToken] = useState<{
-    id: number
-    fromProgress: number
-    dice: number
-  } | null>(null)
+  const [movingToken, setMovingToken] = useState<MovingToken | null>(null)
   const [moveReadyToClear, setMoveReadyToClear] = useState(false)
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
+  const rollSyncRef = useRef<Promise<void> | null>(null)
+  const moveInFlightRef = useRef(false)
+  const prevRoomRef = useRef<Room | null>(null)
+  const remoteAnimSignatureRef = useRef<string | null>(null)
+  const movingTokenRef = useRef<MovingToken | null>(null)
   const [soundOn, setSoundOn] = useState(isSoundEnabled)
   const [soundVolume, setSoundVolumeState] = useState(getSoundVolume)
   const lastSoundAction = useRef<string | null>(null)
+
+  movingTokenRef.current = movingToken
+
+  const handleMoveAnimationComplete = useCallback(() => {
+    if (moveInFlightRef.current) return
+    setMovingToken(null)
+  }, [])
+
+  const scheduleRemoteMove = useCallback((move: MovingToken) => {
+    const signature = moveBaseSignature(move)
+    if (remoteAnimSignatureRef.current === signature) return
+    remoteAnimSignatureRef.current = signature
+    setMovingToken(move)
+  }, [])
 
   useEffect(() => {
     if (!isFirebaseConfigured) return
@@ -66,6 +94,7 @@ function App() {
       (nextRoom) => {
         setRoom(nextRoom)
         if (!nextRoom) {
+          setOptimisticRoom(null)
           localStorage.removeItem('ludo-room')
           setRoomId(null)
         }
@@ -73,6 +102,33 @@ function App() {
       setError,
     )
   }, [roomId, user])
+
+  useEffect(() => {
+    if (!room?.game || !user) return
+
+    const active = room.game.activeMove
+    if (active && active.playerId !== user.uid && !moveInFlightRef.current) {
+      scheduleRemoteMove(activeMoveToMovingToken(active))
+    }
+
+    const prev = prevRoomRef.current
+    prevRoomRef.current = room
+    if (!prev?.game || moveInFlightRef.current || movingTokenRef.current) return
+
+    const moved = detectMovedToken(prev, room)
+    if (!moved || moved.playerId === user.uid) return
+    if (remoteAnimSignatureRef.current === moveBaseSignature(moved)) return
+
+    scheduleRemoteMove(moved)
+  }, [room, user, scheduleRemoteMove])
+
+  useEffect(() => {
+    if (!optimisticRoom?.game || !room?.game) return
+    if (movingToken || moveInFlightRef.current || rollSyncRef.current) return
+    if (room.game.lastAction === optimisticRoom.game.lastAction) {
+      setOptimisticRoom(null)
+    }
+  }, [optimisticRoom, room, movingToken])
 
   useEffect(() => {
     if (!rolling) return
@@ -87,7 +143,7 @@ function App() {
   }, [rolling])
 
   useEffect(() => {
-    const action = room?.game?.lastAction
+    const action = displayRoom?.game?.lastAction
     if (!action || action === lastSoundAction.current) return
     if (lastSoundAction.current === null) {
       lastSoundAction.current = action
@@ -97,21 +153,17 @@ function App() {
     if (action.includes('captured')) playCapture()
     else if (action.includes('brought a token home')) playHome()
     else if (action.includes('finished in place')) playWin()
-  }, [room?.game?.lastAction])
+  }, [displayRoom?.game?.lastAction])
 
   useEffect(() => {
     if (!moveReadyToClear || !movingToken || !room?.game || !user) return
     const serverToken = room.game.tokens.find(
       (token) =>
-        token.playerId === user.uid &&
+        token.playerId === movingToken.playerId &&
         token.id === movingToken.id,
     )
-    const targetProgress =
-      movingToken.fromProgress === -1
-        ? 0
-        : movingToken.fromProgress + movingToken.dice
+    const targetProgress = movingTokenTarget(movingToken)
     if (serverToken?.progress === targetProgress) {
-      setMovingToken(null)
       setMoveReadyToClear(false)
     }
   }, [moveReadyToClear, movingToken, room, user])
@@ -141,64 +193,162 @@ function App() {
     setSoundEnabled(next)
   }
   const animateRoll = async () => {
+    const baseRoom = optimisticRoom ?? room
+    if (!baseRoom || !user) return
     setRolling(true)
-    await perform(async () => {
-      await Promise.all([
-        rollDice(room!.id, user!.uid),
-        new Promise((resolve) => window.setTimeout(resolve, 650)),
-      ])
-    })
+    setError('')
+
+    let nextRoom: Room
+    let dice: number
+    try {
+      ;({ room: nextRoom, dice } = performLocalRoll(baseRoom, user.uid))
+    } catch (reason) {
+      setRolling(false)
+      setError(reason instanceof Error ? reason.message : 'Something went wrong.')
+      return
+    }
+
+    setDiceFace(dice)
+
+    const sync = rollDice(baseRoom.id, user.uid, dice)
+      .catch((reason) => {
+        setOptimisticRoom(null)
+        setError(reason instanceof Error ? reason.message : 'Failed to sync roll.')
+        throw reason
+      })
+      .finally(() => {
+        if (rollSyncRef.current === sync) rollSyncRef.current = null
+      })
+    rollSyncRef.current = sync
+
+    await new Promise((resolve) => window.setTimeout(resolve, 650))
     setRolling(false)
+    setOptimisticRoom(nextRoom)
     playDiceResult()
   }
   const animateMove = useCallback(async (tokenId: number) => {
-    const token = room?.game?.tokens.find(
-      (candidate) => candidate.playerId === user?.uid && candidate.id === tokenId,
+    if (moveInFlightRef.current) return
+    const baseRoom = optimisticRoom ?? room
+    if (!baseRoom?.game || !user) return
+    const token = baseRoom.game.tokens.find(
+      (candidate) => candidate.playerId === user.uid && candidate.id === tokenId,
     )
-    if (!token || !room || !user) return
-    const dice = room.game?.dice ?? 1
-    const steps = token.progress === -1 ? 1 : dice
+    if (!token) return
+    const dice = baseRoom.game.dice ?? 1
+    const fromProgress = token.progress
+
+    moveInFlightRef.current = true
     setMoveReadyToClear(false)
-    setMovingToken({ id: tokenId, fromProgress: token.progress, dice })
-    const succeeded = await perform(async () => {
-      await Promise.all([
-        moveToken(room.id, user.uid, tokenId),
-        new Promise((resolve) => window.setTimeout(resolve, steps * 135 + 240)),
-      ])
-    })
-    if (succeeded) {
-      setMoveReadyToClear(true)
-    } else {
-      setMovingToken(null)
+    setError('')
+
+    const startedAt = Date.now()
+
+    let nextRoom: Room
+    try {
+      nextRoom = performLocalMove(baseRoom, user.uid, tokenId)
+    } catch (reason) {
+      moveInFlightRef.current = false
+      setError(reason instanceof Error ? reason.message : 'Something went wrong.')
+      return
     }
-  }, [perform, room, user])
+
+    const movedToken = nextRoom.game!.tokens.find(
+      (candidate) => candidate.playerId === user.uid && candidate.id === tokenId,
+    )
+    if (!movedToken) {
+      moveInFlightRef.current = false
+      return
+    }
+
+    const moving: MovingToken = {
+      playerId: user.uid,
+      id: tokenId,
+      fromProgress,
+      dice,
+      startedAt,
+      targetProgress: movedToken.progress,
+    }
+
+    setOptimisticRoom(nextRoom)
+    setMovingToken(moving)
+
+    void startMove(
+      baseRoom.id,
+      user.uid,
+      tokenId,
+      fromProgress,
+      dice,
+      startedAt,
+      movedToken.progress,
+    ).catch(() => {
+      // moveToken below still validates the action.
+    })
+
+    const waitForRoll = () => rollSyncRef.current ?? Promise.resolve()
+    const syncMove = moveTokenWithRetry(
+      baseRoom.id,
+      user.uid,
+      tokenId,
+      waitForRoll,
+    ).then(() => {
+      setMoveReadyToClear(true)
+    })
+
+    try {
+      await Promise.all([
+        syncMove,
+        new Promise((resolve) =>
+          window.setTimeout(resolve, tokenMoveDurationMs(moving)),
+        ),
+      ])
+    } catch (reason) {
+      setOptimisticRoom(null)
+      setError(reason instanceof Error ? reason.message : 'Failed to sync move.')
+    } finally {
+      setMovingToken(null)
+      moveInFlightRef.current = false
+    }
+  }, [optimisticRoom, room, user])
 
   useEffect(() => {
     if (
-      !room?.game ||
-      room.status !== 'playing' ||
-      room.game.phase !== 'move' ||
-      room.players[room.game.turnIndex]?.id !== user?.uid ||
+      !displayRoom?.game ||
+      displayRoom.status !== 'playing' ||
+      displayRoom.game.phase !== 'move' ||
+      displayRoom.players[displayRoom.game.turnIndex]?.id !== user?.uid ||
       movingToken ||
-      busy
+      busy ||
+      moveInFlightRef.current ||
+      rolling
     ) {
       return
     }
 
-    const legalMoves = movableTokens(room)
+    const legalMoves = movableTokens(displayRoom)
     if (legalMoves.length !== 1) return
     const timer = window.setTimeout(
       () => void animateMove(legalMoves[0].id),
-      350,
+      700,
     )
     return () => window.clearTimeout(timer)
-  }, [animateMove, busy, movingToken, room, user])
-  const leave = () => {
+  }, [animateMove, busy, displayRoom, movingToken, rolling, user])
+  const exitRoom = () => {
     localStorage.removeItem('ludo-room')
+    setOptimisticRoom(null)
+    rollSyncRef.current = null
+    moveInFlightRef.current = false
+    prevRoomRef.current = null
+    remoteAnimSignatureRef.current = null
     setMovingToken(null)
     setMoveReadyToClear(false)
+    setLeaveConfirmOpen(false)
     setRoomId(null)
     setRoom(null)
+  }
+  const confirmLeave = async () => {
+    if (!room || !user) return
+    const succeeded = await perform(() => leaveRoom(room.id, user.uid))
+    if (succeeded) exitRoom()
   }
 
   if (!isFirebaseConfigured) {
@@ -267,6 +417,27 @@ function App() {
             </div>
             <div className="divider"><span>or host a game</span></div>
             <label>
+              Game mode
+              <div className="mode-picker">
+                <button
+                  type="button"
+                  className={`mode-option ${gameMode === 'classic' ? 'active' : ''}`}
+                  onClick={() => setGameMode('classic')}
+                >
+                  <strong>Classic</strong>
+                  <span>Standard Ludo rules</span>
+                </button>
+                <button
+                  type="button"
+                  className={`mode-option ${gameMode === 'power' ? 'active' : ''}`}
+                  onClick={() => setGameMode('power')}
+                >
+                  <strong>Power</strong>
+                  <span>TNT, rockets, springs & more</span>
+                </button>
+              </div>
+            </label>
+            <label>
               Room size
               <select value={maxPlayers} onChange={(event) => setMaxPlayers(Number(event.target.value))}>
                 {[2, 3, 4, 5, 6, 7, 8].map((count) => (
@@ -279,7 +450,7 @@ function App() {
               disabled={busy || !name.trim()}
               onClick={() => perform(async () => {
                 rememberName()
-                setRoomId(await createRoom(user.uid, name, maxPlayers))
+                setRoomId(await createRoom(user.uid, name, maxPlayers, gameMode))
               })}
             >Create private room</button>
             {error && <p className="error">{error}</p>}
@@ -289,19 +460,25 @@ function App() {
     )
   }
 
-  const currentPlayer = room.game ? room.players[room.game.turnIndex] : null
+  const viewRoom: Room = optimisticRoom ?? room
+
+  const currentPlayer = viewRoom.game ? viewRoom.players[viewRoom.game.turnIndex] : null
   const isMyTurn = currentPlayer?.id === user.uid
-  const me = room.players.find((player) => player.id === user.uid)
-  const finalRanking = room.game
-    ? [...room.players].sort((first, second) => {
-        const firstPlace = room.game!.winnerIds.indexOf(first.id)
-        const secondPlace = room.game!.winnerIds.indexOf(second.id)
+  const me = viewRoom.players.find((player) => player.id === user.uid)
+  const activeRanking = viewRoom.game
+    ? [...viewRoom.players].sort((first, second) => {
+        const firstPlace = viewRoom.game!.winnerIds.indexOf(first.id)
+        const secondPlace = viewRoom.game!.winnerIds.indexOf(second.id)
         return (
           (firstPlace === -1 ? Number.MAX_SAFE_INTEGER : firstPlace) -
           (secondPlace === -1 ? Number.MAX_SAFE_INTEGER : secondPlace)
         )
-      })
+      }).map((player) => ({ ...player, leftEarly: false as const }))
     : []
+  const departedRanking = [...(viewRoom.departedPlayers ?? [])]
+    .sort((first, second) => second.leftAt - first.leftAt)
+    .map((player) => ({ ...player, leftEarly: true as const }))
+  const finalRanking = [...activeRanking, ...departedRanking]
 
   return (
     <main className="room-screen" onClickCapture={playButtonSound}>
@@ -330,7 +507,7 @@ function App() {
           <button className="sound-toggle" onClick={toggleSound} title={soundOn ? 'Mute sounds' : 'Enable sounds'}>
             {soundOn ? '🔊' : '🔇'}
           </button>
-          <button className="text-button" onClick={leave}>Leave</button>
+          <button className="text-button" onClick={() => setLeaveConfirmOpen(true)}>Leave</button>
         </div>
       </header>
 
@@ -340,6 +517,9 @@ function App() {
             <span className="eyebrow">PRIVATE ROOM</span>
             <h1>Waiting for players</h1>
             <p>Share this code with friends anywhere.</p>
+            <p className="lobby-mode">
+              Mode: <strong>{(room.gameMode ?? 'classic') === 'power' ? 'Power' : 'Classic'}</strong>
+            </p>
             <button className="code-display" onClick={copyCode}>{room.code} <span>⧉</span></button>
             <div className="players-grid">
               {Array.from({ length: room.maxPlayers }, (_, index) => {
@@ -371,15 +551,15 @@ function App() {
         <section className="game-layout">
           <aside className="players-panel">
             <h2>Players</h2>
-            {room.players.map((player, index) => (
+            {viewRoom.players.map((player, index) => (
               <div
                 key={player.id}
-                className={`player-row ${player.color} ${room.game?.turnIndex === index ? 'active' : ''}`}
+                className={`player-row ${player.color} ${viewRoom.game?.turnIndex === index ? 'active' : ''}`}
               >
                 <span className="avatar">{player.name[0].toUpperCase()}</span>
                 <div><strong>{player.name}</strong><small>
-                  {room.game?.winnerIds.includes(player.id)
-                    ? `Finished #${room.game.winnerIds.indexOf(player.id) + 1}`
+                  {viewRoom.game?.winnerIds.includes(player.id)
+                    ? `Finished #${viewRoom.game.winnerIds.indexOf(player.id) + 1}`
                     : player.id === user.uid ? 'You' : 'Online'}
                 </small></div>
               </div>
@@ -389,22 +569,23 @@ function App() {
           <div className="game-center">
             <div className="turn-banner">
               <strong>{isMyTurn ? 'Your turn' : `${currentPlayer?.name}'s turn`}</strong>
-              <span>{room.game?.lastAction}</span>
+              <span>{viewRoom.game?.lastAction}</span>
             </div>
             <LudoBoard
-              room={room}
+              room={viewRoom}
               userId={user.uid}
               movingToken={movingToken}
               onMove={(tokenId) => void animateMove(tokenId)}
+              onMoveAnimationComplete={handleMoveAnimationComplete}
             />
           </div>
 
           <aside className="action-panel">
             <span className="eyebrow">TURN CONTROL</span>
-            <div className={`dice ${rolling ? 'rolling' : room.game?.dice ? 'rolled' : ''}`}>
-              {rolling ? diceFace : room.game?.dice ?? '•'}
+            <div className={`dice ${rolling ? 'rolling' : viewRoom.game?.dice ? 'rolled' : ''}`}>
+              {rolling ? diceFace : viewRoom.game?.dice ?? '•'}
             </div>
-            {isMyTurn && room.game?.phase === 'roll' ? (
+            {isMyTurn && viewRoom.game?.phase === 'roll' ? (
               <button className="roll-button" disabled={busy || rolling} onClick={() => void animateRoll()}>
                 Roll dice
               </button>
@@ -418,12 +599,59 @@ function App() {
               <p>A sole active token is protected until one token finishes.</p>
               <p>Ignoring a yard token after rolling 6 forfeits that protection.</p>
               <p>No active tokens: the sixth failed entry attempt guarantees a 6.</p>
+              <p>Last token 1–3 steps away: the eighth attempt guarantees the exact roll.</p>
               <p>Three consecutive 6s lose the turn.</p>
               <p>Reach home with an exact roll.</p>
+              {(viewRoom.gameMode ?? 'classic') === 'power' && (
+                <>
+                  <h3 className="power-rules-title">Power tiles</h3>
+                  <p>TNT blasts rivals on the same cell.</p>
+                  <p>Rocket +3, Spring +2, Portal warps ahead.</p>
+                  <p>Shield blocks the next capture.</p>
+                  <p>Flame grants a bonus roll.</p>
+                  <p>x2 / x3 repeat your roll steps.</p>
+                  <p>Ice pushes rivals back 3 steps.</p>
+                </>
+              )}
             </div>
             {error && <p className="error">{error}</p>}
           </aside>
         </section>
+      )}
+
+      {leaveConfirmOpen && (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Leave game confirmation"
+          onClick={() => !busy && setLeaveConfirmOpen(false)}
+        >
+          <div className="confirm-card" onClick={(event) => event.stopPropagation()}>
+            <div className="confirm-icon">!</div>
+            <h2>Leave this game?</h2>
+            <p>
+              Your tokens will be removed and the remaining players will
+              continue without you.
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="cancel-button"
+                disabled={busy}
+                onClick={() => setLeaveConfirmOpen(false)}
+              >
+                Keep playing
+              </button>
+              <button
+                className="danger-button"
+                disabled={busy}
+                onClick={() => void confirmLeave()}
+              >
+                {busy ? 'Leaving…' : 'Leave game'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {room.status === 'finished' && (
@@ -436,11 +664,17 @@ function App() {
 
             <div className="podium">
               {finalRanking.slice(0, 3).map((player, index) => (
-                <div className={`podium-place place-${index + 1} ${player.color}`} key={player.id}>
-                  <span className="medal">{['🥇', '🥈', '🥉'][index]}</span>
+                <div className={`podium-place place-${index + 1} ${player.color} ${player.leftEarly ? 'left-early' : ''}`} key={player.id}>
+                  <span className="medal">{player.leftEarly ? '🚪' : ['🥇', '🥈', '🥉'][index]}</span>
                   <span className="podium-avatar">{player.name[0].toUpperCase()}</span>
                   <strong>{player.name}</strong>
-                  <small>{index === 0 ? 'CHAMPION' : `PLACE ${index + 1}`}</small>
+                  <small>
+                    {player.leftEarly
+                      ? 'LEFT EARLY'
+                      : index === 0
+                        ? 'CHAMPION'
+                        : `PLACE ${index + 1}`}
+                  </small>
                   <div className="podium-block">{index + 1}</div>
                 </div>
               ))}
@@ -449,17 +683,23 @@ function App() {
             {finalRanking.length > 3 && (
               <div className="remaining-places">
                 {finalRanking.slice(3).map((player, index) => (
-                  <div className={`result-row ${player.color}`} key={player.id}>
+                  <div className={`result-row ${player.color} ${player.leftEarly ? 'left-early' : ''}`} key={player.id}>
                     <span className="result-position">#{index + 4}</span>
                     <span className="avatar">{player.name[0].toUpperCase()}</span>
                     <strong>{player.name}</strong>
-                    {player.id === user.uid && <small>YOU</small>}
+                    <small>
+                      {player.leftEarly
+                        ? 'LEFT EARLY'
+                        : player.id === user.uid
+                          ? 'YOU'
+                          : ''}
+                    </small>
                   </div>
                 ))}
               </div>
             )}
 
-            <button className="results-button" onClick={leave}>Back to home</button>
+            <button className="results-button" onClick={exitRoom}>Back to home</button>
           </div>
         </div>
       )}
