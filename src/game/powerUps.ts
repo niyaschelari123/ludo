@@ -3,6 +3,8 @@ import {
   finishedProgress,
   globalCell,
   homeEntryProgress,
+  isSoleTokenProtected,
+  safeCells,
   trackLength,
 } from './engine'
 import type { GameState, Player, PowerTile, PowerUpType, Room, Token } from './types'
@@ -49,7 +51,7 @@ export const POWER_UP_INFO: {
   { type: 'back2', label: 'Back 2', description: 'Slides your token 2 steps backward' },
   { type: 'back3', label: 'Back 3', description: 'Slides your token 3 steps backward' },
   { type: 'yard', label: 'Yard', description: 'Sends your token back to your starting square' },
-  { type: 'tnt', label: 'TNT', description: 'Blasts rival tokens on the same cell back to yard' },
+  { type: 'tnt', label: 'TNT', description: 'Eliminates unprotected tokens on this cell and sends them to the yard' },
   { type: 'ice', label: 'Ice', description: 'Pushes rivals on this cell back 3 steps' },
 ]
 
@@ -157,6 +159,27 @@ function opponentsOnCell(
   )
 }
 
+export function eliminateTokenFromTnt(
+  room: Room,
+  playerId: string,
+  token: Token,
+  cell: number | null,
+): boolean {
+  const game = room.game
+  if (!game || cell === null || safeCells(room).has(cell)) return false
+  if (powerUpAtCell(game, cell) !== 'tnt') return false
+
+  game.shieldBuff ??= {}
+  if (game.shieldBuff[playerId]) {
+    game.shieldBuff[playerId] = false
+    return false
+  }
+  if (isSoleTokenProtected(game, playerId, room)) return false
+
+  token.progress = -1
+  return true
+}
+
 export function applyPowerUp(
   room: Room,
   player: Player,
@@ -171,12 +194,24 @@ export function applyPowerUp(
     case 'tnt': {
       let blasted = 0
       for (const opponent of opponentsOnCell(game, player.id, landingCell, room)) {
+        if (isSoleTokenProtected(game, opponent.playerId, room)) continue
         if (game.shieldBuff[opponent.playerId]) {
           game.shieldBuff[opponent.playerId] = false
           continue
         }
         opponent.progress = -1
         blasted += 1
+      }
+      const selfEliminated = eliminateTokenFromTnt(
+        room,
+        player.id,
+        token,
+        landingCell,
+      )
+      if (selfEliminated) {
+        return blasted > 0
+          ? `${player.name} triggered TNT, blasted ${blasted} token(s), and was eliminated`
+          : `${player.name} triggered TNT and was eliminated`
       }
       return blasted > 0
         ? `${player.name} triggered TNT and blasted ${blasted} token(s)`

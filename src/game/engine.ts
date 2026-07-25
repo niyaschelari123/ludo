@@ -1,5 +1,5 @@
 import type { ActiveMove, GameMode, GameState, MovingToken, Player, Room, Token } from './types'
-import { applyPowerUp, generatePowerTiles, powerUpAtCell } from './powerUps'
+import { applyPowerUp, eliminateTokenFromTnt, generatePowerTiles, powerUpAtCell } from './powerUps'
 
 // A classic four-player board has 52 outer cells: 13 per player.
 // The same sector length extends cleanly to the 5–8 player polygon boards.
@@ -172,22 +172,8 @@ export function resolveTntBackslideElimination(
   playerId: string,
   token: Token,
 ): boolean {
-  const game = room.game
-  if (!game) return false
-
-  const cell = globalCell(token, room)
-  if (cell === null || safeCells(room).has(cell)) return false
-  if (powerUpAtCell(game, cell) !== 'tnt') return false
-
-  game.shieldBuff ??= {}
-  if (game.shieldBuff[playerId]) {
-    game.shieldBuff[playerId] = false
-    return false
-  }
-  if (isSoleTokenProtected(game, playerId, room)) return false
-
-  token.progress = -1
-  return true
+  if (!room.game) return false
+  return eliminateTokenFromTnt(room, playerId, token, globalCell(token, room))
 }
 
 export function hasActiveToken(
