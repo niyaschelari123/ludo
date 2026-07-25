@@ -43,6 +43,7 @@ export function watchRoom(
   userId: string,
   onRoom: (room: Room | null) => void,
   onError: (message: string) => void,
+  onMoveStart?: (move: ActiveMove) => void,
 ) {
   const socket = getSocket()
   let latestRoom: Room | null = null
@@ -51,6 +52,10 @@ export function watchRoom(
     if (room.id !== roomId) return
     latestRoom = room
     onRoom(room)
+  }
+
+  const handleMoveStart = (move: ActiveMove) => {
+    onMoveStart?.(move)
   }
 
   const handleDisconnect = (payload: { userId: string; room: Room }) => {
@@ -63,6 +68,7 @@ export function watchRoom(
   }
 
   socket.on('stateUpdate', handleState)
+  socket.on('moveStart', handleMoveStart)
   socket.on('playerDisconnect', handleDisconnect)
   socket.on('connect_error', handleConnectError)
   socket.on('error', handleSocketError)
@@ -80,6 +86,7 @@ export function watchRoom(
 
   return () => {
     socket.off('stateUpdate', handleState)
+    socket.off('moveStart', handleMoveStart)
     socket.off('playerDisconnect', handleDisconnect)
     socket.off('connect_error', handleConnectError)
     socket.off('error', handleSocketError)

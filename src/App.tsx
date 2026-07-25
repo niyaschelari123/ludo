@@ -251,8 +251,13 @@ function App() {
         }
       },
       setError,
+      (activeMove) => {
+        if (activeMove.playerId !== userId && !moveInFlightRef.current) {
+          scheduleRemoteMove(activeMoveToMovingToken(activeMove))
+        }
+      },
     )
-  }, [roomId, userId])
+  }, [roomId, userId, scheduleRemoteMove])
 
   useEffect(() => {
     if (!room?.game) return
@@ -309,6 +314,10 @@ function App() {
       rollSyncRef.current ||
       powerResolveInFlightRef.current
     ) {
+      return
+    }
+    if (room.updatedAt >= optimisticRoom.updatedAt) {
+      setOptimisticRoom(null)
       return
     }
     if (

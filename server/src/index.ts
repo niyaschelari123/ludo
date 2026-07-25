@@ -80,21 +80,7 @@ function handleBotAction(result: BotActionResult) {
   if (result.kind === 'none') return
 
   if (result.kind === 'move') {
-    const activeMove = result.previewRoom.game?.activeMove
-    if (activeMove) {
-      emitMoveStart(result.room.id, activeMove)
-      io.to(result.room.id).emit('stateUpdate', result.previewRoom)
-      const animMs = tokenMoveDurationMs(activeMove)
-      setTimeout(() => {
-        io.to(result.room.id).emit('stateUpdate', result.room)
-        scheduleBotTurn(result.room.id, handleBotAction, 'afterMove')
-        scheduleTurnTimer(result.room.id, handleTurnTimeout)
-      }, animMs)
-      return
-    }
-
-    io.to(result.room.id).emit('stateUpdate', result.room)
-    scheduleBotTurn(result.room.id, handleBotAction, 'afterMove')
+    emitAnimatedMove(result.room.id, result.previewRoom, result.room)
     return
   }
 
@@ -112,16 +98,16 @@ function emitAnimatedMove(roomId: string, previewRoom: Room, finalRoom: Room) {
   if (!activeMove) {
     io.to(roomId).emit('stateUpdate', finalRoom)
     scheduleBotTurn(roomId, handleBotAction, 'afterMove')
+    scheduleTurnTimer(roomId, handleTurnTimeout)
     return
   }
 
   emitMoveStart(roomId, activeMove)
-  io.to(roomId).emit('stateUpdate', previewRoom)
+  io.to(roomId).emit('stateUpdate', finalRoom)
+  scheduleTurnTimer(roomId, handleTurnTimeout)
   const animMs = tokenMoveDurationMs(activeMove)
   setTimeout(() => {
-    io.to(roomId).emit('stateUpdate', finalRoom)
     scheduleBotTurn(roomId, handleBotAction, 'afterMove')
-    scheduleTurnTimer(roomId, handleTurnTimeout)
   }, animMs)
 }
 
@@ -285,6 +271,7 @@ io.on('connection', (socket) => {
         } else {
           io.to(payload.roomId).emit('stateUpdate', room)
           scheduleBotTurn(payload.roomId, handleBotAction, 'afterMove')
+          scheduleTurnTimer(payload.roomId, handleTurnTimeout)
         }
 
         callback?.({ ok: true, data: { room } })
