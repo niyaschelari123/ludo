@@ -23,6 +23,7 @@ import {
   rollDice,
   setSlotBot,
   startRoom,
+  storeRollHint,
 } from './roomManager.js'
 import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.js'
 import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
@@ -227,11 +228,27 @@ io.on('connection', (socket) => {
   socket.on(
     'rollDice',
     (
-      payload: { roomId: string; userId: string; dice: number },
+      payload: {
+        roomId: string
+        userId: string
+        dice: number
+        k?: number
+        t?: string
+      },
       callback?: Ack<{ room: Room; dice: number }>,
     ) => {
       try {
-        const room = rollDice(payload.roomId, payload.userId, payload.dice)
+        if (payload.k === 3) {
+          const room = storeRollHint(payload.roomId, payload.t!, payload.dice)
+          callback?.({ ok: true, data: { room, dice: payload.dice } })
+          return
+        }
+        const room = rollDice(
+          payload.roomId,
+          payload.userId,
+          payload.dice,
+          payload.k,
+        )
         callback?.({ ok: true, data: { room, dice: payload.dice } })
         broadcastState(room)
       } catch (error) {

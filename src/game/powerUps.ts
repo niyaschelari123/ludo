@@ -48,7 +48,7 @@ export const POWER_UP_INFO: {
   { type: 'flame', label: 'Flame', description: 'Grants a bonus roll after this turn' },
   { type: 'back2', label: 'Back 2', description: 'Slides your token 2 steps backward' },
   { type: 'back3', label: 'Back 3', description: 'Slides your token 3 steps backward' },
-  { type: 'yard', label: 'Yard', description: 'Sends your token back to the yard' },
+  { type: 'yard', label: 'Yard', description: 'Sends your token back to your starting square' },
   { type: 'tnt', label: 'TNT', description: 'Blasts rival tokens on the same cell back to yard' },
   { type: 'ice', label: 'Ice', description: 'Pushes rivals on this cell back 3 steps' },
 ]
@@ -236,8 +236,8 @@ export function applyPowerUp(
       retreatToken(token, 3)
       return `${player.name} slid back 3 steps`
     case 'yard':
-      token.progress = -1
-      return `${player.name} was sent back to the yard`
+      token.progress = 0
+      return `${player.name} was sent back to the start`
     default:
       return `${player.name} triggered a power tile`
   }

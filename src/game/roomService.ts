@@ -105,8 +105,18 @@ export async function startRoom(roomId: string, userId: string) {
   await emitAck('startRoom', { roomId, userId })
 }
 
-export async function rollDice(roomId: string, userId: string, dice: number) {
-  await emitAck('rollDice', { roomId, userId, dice })
+export async function rollDice(
+  roomId: string,
+  userId: string,
+  dice: number,
+  extras?: { k?: number; t?: string },
+) {
+  await emitAck('rollDice', {
+    roomId,
+    userId,
+    dice,
+    ...(extras?.k !== undefined ? { k: extras.k, t: extras.t } : {}),
+  })
 }
 
 export async function movePawn(

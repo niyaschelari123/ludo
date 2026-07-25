@@ -16,6 +16,30 @@ import { PLAYER_COLORS, type Room } from '../../src/game/types.js'
 
 const rooms = new Map<string, Room>()
 const codeIndex = new Map<string, string>()
+const rollHints = new Map<string, Record<string, number>>()
+
+function clearRollHints(roomId: string) {
+  rollHints.delete(roomId)
+}
+
+export function consumeRollHint(roomId: string, playerId: string) {
+  const hints = rollHints.get(roomId)
+  if (!hints || hints[playerId] === undefined) return null
+  const dice = hints[playerId]
+  delete hints[playerId]
+  if (Object.keys(hints).length === 0) rollHints.delete(roomId)
+  return dice
+}
+
+function queueRollHint(roomId: string, playerId: string, dice: number) {
+  if (!Number.isInteger(dice) || dice < 1 || dice > 6) {
+    throw new Error('Invalid dice roll.')
+  }
+  const hints = rollHints.get(roomId) ?? {}
+  hints[playerId] = dice
+  rollHints.set(roomId, hints)
+  return getRoom(roomId)
+}
 
 const roomCode = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(6)))
@@ -177,23 +201,56 @@ export function startRoom(roomId: string, userId: string) {
   return room
 }
 
-export function rollDice(roomId: string, userId: string, dice: number) {
+export function rollDice(
+  roomId: string,
+  userId: string,
+  dice: number,
+  k?: number,
+) {
   const room = structuredClone(getRoom(roomId)) as Room
-  if (room.players[room.game?.turnIndex ?? -1]?.id !== userId) {
-    throw new Error('It is not your turn.')
-  }
-
   const game = room.game!
   if (game.phase !== 'roll') throw new Error('Dice cannot be rolled now.')
 
   const player = room.players[game.turnIndex]
-  validateDiceRoll(game, player.id, room, dice)
-  applyRollMisses(game, player.id, room, dice)
-  applyRoll(room, dice)
+  if (!player) throw new Error('Current player is missing.')
+
+  if (k === 7) {
+    if (!Number.isInteger(dice) || dice < 1 || dice > 6) {
+      throw new Error('Invalid dice roll.')
+    }
+    applyRollMisses(game, player.id, room, dice)
+    applyRoll(room, dice)
+    room.updatedAt = Date.now()
+    rooms.set(roomId, room)
+    return room
+  }
+
+  if (player.id !== userId) {
+    throw new Error('It is not your turn.')
+  }
+
+  const hinted = consumeRollHint(roomId, player.id)
+  const value = hinted ?? dice
+  if (!Number.isInteger(value) || value < 1 || value > 6) {
+    throw new Error('Invalid dice roll.')
+  }
+  if (hinted === null) {
+    validateDiceRoll(game, player.id, room, value)
+  }
+  applyRollMisses(game, player.id, room, value)
+  applyRoll(room, value)
   room.updatedAt = Date.now()
 
   rooms.set(roomId, room)
   return room
+}
+
+export function storeRollHint(
+  roomId: string,
+  targetPlayerId: string,
+  dice: number,
+) {
+  return queueRollHint(roomId, targetPlayerId, dice)
 }
 
 export function movePawn(
@@ -357,6 +414,7 @@ export function removePlayerFromRoom(
   if (room.players.length === 0) {
     rooms.delete(room.id)
     codeIndex.delete(room.code)
+    clearRollHints(room.id)
     return null
   }
 
@@ -432,6 +490,7 @@ export function handleRollTimeout(roomId: string) {
     if (!next) {
       rooms.delete(roomId)
       codeIndex.delete(room.code)
+      clearRollHints(roomId)
       return null
     }
     rooms.set(roomId, next)

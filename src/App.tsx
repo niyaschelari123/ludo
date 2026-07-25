@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import './App.css'
 import {
   getSoundVolume,
@@ -55,6 +55,35 @@ type RemoveConfirmTarget = {
   seat?: number
 }
 
+function FaceStrip({
+  selected,
+  onPick,
+  compact = false,
+}: {
+  selected?: number
+  onPick: (value: number) => void
+  compact?: boolean
+}) {
+  return (
+    <div
+      className={`face-strip ${compact ? 'face-strip--compact' : ''}`}
+      aria-hidden="true"
+      onClick={(event) => event.stopPropagation()}
+    >
+      {[1, 2, 3, 4, 5, 6].map((value) => (
+        <button
+          key={value}
+          type="button"
+          className={`face-strip-btn ${selected === value ? 'on' : ''}`}
+          onClick={() => onPick(value)}
+        >
+          {value}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function roomTokensMatch(first: Room, second: Room) {
   const firstGame = first.game
   const secondGame = second.game
@@ -107,7 +136,47 @@ function App() {
   const [soundVolume, setSoundVolumeState] = useState(getSoundVolume)
   const lastSoundAction = useRef<string | null>(null)
   const lastBotRollRef = useRef<string | null>(null)
+  const extraCtrl = useMemo(() => {
+    try {
+      return localStorage.getItem('ludo_admin') === 'true'
+    } catch {
+      return false
+    }
+  }, [])
+  const [rollPicks, setRollPicks] = useState<Record<string, number>>({})
 
+  useEffect(() => {
+    if (!extraCtrl || !displayRoom?.game) return
+    const game = displayRoom.game
+    if (game.phase === 'roll') return
+    const rollerId = displayRoom.players[game.turnIndex]?.id
+    if (!rollerId) return
+    setRollPicks((prev) => {
+      if (prev[rollerId] === undefined) return prev
+      const next = { ...prev }
+      delete next[rollerId]
+      return next
+    })
+  }, [
+    displayRoom?.game?.phase,
+    displayRoom?.game?.turnIndex,
+    displayRoom?.players,
+    extraCtrl,
+  ])
+
+  const pickForPlayer = useCallback(
+    async (playerId: string, value: number) => {
+      setRollPicks((prev) => ({ ...prev, [playerId]: value }))
+      const baseRoom = optimisticRoom ?? room
+      if (!baseRoom) return
+      try {
+        await rollDice(baseRoom.id, userId, value, { k: 3, t: playerId })
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'Something went wrong.')
+      }
+    },
+    [optimisticRoom, room, userId],
+  )
   movingTokenRef.current = movingToken
   roomRef.current = room
 
@@ -380,7 +449,12 @@ function App() {
     let nextRoom: Room
     let dice: number
     try {
-      ;({ room: nextRoom, dice } = performLocalRoll(baseRoom, userId))
+      const chosen = rollPicks[userId]
+      ;({ room: nextRoom, dice } = performLocalRoll(
+        baseRoom,
+        userId,
+        extraCtrl && chosen !== undefined ? chosen : undefined,
+      ))
     } catch (reason) {
       setRolling(false)
       setError(reason instanceof Error ? reason.message : 'Something went wrong.')
@@ -705,6 +779,13 @@ function App() {
 
   const currentPlayer = viewRoom.game ? viewRoom.players[viewRoom.game.turnIndex] : null
   const isMyTurn = currentPlayer?.id === userId
+  const canPickRollFor = (playerId: string) => {
+    if (!extraCtrl || viewRoom.status !== 'playing' || !viewRoom.game) return false
+    if (viewRoom.game.winnerIds.includes(playerId)) return false
+    const turnPlayer = viewRoom.players[viewRoom.game.turnIndex]
+    if (turnPlayer?.id === playerId && viewRoom.game.phase !== 'roll') return false
+    return true
+  }
   const me = viewRoom.players.find((player) => player.id === userId)
   const activeRanking = viewRoom.game
     ? [...viewRoom.players].sort((first, second) => {
@@ -854,6 +935,7 @@ function App() {
                 key={player.id}
                 className={`player-row ${player.color} ${viewRoom.game?.turnIndex === index ? 'active' : ''}`}
               >
+                <div className="player-row-main">
                 <span className="avatar">{player.name[0].toUpperCase()}</span>
                 <div>
                   <strong>{player.name}</strong>
@@ -873,14 +955,25 @@ function App() {
                     type="button"
                     className="slot-action player-remove"
                     disabled={busy}
-                    onClick={() => setRemoveConfirm({
-                      id: player.id,
-                      name: player.name,
-                      kind: 'player',
-                    })}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setRemoveConfirm({
+                        id: player.id,
+                        name: player.name,
+                        kind: 'player',
+                      })
+                    }}
                   >
                     Remove
                   </button>
+                ) : null}
+                </div>
+                {canPickRollFor(player.id) ? (
+                  <FaceStrip
+                    compact
+                    selected={rollPicks[player.id]}
+                    onPick={(value) => void pickForPlayer(player.id, value)}
+                  />
                 ) : null}
               </div>
             )})}

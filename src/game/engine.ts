@@ -258,7 +258,11 @@ export function applyRollMisses(
     finalRoll === null || dice === finalRoll ? 0 : finishMisses + 1
 }
 
-export function performLocalRoll(room: Room, userId: string) {
+export function performLocalRoll(
+  room: Room,
+  userId: string,
+  chosenDice?: number,
+) {
   const next = structuredClone(room)
   const game = next.game
   if (!game || game.phase !== 'roll') {
@@ -268,7 +272,10 @@ export function performLocalRoll(room: Room, userId: string) {
     throw new Error('It is not your turn.')
   }
   const player = next.players[game.turnIndex]
-  const dice = resolveDiceValue(game, player.id, next)
+  const dice =
+    chosenDice !== undefined
+      ? chosenDice
+      : resolveDiceValue(game, player.id, next)
   applyRollMisses(game, player.id, next, dice)
   applyRoll(next, dice)
   next.updatedAt = Date.now()
