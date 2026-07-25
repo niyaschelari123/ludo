@@ -4,39 +4,68 @@ import { applyPowerUp, generatePowerTiles, powerUpAtCell } from './powerUps'
 // A classic four-player board has 52 outer cells: 13 per player.
 // The same sector length extends cleanly to the 5–8 player polygon boards.
 export const CELLS_PER_PLAYER = 13
-// Five colored home-lane cells plus the center finish position.
+// Inner home-lane cells before the center finish position.
 export const HOME_LENGTH = 5
+// Colored outer-track start cell counts as the first home-entry step.
+export const OUTER_HOME_ENTRY_TILES = 1
 export const TOKENS_PER_PLAYER = 4
+export const TURN_ROLL_TIMEOUT_MS = 20_000
+export const MAX_TURN_MISSES = 5
 
 /** Five-player pentagon boards use one extra home cell before the center. */
-export const homeLength = (players: Player[]) =>
-  players.length === 5 ? 6 : HOME_LENGTH
+export const homeLengthForBoard = (boardPlayerCount: number) =>
+  boardPlayerCount === 5 ? 6 : HOME_LENGTH
 
-export const trackLength = (players: Player[]) =>
-  players.length * CELLS_PER_PLAYER
+export function allSeatPlayers(room: Room): Player[] {
+  return [...room.players, ...(room.departedPlayers ?? [])].sort(
+    (first, second) => first.seat - second.seat,
+  )
+}
 
-// A token starts on one of the shared cells and turns into its home lane
-// before reaching the perimeter cell immediately preceding that start.
-export const homeEntryProgress = (players: Player[]) =>
-  trackLength(players) - 1
+export function getBoardPlayerCount(room: Room): number {
+  if (room.game?.boardPlayerCount) return room.game.boardPlayerCount
+  const seats = allSeatPlayers(room)
+  return seats.length > 0
+    ? Math.max(...seats.map((player) => player.seat)) + 1
+    : room.players.length
+}
 
-export const finishedProgress = (players: Player[]) =>
-  homeEntryProgress(players) + homeLength(players)
+export const trackLength = (room: Room) =>
+  getBoardPlayerCount(room) * CELLS_PER_PLAYER
 
-export const safeCells = (players: Player[]) =>
-  new Set(
-    players.flatMap((player) => {
+export const homeEntryProgress = (room: Room) => trackLength(room) - 1
+
+export const finishedProgress = (room: Room) =>
+  homeEntryProgress(room) +
+  OUTER_HOME_ENTRY_TILES +
+  homeLengthForBoard(getBoardPlayerCount(room))
+
+export const safeCells = (room: Room) => {
+  const length = trackLength(room)
+  return new Set(
+    allSeatPlayers(room).flatMap((player) => {
       const start = player.seat * CELLS_PER_PLAYER
-      return [start, (start + 8) % trackLength(players)]
+      return [start, (start + 8) % length]
     }),
   )
+}
+
+function beginRollPhase(game: GameState) {
+  game.phase = 'roll'
+  game.dice = null
+  game.turnDeadline = Date.now() + TURN_ROLL_TIMEOUT_MS
+}
 
 export function createGame(players: Player[], gameMode: GameMode = 'classic'): GameState {
+  const boardPlayerCount = players.length
   return {
     turnIndex: 0,
     phase: 'roll',
     dice: null,
     consecutiveSixes: 0,
+    boardPlayerCount,
+    turnDeadline: Date.now() + TURN_ROLL_TIMEOUT_MS,
+    turnMisses: Object.fromEntries(players.map((player) => [player.id, 0])),
     entryMisses: Object.fromEntries(players.map((player) => [player.id, 0])),
     finishMisses: Object.fromEntries(players.map((player) => [player.id, 0])),
     protectionForfeited: Object.fromEntries(
@@ -52,25 +81,28 @@ export function createGame(players: Player[], gameMode: GameMode = 'classic'): G
     ),
     lastAction: `${players[0].name} starts`,
     activeMove: null,
-    powerTiles: gameMode === 'power' ? generatePowerTiles(players.length) : {},
+    powerTiles:
+      gameMode === 'power' ? generatePowerTiles(boardPlayerCount) : {},
     shieldBuff: {},
     pendingExtraTurn: null,
     pendingPower: null,
   }
 }
 
-export function globalCell(token: Token, players: Player[]) {
-  const length = trackLength(players)
-  if (token.progress < 0 || token.progress >= homeEntryProgress(players)) {
+export function globalCell(token: Token, room: Room) {
+  const length = trackLength(room)
+  if (token.progress < 0 || token.progress >= homeEntryProgress(room)) {
     return null
   }
-  const player = players.find((candidate) => candidate.id === token.playerId)
+  const player = allSeatPlayers(room).find(
+    (candidate) => candidate.id === token.playerId,
+  )
   if (!player) return null
   return (player.seat * CELLS_PER_PLAYER + token.progress) % length
 }
 
-export function canMove(token: Token, dice: number, players: Player[]) {
-  const finish = finishedProgress(players)
+export function canMove(token: Token, dice: number, room: Room) {
+  const finish = finishedProgress(room)
   if (token.progress >= finish) return false
   if (token.progress === -1) return dice === 6
   return token.progress + dice <= finish
@@ -79,9 +111,9 @@ export function canMove(token: Token, dice: number, players: Player[]) {
 export function isSoleTokenProtected(
   game: GameState,
   playerId: string,
-  players: Player[],
+  room: Room,
 ) {
-  const finish = finishedProgress(players)
+  const finish = finishedProgress(room)
   const playerTokens = game.tokens.filter(
     (token) => token.playerId === playerId,
   )
@@ -98,12 +130,72 @@ export function isSoleTokenProtected(
   )
 }
 
+export function resolveLandingCapture(
+  room: Room,
+  playerId: string,
+  token: Token,
+): { captured: boolean; sharedProtectedCell: boolean } {
+  const game = room.game
+  if (!game) return { captured: false, sharedProtectedCell: false }
+
+  game.shieldBuff ??= {}
+  let captured = false
+  let sharedProtectedCell = false
+  const landingCell = globalCell(token, room)
+
+  if (landingCell === null || safeCells(room).has(landingCell)) {
+    return { captured, sharedProtectedCell }
+  }
+
+  for (const opponent of game.tokens) {
+    if (
+      opponent.playerId !== playerId &&
+      globalCell(opponent, room) === landingCell
+    ) {
+      if (isSoleTokenProtected(game, opponent.playerId, room)) {
+        sharedProtectedCell = true
+      } else if (game.shieldBuff[opponent.playerId]) {
+        game.shieldBuff[opponent.playerId] = false
+        sharedProtectedCell = true
+      } else {
+        opponent.progress = -1
+        captured = true
+      }
+    }
+  }
+
+  return { captured, sharedProtectedCell }
+}
+
+export function resolveTntBackslideElimination(
+  room: Room,
+  playerId: string,
+  token: Token,
+): boolean {
+  const game = room.game
+  if (!game) return false
+
+  const cell = globalCell(token, room)
+  if (cell === null || safeCells(room).has(cell)) return false
+  if (powerUpAtCell(game, cell) !== 'tnt') return false
+
+  game.shieldBuff ??= {}
+  if (game.shieldBuff[playerId]) {
+    game.shieldBuff[playerId] = false
+    return false
+  }
+  if (isSoleTokenProtected(game, playerId, room)) return false
+
+  token.progress = -1
+  return true
+}
+
 export function hasActiveToken(
   game: GameState,
   playerId: string,
-  players: Player[],
+  room: Room,
 ) {
-  const finish = finishedProgress(players)
+  const finish = finishedProgress(room)
   return game.tokens.some(
     (token) =>
       token.playerId === playerId &&
@@ -115,9 +207,9 @@ export function hasActiveToken(
 export function requiredFinalRoll(
   game: GameState,
   playerId: string,
-  players: Player[],
+  room: Room,
 ) {
-  const finish = finishedProgress(players)
+  const finish = finishedProgress(room)
   const unfinishedTokens = game.tokens.filter(
     (token) => token.playerId === playerId && token.progress < finish,
   )
@@ -133,14 +225,14 @@ function randomDiceValue() {
 export function resolveDiceValue(
   game: GameState,
   playerId: string,
-  players: Player[],
+  room: Room,
 ) {
   game.entryMisses ??= {}
   game.finishMisses ??= {}
   const entryMisses = game.entryMisses[playerId] ?? 0
   const finishMisses = game.finishMisses[playerId] ?? 0
-  const hasActive = hasActiveToken(game, playerId, players)
-  const finalRoll = requiredFinalRoll(game, playerId, players)
+  const hasActive = hasActiveToken(game, playerId, room)
+  const finalRoll = requiredFinalRoll(game, playerId, room)
   const randomDice = randomDiceValue()
   return !hasActive && entryMisses >= 4
     ? 6
@@ -152,15 +244,15 @@ export function resolveDiceValue(
 export function applyRollMisses(
   game: GameState,
   playerId: string,
-  players: Player[],
+  room: Room,
   dice: number,
 ) {
   game.entryMisses ??= {}
   game.finishMisses ??= {}
   const entryMisses = game.entryMisses[playerId] ?? 0
   const finishMisses = game.finishMisses[playerId] ?? 0
-  const hasActive = hasActiveToken(game, playerId, players)
-  const finalRoll = requiredFinalRoll(game, playerId, players)
+  const hasActive = hasActiveToken(game, playerId, room)
+  const finalRoll = requiredFinalRoll(game, playerId, room)
   game.entryMisses[playerId] = hasActive || dice === 6 ? 0 : entryMisses + 1
   game.finishMisses[playerId] =
     finalRoll === null || dice === finalRoll ? 0 : finishMisses + 1
@@ -176,8 +268,8 @@ export function performLocalRoll(room: Room, userId: string) {
     throw new Error('It is not your turn.')
   }
   const player = next.players[game.turnIndex]
-  const dice = resolveDiceValue(game, player.id, next.players)
-  applyRollMisses(game, player.id, next.players, dice)
+  const dice = resolveDiceValue(game, player.id, next)
+  applyRollMisses(game, player.id, next, dice)
   applyRoll(next, dice)
   next.updatedAt = Date.now()
   return { room: next, dice }
@@ -200,7 +292,7 @@ export function performLocalMove(room: Room, userId: string, tokenId: number) {
 export function validateDiceRoll(
   game: GameState,
   playerId: string,
-  players: Player[],
+  room: Room,
   dice: number,
 ) {
   if (!Number.isInteger(dice) || dice < 1 || dice > 6) {
@@ -210,8 +302,8 @@ export function validateDiceRoll(
   game.finishMisses ??= {}
   const entryMisses = game.entryMisses[playerId] ?? 0
   const finishMisses = game.finishMisses[playerId] ?? 0
-  const hasActive = hasActiveToken(game, playerId, players)
-  const finalRoll = requiredFinalRoll(game, playerId, players)
+  const hasActive = hasActiveToken(game, playerId, room)
+  const finalRoll = requiredFinalRoll(game, playerId, room)
   if (!hasActive && entryMisses >= 4 && dice !== 6) {
     throw new Error('Invalid dice roll.')
   }
@@ -226,7 +318,7 @@ export function movableTokens(room: Room) {
   return room.game.tokens.filter(
     (token) =>
       token.playerId === player?.id &&
-      canMove(token, room.game!.dice!, room.players),
+      canMove(token, room.game!.dice!, room),
   )
 }
 
@@ -240,9 +332,32 @@ function nextActiveTurn(room: Room, game: GameState) {
 
 function passTurn(room: Room, game: GameState) {
   game.turnIndex = nextActiveTurn(room, game)
-  game.phase = 'roll'
-  game.dice = null
   game.consecutiveSixes = 0
+  beginRollPhase(game)
+}
+
+export function applyRollTimeout(room: Room): {
+  shouldRemove: boolean
+  playerId: string
+} {
+  const game = room.game
+  if (!game || game.phase !== 'roll') {
+    throw new Error('Dice cannot time out now.')
+  }
+  const player = room.players[game.turnIndex]
+  if (!player) throw new Error('Current player is missing.')
+
+  game.turnMisses ??= {}
+  const misses = (game.turnMisses[player.id] ?? 0) + 1
+  game.turnMisses[player.id] = misses
+
+  if (misses >= MAX_TURN_MISSES) {
+    return { shouldRemove: true, playerId: player.id }
+  }
+
+  game.lastAction = `${player.name} ran out of time (${misses}/${MAX_TURN_MISSES})`
+  passTurn(room, game)
+  return { shouldRemove: false, playerId: player.id }
 }
 
 export function applyRoll(room: Room, value: number) {
@@ -262,6 +377,7 @@ export function applyRoll(room: Room, value: number) {
   }
 
   game.phase = 'move'
+  game.turnDeadline = null
   if (movableTokens(room).length === 0) passTurn(room, game)
 }
 
@@ -324,10 +440,10 @@ function completeTurnAfterMove(
   if (!preserveActiveMove) {
     game.activeMove = null
   }
-  game.phase = 'roll'
-  game.dice = null
   if (!earnsExtraTurn || allHome) {
     passTurn(room, game)
+  } else {
+    beginRollPhase(game)
   }
 }
 
@@ -348,7 +464,7 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
   if (!token) throw new Error('That move is not valid.')
 
   const dice = game.dice ?? 1
-  const finish = finishedProgress(room.players)
+  const finish = finishedProgress(room)
   const progressBeforePower = token.progress
   const powerMessage = applyPowerUp(
     room,
@@ -360,6 +476,19 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
 
   game.pendingPower = null
 
+  let captured = pending.captured
+  let sharedProtectedCell = pending.sharedProtectedCell ?? false
+  let selfEliminated = false
+  if (token.progress !== progressBeforePower) {
+    const powerLandingCapture = resolveLandingCapture(room, player.id, token)
+    captured = captured || powerLandingCapture.captured
+    sharedProtectedCell =
+      sharedProtectedCell || powerLandingCapture.sharedProtectedCell
+    if (pending.type === 'back2' || pending.type === 'back3') {
+      selfEliminated = resolveTntBackslideElimination(room, player.id, token)
+    }
+  }
+
   const reachedHomeAfterPower = token.progress === finish
   const allHome = game.tokens
     .filter((candidate) => candidate.playerId === player.id)
@@ -368,6 +497,10 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
   if (allHome && !game.winnerIds.includes(player.id)) {
     game.winnerIds.push(player.id)
     game.lastAction = `${player.name} finished in place #${game.winnerIds.length}`
+  } else if (selfEliminated) {
+    game.lastAction = `${player.name} hit TNT after sliding back`
+  } else if (captured) {
+    game.lastAction = `${player.name} captured a token`
   } else {
     game.lastAction = powerMessage
   }
@@ -400,7 +533,7 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
     player,
     dice,
     {
-      captured: pending.captured,
+      captured,
       reachedHome: reachedHomeAfterPower,
       allHome,
     },
@@ -433,7 +566,7 @@ export function applyMove(room: Room, tokenId: number) {
   const token = game.tokens.find(
     (candidate) => candidate.playerId === player.id && candidate.id === tokenId,
   )
-  if (!token || !canMove(token, dice, room.players)) {
+  if (!token || !canMove(token, dice, room)) {
     throw new Error('That move is not valid.')
   }
 
@@ -441,7 +574,7 @@ export function applyMove(room: Room, tokenId: number) {
   const playerTokensBeforeMove = game.tokens.filter(
     (candidate) => candidate.playerId === player.id,
   )
-  const finish = finishedProgress(room.players)
+  const finish = finishedProgress(room)
   const activeTokensBeforeMove = playerTokensBeforeMove.filter(
     (candidate) =>
       candidate.progress >= 0 && candidate.progress < finish,
@@ -462,28 +595,11 @@ export function applyMove(room: Room, tokenId: number) {
   }
 
   token.progress = token.progress === -1 ? 0 : token.progress + dice
-  let captured = false
-  let sharedProtectedCell = false
-  const landingCell = globalCell(token, room.players)
-
-  if (landingCell !== null && !safeCells(room.players).has(landingCell)) {
-    for (const opponent of game.tokens) {
-      if (
-        opponent.playerId !== player.id &&
-        globalCell(opponent, room.players) === landingCell
-      ) {
-        if (isSoleTokenProtected(game, opponent.playerId, room.players)) {
-          sharedProtectedCell = true
-        } else if (game.shieldBuff?.[opponent.playerId]) {
-          game.shieldBuff[opponent.playerId] = false
-          sharedProtectedCell = true
-        } else {
-          opponent.progress = -1
-          captured = true
-        }
-      }
-    }
-  }
+  const { captured, sharedProtectedCell } = resolveLandingCapture(
+    room,
+    player.id,
+    token,
+  )
 
   const reachedHome = token.progress === finish
   const allHome = game.tokens
@@ -497,11 +613,13 @@ export function applyMove(room: Room, tokenId: number) {
     forfeitedProtection,
   }
 
+  const landingCell = globalCell(token, room)
+
   if (
     (room.gameMode ?? 'classic') === 'power' &&
     landingCell !== null &&
     token.progress > 0 &&
-    token.progress < homeEntryProgress(room.players)
+    token.progress < homeEntryProgress(room)
   ) {
     const powerType = powerUpAtCell(game, landingCell)
     if (powerType) {
@@ -516,6 +634,7 @@ export function applyMove(room: Room, tokenId: number) {
       }
       game.phase = 'power'
       game.activeMove = null
+      game.turnDeadline = null
       game.lastAction = formatMoveAction(player, moveContext)
       return
     }

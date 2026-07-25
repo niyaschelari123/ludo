@@ -53,18 +53,6 @@ export function watchRoom(
     onRoom(room)
   }
 
-  const handleMoveStart = (activeMove: ActiveMove) => {
-    if (!latestRoom?.game) return
-    latestRoom = {
-      ...latestRoom,
-      game: {
-        ...latestRoom.game,
-        activeMove,
-      },
-    }
-    onRoom(latestRoom)
-  }
-
   const handleDisconnect = (payload: { userId: string; room: Room }) => {
     if (payload.room.id === roomId) onRoom(payload.room)
   }
@@ -75,7 +63,6 @@ export function watchRoom(
   }
 
   socket.on('stateUpdate', handleState)
-  socket.on('moveStart', handleMoveStart)
   socket.on('playerDisconnect', handleDisconnect)
   socket.on('connect_error', handleConnectError)
   socket.on('error', handleSocketError)
@@ -93,11 +80,25 @@ export function watchRoom(
 
   return () => {
     socket.off('stateUpdate', handleState)
-    socket.off('moveStart', handleMoveStart)
     socket.off('playerDisconnect', handleDisconnect)
     socket.off('connect_error', handleConnectError)
     socket.off('error', handleSocketError)
   }
+}
+
+export async function setSlotBot(
+  roomId: string,
+  userId: string,
+  seat: number,
+  add: boolean,
+) {
+  const { room } = await emitAck<{ room: Room }>('setSlotBot', {
+    roomId,
+    userId,
+    seat,
+    add,
+  })
+  return room
 }
 
 export async function startRoom(roomId: string, userId: string) {
@@ -158,6 +159,23 @@ export async function moveTokenWithRetry(
   }
 }
 
-export async function leaveRoom(roomId: string, userId: string) {
-  await emitAck('leaveRoom', { roomId, userId })
+export async function removePlayer(
+  roomId: string,
+  userId: string,
+  targetUserId: string,
+) {
+  const { room } = await emitAck<{ room: Room }>('removePlayer', {
+    roomId,
+    userId,
+    targetUserId,
+  })
+  return room
+}
+
+export async function leaveRoom(
+  roomId: string,
+  userId: string,
+  newHostId?: string,
+) {
+  await emitAck('leaveRoom', { roomId, userId, newHostId })
 }

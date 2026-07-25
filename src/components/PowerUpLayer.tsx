@@ -1,7 +1,6 @@
-import { CELLS_PER_PLAYER } from '../game/engine'
+import { CELLS_PER_PLAYER, getBoardPlayerCount } from '../game/engine'
 import { POWER_UP_ICONS, powerTilesList } from '../game/powerUps'
 import type { PowerUpType, Room } from '../game/types'
-import { fivePlayerTrackPoint, isFivePlayerBoard } from './fivePlayerLayout'
 
 const SIZE = 600
 const CENTER = SIZE / 2
@@ -35,11 +34,7 @@ const FOUR_TRACK: Point[] = [
 ].map(([row, col]) => gridPoint(row, col))
 
 function boardSeatCount(room: Room) {
-  const seats = [
-    ...room.players,
-    ...(room.game ? (room.departedPlayers ?? []) : []),
-  ].map((player) => player.seat)
-  return seats.length === 0 ? room.players.length : Math.max(...seats) + 1
+  return getBoardPlayerCount(room)
 }
 
 function boardStartAngle(count: number) {
@@ -55,7 +50,8 @@ function squarePoint(cell: number) {
 }
 
 function radialPoint(cell: number, count: number) {
-  return point(194, radialCellAngle(cell, count))
+  const trackRadius = count === 6 ? 198 : count === 5 ? 196 : 194
+  return point(trackRadius, radialCellAngle(cell, count))
 }
 
 function PowerMarker({
@@ -68,7 +64,13 @@ function PowerMarker({
   type: PowerUpType
 }) {
   const label = POWER_UP_ICONS[type]
-  const isText = type === 'tnt' || type === 'x2' || type === 'x3'
+  const isText =
+    type === 'tnt' ||
+    type === 'x2' ||
+    type === 'x3' ||
+    type === 'back2' ||
+    type === 'back3' ||
+    type === 'yard'
 
   return (
     <g className={`power-marker power-${type}`}>
@@ -90,7 +92,6 @@ export function PowerUpLayer({ room }: { room: Room }) {
 
   const count = boardSeatCount(room)
   const isSquare = room.players.length === 4 && count === 4
-  const isFive = isFivePlayerBoard(room)
   const tiles = powerTilesList(room.game.powerTiles)
 
   return (
@@ -98,9 +99,7 @@ export function PowerUpLayer({ room }: { room: Room }) {
       {tiles.map(({ cell, type }) => {
         const position = isSquare
           ? squarePoint(cell)
-          : isFive
-            ? fivePlayerTrackPoint(cell)
-            : radialPoint(cell, count)
+          : radialPoint(cell, count)
         if (!position) return null
         return <PowerMarker key={`${cell}-${type}`} x={position.x} y={position.y} type={type} />
       })}

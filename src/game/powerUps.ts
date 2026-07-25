@@ -7,6 +7,19 @@ import {
 } from './engine'
 import type { GameState, Player, PowerTile, PowerUpType, Room, Token } from './types'
 
+export const ACTIVE_POWER_TYPES: PowerUpType[] = [
+  'rocket',
+  'spring',
+  'x2',
+  'shield',
+  'flame',
+  'back2',
+  'back3',
+  'yard',
+  'tnt',
+  'ice',
+]
+
 export const POWER_UP_ICONS: Record<PowerUpType, string> = {
   tnt: 'TNT',
   rocket: '🚀',
@@ -18,6 +31,9 @@ export const POWER_UP_ICONS: Record<PowerUpType, string> = {
   star: '★',
   ice: '❄',
   portal: '◎',
+  back2: '←2',
+  back3: '←3',
+  yard: 'YRD',
 }
 
 export const POWER_UP_INFO: {
@@ -25,16 +41,16 @@ export const POWER_UP_INFO: {
   label: string
   description: string
 }[] = [
-  { type: 'tnt', label: 'TNT', description: 'Blasts rival tokens on the same cell back to yard' },
   { type: 'rocket', label: 'Rocket', description: 'Surge 3 extra steps forward' },
   { type: 'spring', label: 'Spring', description: 'Bounce 2 extra steps ahead' },
+  { type: 'x2', label: 'x2', description: 'Repeats your dice roll as bonus steps' },
   { type: 'shield', label: 'Shield', description: 'Blocks the next capture attempt' },
   { type: 'flame', label: 'Flame', description: 'Grants a bonus roll after this turn' },
-  { type: 'x2', label: 'x2', description: 'Repeats your dice roll as bonus steps' },
-  { type: 'x3', label: 'x3', description: 'Adds double your dice roll as bonus steps' },
-  { type: 'star', label: 'Star', description: 'Lucky tile — triggers a special boost' },
+  { type: 'back2', label: 'Back 2', description: 'Slides your token 2 steps backward' },
+  { type: 'back3', label: 'Back 3', description: 'Slides your token 3 steps backward' },
+  { type: 'yard', label: 'Yard', description: 'Sends your token back to the yard' },
+  { type: 'tnt', label: 'TNT', description: 'Blasts rival tokens on the same cell back to yard' },
   { type: 'ice', label: 'Ice', description: 'Pushes rivals on this cell back 3 steps' },
-  { type: 'portal', label: 'Portal', description: 'Warps you halfway around the track' },
 ]
 
 export function powerUpLabel(type: PowerUpType) {
@@ -45,33 +61,50 @@ export function powerUpDescription(type: PowerUpType) {
   return POWER_UP_INFO.find((entry) => entry.type === type)?.description ?? ''
 }
 
-const POWER_CYCLE: PowerUpType[] = [
+const SLOT_OFFSETS = [4, 10]
+const YARD_OFFSET = 7
+const TNT_OFFSET = 3
+const RARE_POWER_COUNT = 2
+
+const COMMON_CYCLE: PowerUpType[] = [
   'rocket',
-  'x2',
+  'back2',
   'spring',
-  'tnt',
+  'x2',
+  'back3',
   'shield',
-  'flame',
-  'x3',
-  'star',
   'ice',
-  'portal',
+  'flame',
 ]
 
-const SLOT_OFFSETS = [2, 4, 6, 9, 11]
+function spacedSeats(playerCount: number, count: number, startSeat: number): number[] {
+  const step = Math.max(1, Math.floor(playerCount / count))
+  return Array.from({ length: count }, (_, index) => (startSeat + index * step) % playerCount)
+}
 
 export function generatePowerTiles(playerCount: number): Record<number, PowerUpType> {
   const length = playerCount * CELLS_PER_PLAYER
   const tiles: Record<number, PowerUpType> = {}
-  let typeIndex = 0
 
   for (let seat = 0; seat < playerCount; seat += 1) {
-    for (const offset of SLOT_OFFSETS) {
-      const cell = (seat * CELLS_PER_PLAYER + offset) % length
-      if (tiles[cell]) continue
-      tiles[cell] = POWER_CYCLE[typeIndex % POWER_CYCLE.length]
-      typeIndex += 1
+    for (let slot = 0; slot < SLOT_OFFSETS.length; slot += 1) {
+      const cell = (seat * CELLS_PER_PLAYER + SLOT_OFFSETS[slot]) % length
+      tiles[cell] = COMMON_CYCLE[(seat * SLOT_OFFSETS.length + slot) % COMMON_CYCLE.length]
     }
+  }
+
+  const yardSeats = spacedSeats(playerCount, RARE_POWER_COUNT, 0)
+  const tntSeats = spacedSeats(
+    playerCount,
+    RARE_POWER_COUNT,
+    Math.max(1, Math.floor(playerCount / 4)),
+  )
+
+  for (const seat of yardSeats) {
+    tiles[(seat * CELLS_PER_PLAYER + YARD_OFFSET) % length] = 'yard'
+  }
+  for (const seat of tntSeats) {
+    tiles[(seat * CELLS_PER_PLAYER + TNT_OFFSET) % length] = 'tnt'
   }
 
   return tiles
@@ -95,9 +128,9 @@ export function powerUpAtCell(
   return game.powerTiles[cell] ?? null
 }
 
-function advanceToken(token: Token, steps: number, players: Player[]) {
-  const finish = finishedProgress(players)
-  const homeEntry = homeEntryProgress(players)
+function advanceToken(token: Token, steps: number, room: Room) {
+  const finish = finishedProgress(room)
+  const homeEntry = homeEntryProgress(room)
   if (token.progress < 0) return
   const maxOnTrack = homeEntry
   token.progress = Math.min(token.progress + steps, finish)
@@ -106,11 +139,21 @@ function advanceToken(token: Token, steps: number, players: Player[]) {
   }
 }
 
-function opponentsOnCell(game: GameState, playerId: string, cell: number, players: Player[]) {
+function retreatToken(token: Token, steps: number) {
+  if (token.progress < 0) return
+  token.progress = Math.max(-1, token.progress - steps)
+}
+
+function opponentsOnCell(
+  game: GameState,
+  playerId: string,
+  cell: number,
+  room: Room,
+) {
   return game.tokens.filter(
     (candidate) =>
       candidate.playerId !== playerId &&
-      globalCell(candidate, players) === cell,
+      globalCell(candidate, room) === cell,
   )
 }
 
@@ -127,7 +170,7 @@ export function applyPowerUp(
   switch (type) {
     case 'tnt': {
       let blasted = 0
-      for (const opponent of opponentsOnCell(game, player.id, landingCell, room.players)) {
+      for (const opponent of opponentsOnCell(game, player.id, landingCell, room)) {
         if (game.shieldBuff[opponent.playerId]) {
           game.shieldBuff[opponent.playerId] = false
           continue
@@ -140,10 +183,10 @@ export function applyPowerUp(
         : `${player.name} triggered TNT`
     }
     case 'rocket':
-      advanceToken(token, 3, room.players)
+      advanceToken(token, 3, room)
       return `${player.name} hit a rocket and surged ahead`
     case 'spring':
-      advanceToken(token, 2, room.players)
+      advanceToken(token, 2, room)
       return `${player.name} bounced on a spring`
     case 'shield':
       game.shieldBuff[player.id] = true
@@ -152,18 +195,18 @@ export function applyPowerUp(
       game.pendingExtraTurn = player.id
       return `${player.name} ignited a flame bonus turn`
     case 'x2':
-      advanceToken(token, game.dice ?? 0, room.players)
+      advanceToken(token, game.dice ?? 0, room)
       return `${player.name} doubled the roll with x2`
     case 'x3': {
       const bonus = (game.dice ?? 0) * 2
-      advanceToken(token, bonus, room.players)
+      advanceToken(token, bonus, room)
       return `${player.name} tripled momentum with x3`
     }
     case 'star':
       return `${player.name} landed on a power star`
     case 'ice': {
       let frozen = 0
-      for (const opponent of opponentsOnCell(game, player.id, landingCell, room.players)) {
+      for (const opponent of opponentsOnCell(game, player.id, landingCell, room)) {
         if (opponent.progress > 0) {
           opponent.progress = Math.max(0, opponent.progress - 3)
           frozen += 1
@@ -174,18 +217,27 @@ export function applyPowerUp(
         : `${player.name} slid over ice`
     }
     case 'portal': {
-      const length = trackLength(room.players)
+      const length = trackLength(room)
       const jump = Math.floor(length / 2)
       const targetCell = (landingCell + jump) % length
       const seat = player.seat
       const startCell = seat * CELLS_PER_PLAYER
       let targetProgress = (targetCell - startCell + length) % length
-      if (targetProgress >= homeEntryProgress(room.players)) {
-        targetProgress = homeEntryProgress(room.players) - 1
+      if (targetProgress >= homeEntryProgress(room)) {
+        targetProgress = homeEntryProgress(room) - 1
       }
       token.progress = Math.max(token.progress, targetProgress)
       return `${player.name} warped through a portal`
     }
+    case 'back2':
+      retreatToken(token, 2)
+      return `${player.name} slid back 2 steps`
+    case 'back3':
+      retreatToken(token, 3)
+      return `${player.name} slid back 3 steps`
+    case 'yard':
+      token.progress = -1
+      return `${player.name} was sent back to the yard`
     default:
       return `${player.name} triggered a power tile`
   }

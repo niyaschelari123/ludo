@@ -13,15 +13,21 @@ import { Server, type Socket } from 'socket.io'
 import {
   createRoom,
   getRoom,
+  handleRollTimeout,
   joinRoom,
   leaveRoom,
   markDisconnected,
   movePawn,
+  removePlayer,
   resolvePendingPower,
   rollDice,
+  setSlotBot,
   startRoom,
 } from './roomManager.js'
+import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.js'
+import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
 import type { ActiveMove, Room } from '../../src/game/types.js'
+import { tokenMoveDurationMs } from '../../src/game/types.js'
 
 const PORT = Number(process.env.PORT) || 3001
 const CORS_ORIGIN = process.env.CORS_ORIGIN?.split(',').map((value) => value.trim()) ?? [
@@ -51,10 +57,71 @@ const sessions = new Map<string, SocketSession>()
 
 function broadcastState(room: Room) {
   io.to(room.id).emit('stateUpdate', room)
+  if (room.status === 'playing' && room.game?.phase === 'roll') {
+    scheduleTurnTimer(room.id, handleTurnTimeout)
+  } else {
+    stopTurnTimer(room.id)
+  }
+  scheduleBotTurn(room.id, handleBotAction)
+}
+
+function handleTurnTimeout(roomId: string) {
+  try {
+    const room = handleRollTimeout(roomId)
+    if (!room) return
+    broadcastState(room)
+  } catch (error) {
+    console.error(`Turn timeout failed in room ${roomId}:`, error)
+  }
+}
+
+function handleBotAction(result: BotActionResult) {
+  if (result.kind === 'none') return
+
+  if (result.kind === 'move') {
+    const activeMove = result.previewRoom.game?.activeMove
+    if (activeMove) {
+      emitMoveStart(result.room.id, activeMove)
+      io.to(result.room.id).emit('stateUpdate', result.previewRoom)
+      const animMs = tokenMoveDurationMs(activeMove)
+      setTimeout(() => {
+        io.to(result.room.id).emit('stateUpdate', result.room)
+        scheduleBotTurn(result.room.id, handleBotAction, 'afterMove')
+        scheduleTurnTimer(result.room.id, handleTurnTimeout)
+      }, animMs)
+      return
+    }
+
+    io.to(result.room.id).emit('stateUpdate', result.room)
+    scheduleBotTurn(result.room.id, handleBotAction, 'afterMove')
+    return
+  }
+
+  io.to(result.room.id).emit('stateUpdate', result.room)
+  const pause = result.room.game?.phase === 'move' ? 'afterRoll' : 'default'
+  scheduleBotTurn(result.room.id, handleBotAction, pause)
 }
 
 function emitMoveStart(roomId: string, activeMove: ActiveMove) {
   io.to(roomId).emit('moveStart', activeMove)
+}
+
+function emitAnimatedMove(roomId: string, previewRoom: Room, finalRoom: Room) {
+  const activeMove = previewRoom.game?.activeMove
+  if (!activeMove) {
+    io.to(roomId).emit('stateUpdate', finalRoom)
+    scheduleBotTurn(roomId, handleBotAction, 'afterMove')
+    return
+  }
+
+  emitMoveStart(roomId, activeMove)
+  io.to(roomId).emit('stateUpdate', previewRoom)
+  const animMs = tokenMoveDurationMs(activeMove)
+  setTimeout(() => {
+    io.to(roomId).emit('stateUpdate', finalRoom)
+    scheduleBotTurn(roomId, handleBotAction, 'afterMove')
+    scheduleTurnTimer(roomId, handleTurnTimeout)
+  }, animMs)
 }
 
 function bindSession(socket: Socket, userId: string, roomId: string) {
@@ -120,6 +187,28 @@ io.on('connection', (socket) => {
     },
   )
 
+  // --- setSlotBot: host fills a seat with a bot or clears it ---
+  socket.on(
+    'setSlotBot',
+    (
+      payload: { roomId: string; userId: string; seat: number; add: boolean },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = setSlotBot(
+          payload.roomId,
+          payload.userId,
+          payload.seat,
+          payload.add,
+        )
+        callback?.({ ok: true, data: { room } })
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
   // --- startRoom: host begins the match ---
   socket.on(
     'startRoom',
@@ -175,12 +264,13 @@ io.on('connection', (socket) => {
         )
 
         if (previewRoom.game?.activeMove) {
-          emitMoveStart(payload.roomId, previewRoom.game.activeMove)
-          broadcastState(previewRoom)
+          emitAnimatedMove(payload.roomId, previewRoom, room)
+        } else {
+          io.to(payload.roomId).emit('stateUpdate', room)
+          scheduleBotTurn(payload.roomId, handleBotAction, 'afterMove')
         }
 
         callback?.({ ok: true, data: { room } })
-        broadcastState(room)
       } catch (error) {
         ackError(callback, error)
       }
@@ -203,12 +293,14 @@ io.on('connection', (socket) => {
         )
 
         if (previewRoom.game?.activeMove) {
-          emitMoveStart(payload.roomId, previewRoom.game.activeMove)
-          broadcastState(previewRoom)
+          emitAnimatedMove(payload.roomId, previewRoom, room)
+        } else {
+          io.to(payload.roomId).emit('stateUpdate', room)
+          scheduleBotTurn(payload.roomId, handleBotAction, 'afterMove')
+          scheduleTurnTimer(payload.roomId, handleTurnTimeout)
         }
 
         callback?.({ ok: true, data: { room } })
-        broadcastState(room)
       } catch (error) {
         ackError(callback, error)
       }
@@ -218,13 +310,38 @@ io.on('connection', (socket) => {
   // --- leaveRoom: remove player and rebalance turn order ---
   socket.on(
     'leaveRoom',
-    (payload: { roomId: string; userId: string }, callback?: Ack<{ room: Room | null }>) => {
+    (
+      payload: { roomId: string; userId: string; newHostId?: string },
+      callback?: Ack<{ room: Room | null }>,
+    ) => {
       try {
-        const room = leaveRoom(payload.roomId, payload.userId)
+        const room = leaveRoom(payload.roomId, payload.userId, payload.newHostId)
         sessions.delete(socket.id)
         socket.leave(payload.roomId)
+        stopBotTurn(payload.roomId)
+        stopTurnTimer(payload.roomId)
         callback?.({ ok: true, data: { room } })
         if (room) broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'removePlayer',
+    (
+      payload: { roomId: string; userId: string; targetUserId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = removePlayer(
+          payload.roomId,
+          payload.userId,
+          payload.targetUserId,
+        )
+        callback?.({ ok: true, data: { room } })
+        broadcastState(room)
       } catch (error) {
         ackError(callback, error)
       }

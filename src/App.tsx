@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
 import './App.css'
 import {
   getSoundVolume,
@@ -21,24 +21,52 @@ import {
   joinRoom,
   leaveRoom,
   moveTokenWithRetry,
+  removePlayer,
   resolvePendingPower,
   rollDice,
+  setSlotBot,
   startRoom,
   watchRoom,
 } from './game/roomService'
 import { getPlayerId } from './lib/playerId'
 import {
   activeMoveToMovingToken,
-  detectMovedToken,
+  MAX_TURN_MISSES,
   movableTokens,
   performLocalMove,
   performLocalResolvePower,
   performLocalRoll,
+  TURN_ROLL_TIMEOUT_MS,
 } from './game/engine'
 import type { GameMode, MovingToken, PowerUpType, Room } from './game/types'
-import { moveBaseSignature, movingTokenTarget, tokenMoveDurationMs } from './game/types'
+import {
+  moveBaseSignature,
+  movingTokenTarget,
+  resolveAnimationProgress,
+  tokenMoveDurationMs,
+} from './game/types'
 
 const POWER_TOAST_MS = 1400
+
+type RemoveConfirmTarget = {
+  id: string
+  name: string
+  kind: 'player' | 'bot'
+  seat?: number
+}
+
+function roomTokensMatch(first: Room, second: Room) {
+  const firstGame = first.game
+  const secondGame = second.game
+  if (!firstGame || !secondGame) return firstGame === secondGame
+  return firstGame.tokens.every((token) => {
+    const other = secondGame.tokens.find(
+      (candidate) =>
+        candidate.playerId === token.playerId && candidate.id === token.id,
+    )
+    return other?.progress === token.progress
+  })
+}
 
 function App() {
   const userId = getPlayerId()
@@ -56,6 +84,7 @@ function App() {
   const [error, setError] = useState('')
   const [rolling, setRolling] = useState(false)
   const [diceFace, setDiceFace] = useState(1)
+  const [displayDice, setDisplayDice] = useState<number | null>(null)
   const [movingToken, setMovingToken] = useState<MovingToken | null>(null)
   const [moveReadyToClear, setMoveReadyToClear] = useState(false)
   const [powerToast, setPowerToast] = useState<{
@@ -63,28 +92,30 @@ function App() {
     playerName: string
   } | null>(null)
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
+  const [hostLeaveOpen, setHostLeaveOpen] = useState(false)
+  const [newHostId, setNewHostId] = useState('')
+  const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmTarget | null>(null)
+  const [turnSecondsLeft, setTurnSecondsLeft] = useState<number | null>(null)
   const rollSyncRef = useRef<Promise<void> | null>(null)
   const moveInFlightRef = useRef(false)
   const powerResolveInFlightRef = useRef(false)
   const prevRoomRef = useRef<Room | null>(null)
   const remoteAnimSignatureRef = useRef<string | null>(null)
   const movingTokenRef = useRef<MovingToken | null>(null)
+  const roomRef = useRef<Room | null>(null)
   const [soundOn, setSoundOn] = useState(isSoundEnabled)
   const [soundVolume, setSoundVolumeState] = useState(getSoundVolume)
   const lastSoundAction = useRef<string | null>(null)
+  const lastBotRollRef = useRef<string | null>(null)
 
   movingTokenRef.current = movingToken
-
-  const handleMoveAnimationComplete = useCallback(() => {
-    if (moveInFlightRef.current) return
-    setMovingToken(null)
-  }, [])
+  roomRef.current = room
 
   const scheduleRemoteMove = useCallback((move: MovingToken) => {
     const signature = moveBaseSignature(move)
     if (remoteAnimSignatureRef.current === signature) return
     remoteAnimSignatureRef.current = signature
-    setMovingToken(move)
+    setMovingToken({ ...move, startedAt: Date.now() })
   }, [])
 
   const showPowerAndResolve = useCallback(async (roomId: string, baseRoom: Room) => {
@@ -102,16 +133,28 @@ function App() {
     const resolveStartedAt = Date.now()
     try {
       const resolvedRoom = performLocalResolvePower(baseRoom, userId)
-      setOptimisticRoom(resolvedRoom)
-
       const powerMove = resolvedRoom.game?.activeMove
+
       if (powerMove) {
         const animated = activeMoveToMovingToken(powerMove)
-        setMovingToken(animated)
+        const animRoom = structuredClone(resolvedRoom)
+        const animToken = animRoom.game!.tokens.find(
+          (candidate) =>
+            candidate.playerId === animated.playerId &&
+            candidate.id === animated.id,
+        )
+        if (animToken) {
+          animToken.progress = animated.fromProgress
+        }
+
+        setMovingToken({ ...animated, startedAt: Date.now() })
+        setOptimisticRoom(animRoom)
         await new Promise((resolve) =>
           window.setTimeout(resolve, tokenMoveDurationMs(animated)),
         )
-        setMovingToken(null)
+        setOptimisticRoom(resolvedRoom)
+      } else {
+        setOptimisticRoom(resolvedRoom)
       }
 
       await resolvePendingPower(roomId, userId, resolveStartedAt)
@@ -150,21 +193,59 @@ function App() {
       scheduleRemoteMove(activeMoveToMovingToken(active))
     }
 
-    const prev = prevRoomRef.current
     prevRoomRef.current = room
-    if (!prev?.game || moveInFlightRef.current || movingTokenRef.current) return
-
-    const moved = detectMovedToken(prev, room)
-    if (!moved || moved.playerId === userId) return
-    if (remoteAnimSignatureRef.current === moveBaseSignature(moved)) return
-
-    scheduleRemoteMove(moved)
   }, [room, userId, scheduleRemoteMove])
 
   useEffect(() => {
+    if (!movingToken || moveInFlightRef.current) return
+
+    const tryClearRemoteMove = () => {
+      const currentMove = movingTokenRef.current
+      const currentRoom = roomRef.current
+      if (!currentMove || !currentRoom?.game || moveInFlightRef.current) {
+        return false
+      }
+
+      const target = movingTokenTarget(currentMove)
+      const serverToken = currentRoom.game.tokens.find(
+        (token) =>
+          token.playerId === currentMove.playerId && token.id === currentMove.id,
+      )
+      if (serverToken?.progress !== target) return false
+
+      const { done } = resolveAnimationProgress(currentMove)
+      if (!done) return false
+
+      remoteAnimSignatureRef.current = null
+      setMovingToken(null)
+      return true
+    }
+
+    if (tryClearRemoteMove()) return
+
+    const timer = window.setInterval(() => {
+      if (tryClearRemoteMove()) {
+        window.clearInterval(timer)
+      }
+    }, 50)
+
+    return () => window.clearInterval(timer)
+  }, [movingToken])
+
+  useEffect(() => {
     if (!optimisticRoom?.game || !room?.game) return
-    if (movingToken || moveInFlightRef.current || rollSyncRef.current) return
-    if (room.game.lastAction === optimisticRoom.game.lastAction) {
+    if (
+      movingToken ||
+      moveInFlightRef.current ||
+      rollSyncRef.current ||
+      powerResolveInFlightRef.current
+    ) {
+      return
+    }
+    if (
+      room.game.lastAction === optimisticRoom.game.lastAction &&
+      roomTokensMatch(room, optimisticRoom)
+    ) {
       setOptimisticRoom(null)
     }
   }, [optimisticRoom, room, movingToken])
@@ -181,6 +262,40 @@ function App() {
     return () => window.clearInterval(timer)
   }, [rolling])
 
+  useLayoutEffect(() => {
+    const game = room?.game
+    if (!game?.dice || game.phase !== 'move' || !room) return
+
+    const action = game.lastAction
+    if (!action.includes(' rolled ')) return
+
+    const roller = room.players.find((player) => action.startsWith(player.name))
+    if (!roller?.isBot || lastBotRollRef.current === action) return
+    lastBotRollRef.current = action
+
+    setRolling(true)
+    const finalDice = game.dice
+    const timer = window.setTimeout(() => {
+      setDiceFace(finalDice)
+      setDisplayDice(finalDice)
+      setRolling(false)
+      playDiceResult()
+    }, 950)
+
+    return () => window.clearTimeout(timer)
+  }, [room])
+
+  useEffect(() => {
+    if (rolling) return
+    const game = displayRoom?.game
+    if (!game) return
+    if (game.phase === 'roll' || !game.dice) {
+      setDisplayDice(null)
+      return
+    }
+    setDisplayDice(game.dice)
+  }, [displayRoom?.game?.phase, displayRoom?.game?.dice, rolling])
+
   useEffect(() => {
     const action = displayRoom?.game?.lastAction
     if (!action || action === lastSoundAction.current) return
@@ -193,6 +308,31 @@ function App() {
     else if (action.includes('brought a token home')) playHome()
     else if (action.includes('finished in place')) playWin()
   }, [displayRoom?.game?.lastAction])
+
+  useEffect(() => {
+    const game = displayRoom?.game
+    if (!game || displayRoom?.status !== 'playing' || game.phase !== 'roll') {
+      setTurnSecondsLeft(null)
+      return
+    }
+
+    const tick = () => {
+      if (!game.turnDeadline) {
+        setTurnSecondsLeft(null)
+        return
+      }
+      setTurnSecondsLeft(Math.max(0, Math.ceil((game.turnDeadline - Date.now()) / 1000)))
+    }
+
+    tick()
+    const timer = window.setInterval(tick, 250)
+    return () => window.clearInterval(timer)
+  }, [
+    displayRoom?.status,
+    displayRoom?.game?.phase,
+    displayRoom?.game?.turnDeadline,
+    displayRoom?.game?.turnIndex,
+  ])
 
   useEffect(() => {
     if (!moveReadyToClear || !movingToken || !room?.game) return
@@ -247,7 +387,7 @@ function App() {
       return
     }
 
-    setDiceFace(dice)
+    setDiceFace(Math.floor(Math.random() * 6) + 1)
 
     const sync = rollDice(baseRoom.id, userId, dice)
       .catch((reason) => {
@@ -261,6 +401,8 @@ function App() {
     rollSyncRef.current = sync
 
     await new Promise((resolve) => window.setTimeout(resolve, 650))
+    setDiceFace(dice)
+    setDisplayDice(dice)
     setRolling(false)
     setOptimisticRoom(nextRoom)
     playDiceResult()
@@ -408,13 +550,49 @@ function App() {
     setMovingToken(null)
     setMoveReadyToClear(false)
     setLeaveConfirmOpen(false)
+    setHostLeaveOpen(false)
+    setRemoveConfirm(null)
     setRoomId(null)
     setRoom(null)
   }
+
+  const openLeaveFlow = () => {
+    if (!room) return
+    const isHost = room.hostId === userId
+    const others = room.players
+      .filter((player) => player.id !== userId)
+      .sort((first, second) => first.seat - second.seat)
+    if (isHost && others.length > 0) {
+      setNewHostId(others.find((player) => !player.isBot)?.id ?? others[0].id)
+      setHostLeaveOpen(true)
+      return
+    }
+    setLeaveConfirmOpen(true)
+  }
+
   const confirmLeave = async () => {
     if (!room) return
     const succeeded = await perform(() => leaveRoom(room.id, userId))
     if (succeeded) exitRoom()
+  }
+
+  const confirmHostLeave = async () => {
+    if (!room || !newHostId) return
+    const succeeded = await perform(() => leaveRoom(room.id, userId, newHostId))
+    if (succeeded) exitRoom()
+  }
+
+  const confirmRemove = async () => {
+    if (!room || !removeConfirm) return
+    const target = removeConfirm
+    const succeeded = await perform(async () => {
+      if (target.kind === 'bot' && target.seat !== undefined) {
+        await setSlotBot(room.id, userId, target.seat, false)
+      } else {
+        await removePlayer(room.id, userId, target.id)
+      }
+    })
+    if (succeeded) setRemoveConfirm(null)
   }
 
   if (roomId && !room) {
@@ -542,6 +720,10 @@ function App() {
     .sort((first, second) => second.leftAt - first.leftAt)
     .map((player) => ({ ...player, leftEarly: true as const }))
   const finalRanking = [...activeRanking, ...departedRanking]
+  const bannerAction =
+    rolling && viewRoom.game?.lastAction?.includes(' rolled ')
+      ? 'Rolling dice…'
+      : viewRoom.game?.lastAction
 
   return (
     <main className="room-screen" onClickCapture={playButtonSound}>
@@ -570,7 +752,7 @@ function App() {
           <button className="sound-toggle" onClick={toggleSound} title={soundOn ? 'Mute sounds' : 'Enable sounds'}>
             {soundOn ? '🔊' : '🔇'}
           </button>
-          <button className="text-button" onClick={() => setLeaveConfirmOpen(true)}>Leave</button>
+          <button className="text-button" onClick={openLeaveFlow}>Leave</button>
         </div>
       </header>
 
@@ -586,16 +768,64 @@ function App() {
             <button className="code-display" onClick={copyCode}>{room.code} <span>⧉</span></button>
             <div className="players-grid">
               {Array.from({ length: room.maxPlayers }, (_, index) => {
-                const player = room.players[index]
+                const player = room.players.find((candidate) => candidate.seat === index)
+                const isHost = room.hostId === userId
                 return player ? (
-                  <div className={`player-slot ${player.color}`} key={player.id}>
-                    <span>{player.name.slice(0, 1).toUpperCase()}</span>
-                    <strong>{player.name}</strong>
+                  <div className={`player-slot ${player.color} ${player.isBot ? 'bot' : ''}`} key={player.id}>
+                    <span>{player.isBot ? '🤖' : player.name.slice(0, 1).toUpperCase()}</span>
+                    <div className="player-slot-copy">
+                      <strong>{player.name}</strong>
+                      {player.isBot && <em>Bot</em>}
+                    </div>
                     {player.id === room.hostId && <small>HOST</small>}
+                    {isHost && player.isBot ? (
+                      <button
+                        type="button"
+                        className="slot-action"
+                        disabled={busy}
+                        onClick={() => setRemoveConfirm({
+                          id: player.id,
+                          name: player.name,
+                          kind: 'bot',
+                          seat: index,
+                        })}
+                      >
+                        Remove
+                      </button>
+                    ) : isHost && player.id !== userId ? (
+                      <button
+                        type="button"
+                        className="slot-action"
+                        disabled={busy}
+                        onClick={() => setRemoveConfirm({
+                          id: player.id,
+                          name: player.name,
+                          kind: 'player',
+                        })}
+                      >
+                        Remove
+                      </button>
+                    ) : null}
                   </div>
                 ) : (
                   <div className="player-slot empty" key={index}>
-                    <span>+</span><strong>Open seat</strong>
+                    <span>+</span>
+                    <div className="player-slot-copy">
+                      <strong>Open seat</strong>
+                      <em>Waiting for player</em>
+                    </div>
+                    {isHost ? (
+                      <button
+                        type="button"
+                        className="slot-action"
+                        disabled={busy}
+                        onClick={() => perform(async () => {
+                          await setSlotBot(room.id, userId, index, true)
+                        })}
+                      >
+                        Add bot
+                      </button>
+                    ) : null}
                   </div>
                 )
               })}
@@ -607,6 +837,9 @@ function App() {
                 onClick={() => perform(() => startRoom(room.id, userId))}
               >Start game ({room.players.length}/{room.maxPlayers})</button>
             ) : <p className="waiting-text">Waiting for the host to start…</p>}
+            {room.hostId === userId && (
+              <p className="lobby-hint">Fill empty seats with bots or share the room code for friends.</p>
+            )}
             {error && <p className="error">{error}</p>}
           </div>
         </section>
@@ -614,32 +847,60 @@ function App() {
         <section className={`game-layout ${isPowerMode ? 'game-layout--power' : ''}`}>
           <aside className="players-panel">
             <h2>Players</h2>
-            {viewRoom.players.map((player, index) => (
+            {viewRoom.players.map((player, index) => {
+              const misses = viewRoom.game?.turnMisses?.[player.id] ?? 0
+              return (
               <div
                 key={player.id}
                 className={`player-row ${player.color} ${viewRoom.game?.turnIndex === index ? 'active' : ''}`}
               >
                 <span className="avatar">{player.name[0].toUpperCase()}</span>
-                <div><strong>{player.name}</strong><small>
-                  {viewRoom.game?.winnerIds.includes(player.id)
-                    ? `Finished #${viewRoom.game.winnerIds.indexOf(player.id) + 1}`
-                    : player.id === userId ? 'You' : 'Online'}
-                </small></div>
+                <div>
+                  <strong>{player.name}</strong>
+                  <small>
+                    {viewRoom.game?.winnerIds.includes(player.id)
+                      ? `Finished #${viewRoom.game.winnerIds.indexOf(player.id) + 1}`
+                      : player.id === userId
+                        ? 'You'
+                        : player.isBot
+                          ? 'Bot'
+                          : 'Online'}
+                    {misses > 0 ? ` · ${misses}/${MAX_TURN_MISSES} misses` : ''}
+                  </small>
+                </div>
+                {room.hostId === userId && player.id !== userId ? (
+                  <button
+                    type="button"
+                    className="slot-action player-remove"
+                    disabled={busy}
+                    onClick={() => setRemoveConfirm({
+                      id: player.id,
+                      name: player.name,
+                      kind: 'player',
+                    })}
+                  >
+                    Remove
+                  </button>
+                ) : null}
               </div>
-            ))}
+            )})}
           </aside>
 
           <div className="game-center">
             <div className="turn-banner">
               <strong>{isMyTurn ? 'Your turn' : `${currentPlayer?.name}'s turn`}</strong>
-              <span>{viewRoom.game?.lastAction}</span>
+              <span>{bannerAction}</span>
+              {viewRoom.game?.phase === 'roll' && turnSecondsLeft !== null ? (
+                <span className={`turn-timer ${turnSecondsLeft <= 5 ? 'urgent' : ''}`}>
+                  Roll within {turnSecondsLeft}s
+                </span>
+              ) : null}
             </div>
             <LudoBoard
               room={viewRoom}
               userId={userId}
               movingToken={movingToken}
               onMove={(tokenId) => void animateMove(tokenId)}
-              onMoveAnimationComplete={handleMoveAnimationComplete}
             />
             <PowerToast
               type={powerToast?.type ?? 'star'}
@@ -651,7 +912,7 @@ function App() {
           <aside className="action-panel">
             <span className="eyebrow">TURN CONTROL</span>
             <Dice3D
-              value={rolling ? diceFace : viewRoom.game?.dice ?? null}
+              value={rolling ? diceFace : displayDice}
               rolling={rolling}
             />
             {isMyTurn && viewRoom.game?.phase === 'roll' ? (
@@ -672,6 +933,7 @@ function App() {
               <p>No active tokens: the sixth failed entry attempt guarantees a 6.</p>
               <p>Last token 1–3 steps away: the eighth attempt guarantees the exact roll.</p>
               <p>Three consecutive 6s lose the turn.</p>
+              <p>Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or skip turn. {MAX_TURN_MISSES} misses removes you.</p>
               <p>Reach home with an exact roll.</p>
             </div>
             {error && <p className="error">{error}</p>}
@@ -682,6 +944,105 @@ function App() {
             </div>
           )}
         </section>
+      )}
+
+      {removeConfirm && (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Remove player confirmation"
+          onClick={() => !busy && setRemoveConfirm(null)}
+        >
+          <div className="confirm-card" onClick={(event) => event.stopPropagation()}>
+            <div className="confirm-icon">!</div>
+            <h2>Remove {removeConfirm.name}?</h2>
+            <p>
+              {removeConfirm.kind === 'bot'
+                ? 'This bot will be removed from the lobby.'
+                : room.status === 'playing'
+                  ? 'Their tokens will be removed. The board layout stays the same.'
+                  : 'This player will be removed from the lobby.'}
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="cancel-button"
+                disabled={busy}
+                onClick={() => setRemoveConfirm(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="danger-button"
+                disabled={busy}
+                onClick={() => void confirmRemove()}
+              >
+                {busy ? 'Removing…' : 'Remove player'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {hostLeaveOpen && room && (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Choose new host"
+          onClick={() => !busy && setHostLeaveOpen(false)}
+        >
+          <div className="confirm-card host-leave-card" onClick={(event) => event.stopPropagation()}>
+            <div className="confirm-icon">!</div>
+            <h2>Choose new host</h2>
+            <p>
+              You are the host. Pick who should run the room before you leave.
+              Your tokens will be removed if the game has started.
+            </p>
+            <div className="host-picker" role="radiogroup" aria-label="New host">
+              {room.players
+                .filter((player) => player.id !== userId)
+                .sort((first, second) => first.seat - second.seat)
+                .map((player) => (
+                  <label
+                    key={player.id}
+                    className={`host-option ${player.color} ${newHostId === player.id ? 'selected' : ''}`}
+                  >
+                    <input
+                      type="radio"
+                      name="new-host"
+                      value={player.id}
+                      checked={newHostId === player.id}
+                      onChange={() => setNewHostId(player.id)}
+                    />
+                    <span className="host-option-avatar">
+                      {player.isBot ? '🤖' : player.name[0].toUpperCase()}
+                    </span>
+                    <span className="host-option-copy">
+                      <strong>{player.name}</strong>
+                      <small>{player.isBot ? 'Bot' : 'Player'}</small>
+                    </span>
+                  </label>
+                ))}
+            </div>
+            <div className="confirm-actions">
+              <button
+                className="cancel-button"
+                disabled={busy}
+                onClick={() => setHostLeaveOpen(false)}
+              >
+                Stay
+              </button>
+              <button
+                className="danger-button"
+                disabled={busy || !newHostId}
+                onClick={() => void confirmHostLeave()}
+              >
+                {busy ? 'Leaving…' : 'Leave game'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {leaveConfirmOpen && (

@@ -24,6 +24,9 @@ export type PowerUpType =
   | 'star'
   | 'ice'
   | 'portal'
+  | 'back2'
+  | 'back3'
+  | 'yard'
 
 export interface PowerTile {
   cell: number
@@ -36,6 +39,7 @@ export interface Player {
   color: PlayerColor
   seat: number
   connected: boolean
+  isBot?: boolean
   joinedAt: number
 }
 
@@ -80,9 +84,17 @@ export const moveAnimStepCount = (move: MovingToken) => {
   const target = movingTokenTarget(move)
   let progress = move.fromProgress
   let steps = 0
-  while (progress < target && steps < 40) {
-    steps += 1
-    progress = progress === -1 ? 0 : progress + 1
+  const forward = target >= (move.fromProgress === -1 ? 0 : move.fromProgress)
+  if (forward) {
+    while (progress < target && steps < 40) {
+      steps += 1
+      progress = progress === -1 ? 0 : progress + 1
+    }
+  } else {
+    while (progress > target && steps < 40) {
+      steps += 1
+      progress = progress <= 0 ? -1 : progress - 1
+    }
   }
   return Math.max(steps, 1)
 }
@@ -109,14 +121,26 @@ export const resolveAnimationProgress = (movingToken: MovingToken) => {
   }
 
   let progress = movingToken.fromProgress
+  const forward = target >= (movingToken.fromProgress === -1 ? 0 : movingToken.fromProgress)
   for (let step = 0; step < stepsTaken; step += 1) {
-    if (progress >= target) {
-      return { progress: target, done: true, target }
+    if (forward) {
+      if (progress >= target) {
+        return { progress: target, done: true, target }
+      }
+      progress = progress === -1 ? 0 : progress + 1
+    } else {
+      if (progress <= target) {
+        return { progress: target, done: true, target }
+      }
+      progress = progress <= 0 ? -1 : progress - 1
     }
-    progress = progress === -1 ? 0 : progress + 1
   }
 
-  return { progress, done: progress >= target, target }
+  return {
+    progress,
+    done: forward ? progress >= target : progress <= target,
+    target,
+  }
 }
 
 export interface PendingPower {
@@ -134,6 +158,9 @@ export interface GameState {
   phase: TurnPhase
   dice: number | null
   consecutiveSixes: number
+  boardPlayerCount: number
+  turnDeadline: number | null
+  turnMisses: Record<string, number>
   entryMisses: Record<string, number>
   finishMisses: Record<string, number>
   protectionForfeited: Record<string, boolean>

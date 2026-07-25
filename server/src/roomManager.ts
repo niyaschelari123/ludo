@@ -7,7 +7,9 @@ import {
   applyPendingPower,
   applyRoll,
   applyRollMisses,
+  applyRollTimeout,
   createGame,
+  TURN_ROLL_TIMEOUT_MS,
   validateDiceRoll,
 } from '../../src/game/engine.js'
 import { PLAYER_COLORS, type Room } from '../../src/game/types.js'
@@ -21,6 +23,18 @@ const roomCode = () =>
     .join('')
 
 const cleanName = (name: string) => name.trim().slice(0, 18) || 'Player'
+
+function sortPlayers(room: Room) {
+  room.players.sort((first, second) => first.seat - second.seat)
+}
+
+function firstOpenSeat(room: Room) {
+  const occupied = new Set(room.players.map((player) => player.seat))
+  for (let seat = 0; seat < room.maxPlayers; seat += 1) {
+    if (!occupied.has(seat)) return seat
+  }
+  return -1
+}
 
 export function getRoom(roomId: string) {
   const room = rooms.get(roomId)
@@ -89,7 +103,8 @@ export function joinRoom(userId: string, name: string, code: string) {
     if (room.players.length >= room.maxPlayers) {
       throw new Error('This room is full.')
     }
-    const seat = room.players.length
+    const seat = firstOpenSeat(room)
+    if (seat === -1) throw new Error('This room is full.')
     room.players.push({
       id: userId,
       name: cleanName(name),
@@ -98,9 +113,51 @@ export function joinRoom(userId: string, name: string, code: string) {
       connected: true,
       joinedAt: Date.now(),
     })
+    sortPlayers(room)
     room.memberIds.push(userId)
   }
 
+  room.updatedAt = Date.now()
+  return room
+}
+
+export function setSlotBot(
+  roomId: string,
+  userId: string,
+  seat: number,
+  add: boolean,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== userId) throw new Error('Only the host can manage bots.')
+  if (room.status !== 'lobby') {
+    throw new Error('Bots can only be changed in the lobby.')
+  }
+  if (!Number.isInteger(seat) || seat < 0 || seat >= room.maxPlayers) {
+    throw new Error('Invalid seat.')
+  }
+
+  const existing = room.players.find((player) => player.seat === seat)
+
+  if (add) {
+    if (existing) throw new Error('That seat is already taken.')
+    const botCount = room.players.filter((player) => player.isBot).length
+    room.players.push({
+      id: crypto.randomUUID(),
+      name: `Bot ${botCount + 1}`,
+      color: PLAYER_COLORS[seat],
+      seat,
+      connected: true,
+      isBot: true,
+      joinedAt: Date.now(),
+    })
+  } else {
+    if (!existing?.isBot) {
+      throw new Error('Only bot players can be removed from a seat.')
+    }
+    room.players = room.players.filter((player) => player.seat !== seat)
+  }
+
+  sortPlayers(room)
   room.updatedAt = Date.now()
   return room
 }
@@ -113,6 +170,7 @@ export function startRoom(roomId: string, userId: string) {
     throw new Error('At least two players are required.')
   }
 
+  sortPlayers(room)
   room.game = createGame(room.players, room.gameMode ?? 'classic')
   room.status = 'playing'
   room.updatedAt = Date.now()
@@ -129,8 +187,8 @@ export function rollDice(roomId: string, userId: string, dice: number) {
   if (game.phase !== 'roll') throw new Error('Dice cannot be rolled now.')
 
   const player = room.players[game.turnIndex]
-  validateDiceRoll(game, player.id, room.players, dice)
-  applyRollMisses(game, player.id, room.players, dice)
+  validateDiceRoll(game, player.id, room, dice)
+  applyRollMisses(game, player.id, room, dice)
   applyRoll(room, dice)
   room.updatedAt = Date.now()
 
@@ -191,17 +249,92 @@ export function resolvePendingPower(
     throw new Error('No power to resolve.')
   }
 
-  const previewRoom = structuredClone(room) as Room
-  applyPendingPower(previewRoom, startedAt)
-  previewRoom.updatedAt = Date.now()
-  rooms.set(roomId, previewRoom)
-  return { previewRoom, room: previewRoom }
+  const finalRoom = structuredClone(room) as Room
+  applyPendingPower(finalRoom, startedAt)
+  finalRoom.updatedAt = Date.now()
+
+  const activeMove = finalRoom.game?.activeMove
+  if (activeMove) {
+    // Keep the token at its pre-power position in the preview so remote clients
+    // can animate the bonus movement instead of snapping to the final cell.
+    finalRoom.game!.activeMove = null
+    rooms.set(roomId, finalRoom)
+
+    const previewRoom = structuredClone(finalRoom) as Room
+    const previewToken = previewRoom.game!.tokens.find(
+      (candidate) =>
+        candidate.playerId === activeMove.playerId &&
+        candidate.id === activeMove.tokenId,
+    )
+    if (previewToken) {
+      previewToken.progress = activeMove.fromProgress
+    }
+    previewRoom.game!.activeMove = activeMove
+    previewRoom.updatedAt = Date.now()
+    return { previewRoom, room: finalRoom }
+  }
+
+  rooms.set(roomId, finalRoom)
+  return { previewRoom: finalRoom, room: finalRoom }
 }
 
-export function leaveRoom(roomId: string, userId: string) {
-  const room = rooms.get(roomId)
-  if (!room) return null
+function transferHost(room: Room, previousHostId: string) {
+  if (room.players.length === 0 || room.hostId !== previousHostId) return
+  const nextHost =
+    room.players.find(
+      (player) => player.id !== previousHostId && !player.isBot,
+    ) ??
+    room.players.find((player) => player.id !== previousHostId) ??
+    room.players[0]
+  room.hostId = nextHost.id
+}
 
+function rebalanceTurnAfterRemoval(room: Room, removedIndex: number) {
+  const game = room.game!
+  if (removedIndex < game.turnIndex) {
+    game.turnIndex -= 1
+  } else if (removedIndex === game.turnIndex) {
+    game.turnIndex = removedIndex % room.players.length
+  }
+
+  for (let offset = 0; offset < room.players.length; offset += 1) {
+    const index = (game.turnIndex + offset) % room.players.length
+    if (!game.winnerIds.includes(room.players[index].id)) {
+      game.turnIndex = index
+      break
+    }
+  }
+
+  game.phase = 'roll'
+  game.dice = null
+  game.consecutiveSixes = 0
+  game.activeMove = null
+  game.pendingPower = null
+  game.turnDeadline = Date.now() + TURN_ROLL_TIMEOUT_MS
+}
+
+function finalizeGameIfNeeded(room: Room) {
+  const game = room.game
+  if (!game) return
+
+  if (
+    room.players.length === 1 ||
+    game.winnerIds.length >= room.players.length - 1
+  ) {
+    const remaining = room.players.find(
+      (player) => !game.winnerIds.includes(player.id),
+    )
+    if (remaining) game.winnerIds.push(remaining.id)
+    room.status = 'finished'
+    game.turnDeadline = null
+  }
+}
+
+export function removePlayerFromRoom(
+  room: Room,
+  userId: string,
+  lastAction: string,
+): Room | null {
   const leavingIndex = room.players.findIndex((player) => player.id === userId)
   if (leavingIndex === -1) return room
 
@@ -222,14 +355,12 @@ export function leaveRoom(roomId: string, userId: string) {
   room.memberIds = (room.memberIds ?? []).filter((id) => id !== userId)
 
   if (room.players.length === 0) {
-    rooms.delete(roomId)
+    rooms.delete(room.id)
     codeIndex.delete(room.code)
     return null
   }
 
-  if (room.hostId === userId) {
-    room.hostId = room.players[0].id
-  }
+  transferHost(room, userId)
 
   if (room.game) {
     const game = room.game
@@ -238,49 +369,113 @@ export function leaveRoom(roomId: string, userId: string) {
     delete game.entryMisses?.[userId]
     delete game.finishMisses?.[userId]
     delete game.protectionForfeited?.[userId]
+    delete game.turnMisses?.[userId]
 
-    if (leavingIndex < game.turnIndex) {
-      game.turnIndex -= 1
-    } else if (leavingIndex === game.turnIndex) {
-      game.turnIndex = leavingIndex % room.players.length
-    }
-
-    for (let offset = 0; offset < room.players.length; offset += 1) {
-      const index = (game.turnIndex + offset) % room.players.length
-      if (!game.winnerIds.includes(room.players[index].id)) {
-        game.turnIndex = index
-        break
-      }
-    }
-
-    game.phase = 'roll'
-    game.dice = null
-    game.consecutiveSixes = 0
-    game.activeMove = null
-    game.pendingPower = null
-    game.lastAction = `${leavingPlayer.name} left the game`
-
-    if (
-      room.players.length === 1 ||
-      game.winnerIds.length >= room.players.length - 1
-    ) {
-      const remaining = room.players.find(
-        (player) => !game.winnerIds.includes(player.id),
-      )
-      if (remaining) game.winnerIds.push(remaining.id)
-      room.status = 'finished'
-    }
+    rebalanceTurnAfterRemoval(room, leavingIndex)
+    game.lastAction = lastAction
+    finalizeGameIfNeeded(room)
   }
 
   room.updatedAt = Date.now()
   return room
 }
 
+export function removePlayer(
+  roomId: string,
+  hostId: string,
+  targetUserId: string,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can remove players.')
+  }
+  if (targetUserId === hostId) {
+    throw new Error('Leave the room yourself instead of removing yourself.')
+  }
+
+  const target = room.players.find((player) => player.id === targetUserId)
+  if (!target) throw new Error('Player not found.')
+
+  if (room.status === 'lobby') {
+    room.players = room.players.filter((player) => player.id !== targetUserId)
+    room.memberIds = room.memberIds.filter((id) => id !== targetUserId)
+    room.updatedAt = Date.now()
+    return room
+  }
+
+  const next = removePlayerFromRoom(
+    room,
+    targetUserId,
+    `${target.name} was removed`,
+  )
+  if (!next) throw new Error('Room closed.')
+  rooms.set(roomId, next)
+  return next
+}
+
+export function handleRollTimeout(roomId: string) {
+  const room = structuredClone(getRoom(roomId)) as Room
+  if (room.status !== 'playing' || !room.game || room.game.phase !== 'roll') {
+    return room
+  }
+
+  const player = room.players[room.game.turnIndex]
+  if (!player || player.isBot) return room
+
+  const { shouldRemove, playerId } = applyRollTimeout(room)
+  room.updatedAt = Date.now()
+
+  if (shouldRemove) {
+    const removed = room.players.find((candidate) => candidate.id === playerId)
+    const name = removed?.name ?? 'Player'
+    const next = removePlayerFromRoom(room, playerId, `${name} was removed for inactivity`)
+    if (!next) {
+      rooms.delete(roomId)
+      codeIndex.delete(room.code)
+      return null
+    }
+    rooms.set(roomId, next)
+    return next
+  }
+
+  rooms.set(roomId, room)
+  return room
+}
+
+export function leaveRoom(
+  roomId: string,
+  userId: string,
+  newHostId?: string,
+) {
+  const room = rooms.get(roomId)
+  if (!room) return null
+
+  const leavingPlayer = room.players.find((player) => player.id === userId)
+  if (!leavingPlayer) return room
+
+  if (room.hostId === userId && newHostId) {
+    const nextHost = room.players.find(
+      (player) => player.id === newHostId && player.id !== userId,
+    )
+    if (!nextHost) throw new Error('Choose a valid new host.')
+    room.hostId = newHostId
+  }
+
+  const next = removePlayerFromRoom(
+    room,
+    userId,
+    `${leavingPlayer.name} left the game`,
+  )
+  if (!next) return null
+  rooms.set(roomId, next)
+  return next
+}
+
 export function markDisconnected(roomId: string, userId: string) {
   const room = rooms.get(roomId)
   if (!room) return null
   const player = room.players.find((candidate) => candidate.id === userId)
-  if (!player) return room
+  if (!player || player.isBot) return room
   player.connected = false
   room.updatedAt = Date.now()
   return room
