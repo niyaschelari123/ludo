@@ -1188,6 +1188,7 @@ select:focus {
   line-height: 1.35;
 }
 
+.power-legend-icon.power-icon--plus10,
 .power-legend-icon.power-icon--half {
   background: #ddd6fe;
   color: #6d28d9;
@@ -2026,10 +2027,12 @@ select:focus {
   font-size: 11px;
 }
 
+.power-plus10 .power-marker-bg,
 .power-half .power-marker-bg {
   fill: #ddd6fe;
 }
 
+.power-plus10 .power-marker-label.text,
 .power-half .power-marker-label.text {
   fill: #6d28d9;
 }

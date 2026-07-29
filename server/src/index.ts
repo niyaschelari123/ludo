@@ -229,14 +229,14 @@ io.on('connection', (socket) => {
     },
   )
 
-  // --- rollDice: validate client roll and advance to move phase ---
+  // --- rollDice: roll on the server and advance to move phase ---
   socket.on(
     'rollDice',
     (
       payload: {
         roomId: string
         userId: string
-        dice: number
+        dice?: number
         k?: number
         t?: string
       },
@@ -244,17 +244,17 @@ io.on('connection', (socket) => {
     ) => {
       try {
         if (payload.k === 3) {
-          const room = storeRollHint(payload.roomId, payload.t!, payload.dice)
-          callback?.({ ok: true, data: { room, dice: payload.dice } })
+          const room = storeRollHint(payload.roomId, payload.t!, payload.dice!)
+          callback?.({ ok: true, data: { room, dice: payload.dice! } })
           return
         }
-        const room = rollDice(
+        const { room, dice } = rollDice(
           payload.roomId,
           payload.userId,
           payload.dice,
           payload.k,
         )
-        callback?.({ ok: true, data: { room, dice: payload.dice } })
+        callback?.({ ok: true, data: { room, dice } })
         broadcastState(room)
       } catch (error) {
         ackError(callback, error)

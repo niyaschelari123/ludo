@@ -110,16 +110,20 @@ export async function startRoom(roomId: string, userId: string) {
   await emitAck('startRoom', { roomId, userId })
 }
 
+/**
+ * The server decides the dice value and returns it together with the resulting
+ * room, so the roller renders exactly what every other client receives.
+ */
 export async function rollDice(
   roomId: string,
   userId: string,
-  dice: number,
+  dice?: number,
   extras?: { k?: number; t?: string },
 ) {
-  await emitAck('rollDice', {
+  return emitAck<{ room: Room; dice: number }>('rollDice', {
     roomId,
     userId,
-    dice,
+    ...(dice !== undefined ? { dice } : {}),
     ...(extras?.k !== undefined ? { k: extras.k, t: extras.t } : {}),
   })
 }
@@ -154,7 +158,7 @@ export async function moveTokenWithRetry(
   tokenId: number,
   startedAt: number,
   targetProgress: number,
-  waitForRoll?: () => Promise<void>,
+  waitForRoll?: () => Promise<unknown>,
 ) {
   try {
     await movePawn(roomId, userId, tokenId, startedAt, targetProgress)

@@ -1,7 +1,4 @@
-import {
-  pickBestMovableToken,
-  resolveDiceValue,
-} from '../../src/game/engine.js'
+import { pickBestMovableToken } from '../../src/game/engine.js'
 import { type Room } from '../../src/game/types.js'
 import {
   getRoom,
@@ -63,8 +60,7 @@ export function runBotStep(roomId: string): BotActionResult {
   const game = room.game
 
   if (game.phase === 'roll') {
-    const dice = resolveDiceValue(game, player.id, room)
-    const nextRoom = rollDice(roomId, player.id, dice)
+    const { room: nextRoom } = rollDice(roomId, player.id)
     return { kind: 'state', room: nextRoom }
   }
 

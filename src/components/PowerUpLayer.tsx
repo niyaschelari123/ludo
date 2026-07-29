@@ -67,6 +67,7 @@ function PowerMarker({
 }) {
   const label = POWER_UP_ICONS[type]
   const isText =
+    type === 'plus10' ||
     type === 'half' ||
     type === 'tnt' ||
     type === 'x2' ||

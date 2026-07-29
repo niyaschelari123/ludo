@@ -20,13 +20,14 @@ export const ACTIVE_POWER_TYPES: PowerUpType[] = [
   'back2',
   'back3',
   'yard',
-  'half',
+  'plus10',
   'tnt',
   'ice',
 ]
 
 export const POWER_UP_ICONS: Record<PowerUpType, string> = {
-  half: '½',
+  plus10: '+10',
+  half: '+10',
   tnt: 'TNT',
   rocket: '🚀',
   spring: '↗',
@@ -55,7 +56,7 @@ export const POWER_UP_INFO: {
   { type: 'back2', label: 'Back 2', description: 'Slides your token 2 steps backward' },
   { type: 'back3', label: 'Back 3', description: 'Slides your token 3 steps backward' },
   { type: 'yard', label: 'Yard', description: 'Sends your token back to your starting square' },
-  { type: 'half', label: 'Half', description: 'Surges you halfway around the board' },
+  { type: 'plus10', label: '+10', description: 'Surges your token 10 steps forward' },
   {
     type: 'tnt',
     label: 'TNT',
@@ -65,16 +66,18 @@ export const POWER_UP_INFO: {
 ]
 
 export function powerUpLabel(type: PowerUpType) {
+  if (type === 'half') return '+10'
   return POWER_UP_INFO.find((entry) => entry.type === type)?.label ?? type
 }
 
 export function powerUpDescription(type: PowerUpType) {
+  if (type === 'half') return 'Surges your token 10 steps forward'
   return POWER_UP_INFO.find((entry) => entry.type === type)?.description ?? ''
 }
 
 const SLOT_OFFSETS = [4, 10]
 const YARD_OFFSET = 7
-const HALF_OFFSET = 3
+const PLUS10_OFFSET = 3
 const TNT_OFFSET = 9
 const RARE_POWER_COUNT = 2
 
@@ -106,7 +109,7 @@ export function generatePowerTiles(playerCount: number): Record<number, PowerUpT
   }
 
   const yardSeats = spacedSeats(playerCount, RARE_POWER_COUNT, 0)
-  const halfSeats = spacedSeats(
+  const plus10Seats = spacedSeats(
     playerCount,
     RARE_POWER_COUNT,
     Math.max(1, Math.floor(playerCount / 4)),
@@ -117,8 +120,8 @@ export function generatePowerTiles(playerCount: number): Record<number, PowerUpT
     if (seat === tntSeat) continue
     tiles[(seat * CELLS_PER_PLAYER + YARD_OFFSET) % length] = 'yard'
   }
-  for (const seat of halfSeats) {
-    tiles[(seat * CELLS_PER_PLAYER + HALF_OFFSET) % length] = 'half'
+  for (const seat of plus10Seats) {
+    tiles[(seat * CELLS_PER_PLAYER + PLUS10_OFFSET) % length] = 'plus10'
   }
 
   tiles[(tntSeat * CELLS_PER_PLAYER + TNT_OFFSET) % length] = 'tnt'
@@ -233,10 +236,10 @@ export function applyPowerUp(
         ? `${player.name} triggered TNT and blasted ${blasted} token(s)`
         : `${player.name} triggered TNT`
     }
+    case 'plus10':
     case 'half': {
-      const steps = Math.max(1, Math.floor(trackLength(room) / 2))
-      advanceToken(token, steps, room)
-      return `${player.name} surged halfway around the board`
+      advanceToken(token, 10, room)
+      return `${player.name} surged +10`
     }
     case 'rocket': {
       const bonus = (game.dice ?? 0) * 2

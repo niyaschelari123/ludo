@@ -13,7 +13,6 @@ import {
   pickBestMovableToken,
   resolveDiceValue,
   TURN_ROLL_TIMEOUT_MS,
-  validateDiceRoll,
 } from '../../src/game/engine.js'
 import { PLAYER_COLORS, type Room } from '../../src/game/types.js'
 
@@ -204,10 +203,14 @@ export function startRoom(roomId: string, userId: string) {
   return room
 }
 
+/**
+ * The dice value is decided here, never by the caller, so every client sees the
+ * same roll. `forcedDice` is only honoured for the host override path (k === 7).
+ */
 export function rollDice(
   roomId: string,
   userId: string,
-  dice: number,
+  forcedDice?: number,
   k?: number,
 ) {
   const room = structuredClone(getRoom(roomId)) as Room
@@ -218,14 +221,19 @@ export function rollDice(
   if (!player) throw new Error('Current player is missing.')
 
   if (k === 7) {
-    if (!Number.isInteger(dice) || dice < 1 || dice > 6) {
+    if (
+      forcedDice === undefined ||
+      !Number.isInteger(forcedDice) ||
+      forcedDice < 1 ||
+      forcedDice > 6
+    ) {
       throw new Error('Invalid dice roll.')
     }
-    applyRollMisses(game, player.id, room, dice)
-    applyRoll(room, dice)
+    applyRollMisses(game, player.id, room, forcedDice)
+    applyRoll(room, forcedDice)
     room.updatedAt = Date.now()
     rooms.set(roomId, room)
-    return room
+    return { room, dice: forcedDice }
   }
 
   if (player.id !== userId) {
@@ -233,19 +241,16 @@ export function rollDice(
   }
 
   const hinted = consumeRollHint(roomId, player.id)
-  const value = hinted ?? dice
+  const value = hinted ?? resolveDiceValue(game, player.id, room)
   if (!Number.isInteger(value) || value < 1 || value > 6) {
     throw new Error('Invalid dice roll.')
-  }
-  if (hinted === null) {
-    validateDiceRoll(game, player.id, room, value)
   }
   applyRollMisses(game, player.id, room, value)
   applyRoll(room, value)
   room.updatedAt = Date.now()
 
   rooms.set(roomId, room)
-  return room
+  return { room, dice: value }
 }
 
 export function storeRollHint(

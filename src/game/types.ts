@@ -14,7 +14,8 @@ export type RoomStatus = 'lobby' | 'playing' | 'finished'
 export type TurnPhase = 'roll' | 'move' | 'power'
 export type GameMode = 'classic' | 'power'
 export type PowerUpType =
-  | 'half'
+  | 'plus10'
+  | 'half' // legacy; treated as plus10 if present in old rooms
   | 'rocket'
   | 'spring'
   | 'shield'
@@ -27,7 +28,7 @@ export type PowerUpType =
   | 'back2'
   | 'back3'
   | 'yard'
-  | 'tnt' // legacy; treated as half if present in old rooms
+  | 'tnt'
 
 export interface PowerTile {
   cell: number

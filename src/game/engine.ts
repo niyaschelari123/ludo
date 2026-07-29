@@ -271,30 +271,6 @@ export function applyRollMisses(
     finalRoll === null || dice === finalRoll ? 0 : finishMisses + 1
 }
 
-export function performLocalRoll(
-  room: Room,
-  userId: string,
-  chosenDice?: number,
-) {
-  const next = structuredClone(room)
-  const game = next.game
-  if (!game || game.phase !== 'roll') {
-    throw new Error('Dice cannot be rolled now.')
-  }
-  if (next.players[game.turnIndex]?.id !== userId) {
-    throw new Error('It is not your turn.')
-  }
-  const player = next.players[game.turnIndex]
-  const dice =
-    chosenDice !== undefined
-      ? chosenDice
-      : resolveDiceValue(game, player.id, next)
-  applyRollMisses(game, player.id, next, dice)
-  applyRoll(next, dice)
-  next.updatedAt = Date.now()
-  return { room: next, dice }
-}
-
 export function performLocalMove(room: Room, userId: string, tokenId: number) {
   const next = structuredClone(room)
   const game = next.game
@@ -307,29 +283,6 @@ export function performLocalMove(room: Room, userId: string, tokenId: number) {
   applyMove(next, tokenId)
   next.updatedAt = Date.now()
   return next
-}
-
-export function validateDiceRoll(
-  game: GameState,
-  playerId: string,
-  room: Room,
-  dice: number,
-) {
-  if (!Number.isInteger(dice) || dice < 1 || dice > 6) {
-    throw new Error('Invalid dice roll.')
-  }
-  game.entryMisses ??= {}
-  game.finishMisses ??= {}
-  const entryMisses = game.entryMisses[playerId] ?? 0
-  const finishMisses = game.finishMisses[playerId] ?? 0
-  const hasActive = hasActiveToken(game, playerId, room)
-  const finalRoll = requiredFinalRoll(game, playerId, room)
-  if (!hasActive && entryMisses >= 4 && dice !== 6) {
-    throw new Error('Invalid dice roll.')
-  }
-  if (finalRoll !== null && finishMisses >= 7 && dice !== finalRoll) {
-    throw new Error('Invalid dice roll.')
-  }
 }
 
 export function movableTokens(room: Room) {

@@ -38,7 +38,6 @@ import {
   movableTokens,
   performLocalMove,
   performLocalResolvePower,
-  performLocalRoll,
   playerTurnMissLimit,
   TURN_MOVE_TIMEOUT_MS,
   TURN_ROLL_TIMEOUT_MS,
@@ -130,7 +129,7 @@ function App() {
   const [newHostId, setNewHostId] = useState('')
   const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmTarget | null>(null)
   const [turnSecondsLeft, setTurnSecondsLeft] = useState<number | null>(null)
-  const rollSyncRef = useRef<Promise<void> | null>(null)
+  const rollSyncRef = useRef<Promise<unknown> | null>(null)
   const moveInFlightRef = useRef(false)
   const powerResolveInFlightRef = useRef(false)
   const prevRoomRef = useRef<Room | null>(null)
@@ -460,43 +459,45 @@ function App() {
   }
   const animateRoll = async () => {
     const baseRoom = optimisticRoom ?? room
-    if (!baseRoom) return
-    setRolling(true)
-    setError('')
-
-    let nextRoom: Room
-    let dice: number
-    try {
-      const chosen = rollPicks[userId]
-      ;({ room: nextRoom, dice } = performLocalRoll(
-        baseRoom,
-        userId,
-        extraCtrl && chosen !== undefined ? chosen : undefined,
-      ))
-    } catch (reason) {
-      setRolling(false)
-      setError(reason instanceof Error ? reason.message : 'Something went wrong.')
+    const baseGame = baseRoom?.game
+    if (!baseRoom || !baseGame) return
+    if (baseGame.phase !== 'roll') {
+      setError('Dice cannot be rolled now.')
+      return
+    }
+    if (baseRoom.players[baseGame.turnIndex]?.id !== userId) {
+      setError('It is not your turn.')
       return
     }
 
+    setRolling(true)
+    setError('')
     setDiceFace(Math.floor(Math.random() * 6) + 1)
 
-    const sync = rollDice(baseRoom.id, userId, dice)
-      .catch((reason) => {
-        setOptimisticRoom(null)
-        setError(reason instanceof Error ? reason.message : 'Failed to sync roll.')
-        throw reason
-      })
-      .finally(() => {
-        if (rollSyncRef.current === sync) rollSyncRef.current = null
-      })
+    const sync = rollDice(baseRoom.id, userId).catch((reason) => {
+      setOptimisticRoom(null)
+      setError(reason instanceof Error ? reason.message : 'Failed to sync roll.')
+      throw reason
+    })
     rollSyncRef.current = sync
 
-    await new Promise((resolve) => window.setTimeout(resolve, 650))
-    setDiceFace(dice)
-    setDisplayDice(dice)
+    let rolled: { room: Room; dice: number }
+    try {
+      ;[rolled] = await Promise.all([
+        sync,
+        new Promise((resolve) => window.setTimeout(resolve, 650)),
+      ])
+    } catch {
+      setRolling(false)
+      return
+    } finally {
+      if (rollSyncRef.current === sync) rollSyncRef.current = null
+    }
+
+    setDiceFace(rolled.dice)
+    setDisplayDice(rolled.dice)
     setRolling(false)
-    setOptimisticRoom(nextRoom)
+    setOptimisticRoom(rolled.room)
     playDiceResult()
   }
   const animateMove = useCallback(async (tokenId: number) => {
@@ -763,7 +764,7 @@ function App() {
                   onClick={() => setGameMode('power')}
                 >
                   <strong>Power</strong>
-                  <span>Half-board surge, rockets, springs & more</span>
+                  <span>+10 surge, rockets, springs & more</span>
                 </button>
               </div>
             </label>
