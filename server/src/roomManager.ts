@@ -9,6 +9,9 @@ import {
   applyRollMisses,
   applyRollTimeout,
   createGame,
+  grantExtraTurnChances as applyGrantExtraTurnChances,
+  pickBestMovableToken,
+  resolveDiceValue,
   TURN_ROLL_TIMEOUT_MS,
   validateDiceRoll,
 } from '../../src/game/engine.js'
@@ -428,6 +431,7 @@ export function removePlayerFromRoom(
     delete game.finishMisses?.[userId]
     delete game.protectionForfeited?.[userId]
     delete game.turnMisses?.[userId]
+    delete game.turnMissLimits?.[userId]
 
     rebalanceTurnAfterRemoval(room, leavingIndex)
     game.lastAction = lastAction
@@ -435,6 +439,25 @@ export function removePlayerFromRoom(
   }
 
   room.updatedAt = Date.now()
+  return room
+}
+
+export function grantExtraTurnChances(
+  roomId: string,
+  hostId: string,
+  targetUserId: string,
+  amount = 5,
+) {
+  const room = structuredClone(getRoom(roomId)) as Room
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can grant extra chances.')
+  }
+  if (room.status !== 'playing' || !room.game) {
+    throw new Error('Chances can only be granted during a game.')
+  }
+  applyGrantExtraTurnChances(room, targetUserId, amount)
+  room.updatedAt = Date.now()
+  rooms.set(roomId, room)
   return room
 }
 
@@ -497,8 +520,62 @@ export function handleRollTimeout(roomId: string) {
     return next
   }
 
+  const hinted = consumeRollHint(roomId, player.id)
+  const dice = hinted ?? resolveDiceValue(room.game, player.id, room)
+  applyRollMisses(room.game, player.id, room, dice)
+  applyRoll(room, dice)
+  room.game.lastAction = `${player.name} auto-rolled ${dice} after timeout`
+  room.updatedAt = Date.now()
   rooms.set(roomId, room)
   return room
+}
+
+export function skipRollTimer(roomId: string, hostId: string) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can skip the roll timer.')
+  }
+  if (room.status !== 'playing' || !room.game || room.game.phase !== 'roll') {
+    throw new Error('No roll timer to skip.')
+  }
+  const player = room.players[room.game.turnIndex]
+  if (!player || player.isBot) {
+    throw new Error('No player roll timer to skip.')
+  }
+  return handleRollTimeout(roomId)
+}
+
+export function handleMoveTimeout(roomId: string) {
+  const room = getRoom(roomId)
+  if (room.status !== 'playing' || !room.game || room.game.phase !== 'move') {
+    return null
+  }
+
+  const player = room.players[room.game.turnIndex]
+  if (!player || player.isBot) return null
+
+  const token = pickBestMovableToken(room)
+  if (!token) return null
+
+  const startedAt = Date.now()
+  const targetProgress =
+    token.progress === -1 ? 0 : token.progress + (room.game.dice ?? 1)
+  return movePawn(roomId, player.id, token.id, startedAt, targetProgress)
+}
+
+export function skipMoveTimer(roomId: string, hostId: string) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can skip the move timer.')
+  }
+  if (room.status !== 'playing' || !room.game || room.game.phase !== 'move') {
+    throw new Error('No move timer to skip.')
+  }
+  const player = room.players[room.game.turnIndex]
+  if (!player || player.isBot) {
+    throw new Error('No player move timer to skip.')
+  }
+  return handleMoveTimeout(roomId)
 }
 
 export function leaveRoom(

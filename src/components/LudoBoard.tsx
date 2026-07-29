@@ -212,17 +212,17 @@ function radialYardPoint(seat: number, tokenId: number, count: number): Point {
   const angle = radialCellAngle(seat * CELLS_PER_PLAYER, count)
   const offsets = layout.quadYard
     ? [
-        [-20, -18],
-        [20, -18],
-        [-20, 18],
-        [20, 18],
-      ]
+      [-20, -18],
+      [20, -18],
+      [-20, 18],
+      [20, 18],
+    ]
     : [
-        [-18, -17],
-        [18, -17],
-        [-18, 17],
-        [18, 17],
-      ]
+      [-18, -17],
+      [18, -17],
+      [-18, 17],
+      [18, 17],
+    ]
   const yard = point(layout.yardRadius, angle)
   const [tangent, radial] = offsets[tokenId]
   return {
@@ -436,13 +436,23 @@ function SquareBoard({ room }: { room: Room }) {
         )
         return (
           <g key={index}>
+            {safe.has(index) && !owner && (
+              <rect
+                x={cell.x - 17}
+                y={cell.y - 17}
+                width="34"
+                height="34"
+                rx="3"
+                className="safe-cell-aura"
+              />
+            )}
             <rect
               x={cell.x - 16}
               y={cell.y - 16}
               width="32"
               height="32"
               fill={owner ? COLORS[owner.color] : '#fff'}
-              className="square-cell"
+              className={`square-cell ${safe.has(index) && !owner ? 'safe-cell' : ''}`}
             />
             {safe.has(index) && !owner && (
               <text x={cell.x} y={cell.y + 7} textAnchor="middle" className="safe-star">☆</text>
@@ -646,6 +656,17 @@ function RadialBoard({ room }: { room: Room }) {
         )
         return (
           <g key={index}>
+            {safe.has(index) && !owner && (
+              <rect
+                x={cell.x - layout.cellSize / 2 - 1}
+                y={cell.y - layout.cellSize / 2 - 1}
+                width={layout.cellSize + 2}
+                height={layout.cellSize + 2}
+                rx="2"
+                className="safe-cell-aura"
+                transform={`rotate(${angle * 180 / Math.PI + 90} ${cell.x} ${cell.y})`}
+              />
+            )}
             <rect
               x={cell.x - layout.cellSize / 2}
               y={cell.y - layout.cellSize / 2}
@@ -653,7 +674,7 @@ function RadialBoard({ room }: { room: Room }) {
               height={layout.cellSize}
               rx="1"
               fill={owner ? COLORS[owner.color] : '#fff'}
-              className={`radial-cell ${trackCellClass}`}
+              className={`radial-cell ${trackCellClass} ${safe.has(index) && !owner ? 'safe-cell' : ''}`}
               transform={`rotate(${angle * 180 / Math.PI + 90} ${cell.x} ${cell.y})`}
             />
             {safe.has(index) && !owner && (
@@ -672,20 +693,20 @@ function RadialBoard({ room }: { room: Room }) {
 
       {layout.polygonBoard
         ? boardPlayers.map((player) => {
-            const angle = radialCellAngle(player.seat * CELLS_PER_PLAYER, count)
-            return (
-              <polygon
-                key={`finish-${player.id}`}
-                points={pointList([
-                  { x: CENTER, y: CENTER },
-                  point(layout.finishRadius, angle - sector / 2),
-                  point(layout.finishRadius, angle + sector / 2),
-                ])}
-                fill={COLORS[player.color]}
-                className={finishClass}
-              />
-            )
-          })
+          const angle = radialCellAngle(player.seat * CELLS_PER_PLAYER, count)
+          return (
+            <polygon
+              key={`finish-${player.id}`}
+              points={pointList([
+                { x: CENTER, y: CENTER },
+                point(layout.finishRadius, angle - sector / 2),
+                point(layout.finishRadius, angle + sector / 2),
+              ])}
+              fill={COLORS[player.color]}
+              className={finishClass}
+            />
+          )
+        })
         : (
           <polygon
             points={pointList(Array.from({ length: count }, (_, index) =>
@@ -768,9 +789,9 @@ export function LudoBoard({
       originalToken.id === movingToken?.id
     const token: Token = isMoving
       ? {
-          ...originalToken,
-          progress: animatedProgress ?? movingToken.fromProgress,
-        }
+        ...originalToken,
+        progress: animatedProgress ?? movingToken.fromProgress,
+      }
       : originalToken
     const position = isSquare
       ? squareTokenPoint(token, room)
@@ -808,6 +829,24 @@ export function LudoBoard({
         role="img"
         aria-label={`${boardCount} player Ludo board`}
       >
+        <defs>
+          <filter
+            id="safe-cell-neon-glow"
+            x="-150%"
+            y="-150%"
+            width="400%"
+            height="400%"
+          >
+            <feGaussianBlur stdDeviation="4" result="blur" />
+            <feFlood floodColor="#facc15" floodOpacity="1" result="color" />
+            <feComposite in="color" in2="blur" operator="in" result="glow" />
+            <feMerge>
+              <feMergeNode in="glow" />
+              <feMergeNode in="glow" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
         {isSquare ? (
           <SquareBoard room={room} />
         ) : (

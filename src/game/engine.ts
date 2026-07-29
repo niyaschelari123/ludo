@@ -1,5 +1,14 @@
-import type { ActiveMove, GameMode, GameState, MovingToken, Player, Room, Token } from './types'
-import { applyPowerUp, eliminateTokenFromTnt, generatePowerTiles, powerUpAtCell } from './powerUps'
+import type {
+  ActiveMove,
+  GameMode,
+  GameState,
+  MovingToken,
+  Player,
+  PlayerStats,
+  Room,
+  Token,
+} from './types'
+import { applyPowerUp, generatePowerTiles, powerUpAtCell } from './powerUps'
 
 // A classic four-player board has 52 outer cells: 13 per player.
 // The same sector length extends cleanly to the 5–8 player polygon boards.
@@ -10,6 +19,7 @@ export const HOME_LENGTH = 5
 export const OUTER_HOME_ENTRY_TILES = 1
 export const TOKENS_PER_PLAYER = 4
 export const TURN_ROLL_TIMEOUT_MS = 20_000
+export const TURN_MOVE_TIMEOUT_MS = 20_000
 export const MAX_TURN_MISSES = 5
 
 /** Five-player pentagon boards use one extra home cell before the center. */
@@ -56,6 +66,27 @@ function beginRollPhase(game: GameState) {
   game.turnDeadline = Date.now() + TURN_ROLL_TIMEOUT_MS
 }
 
+function emptyPlayerStats(): PlayerStats {
+  return { captures: 0, eliminated: 0, tokensHome: 0, sixes: 0 }
+}
+
+export function ensurePlayerStats(game: GameState, playerId: string): PlayerStats {
+  game.stats ??= {}
+  if (!game.stats[playerId]) {
+    game.stats[playerId] = emptyPlayerStats()
+  }
+  return game.stats[playerId]
+}
+
+export function recordCapture(game: GameState, attackerId: string, victimId: string) {
+  ensurePlayerStats(game, attackerId).captures += 1
+  ensurePlayerStats(game, victimId).eliminated += 1
+}
+
+export function recordEliminated(game: GameState, playerId: string) {
+  ensurePlayerStats(game, playerId).eliminated += 1
+}
+
 export function createGame(players: Player[], gameMode: GameMode = 'classic'): GameState {
   const boardPlayerCount = players.length
   return {
@@ -66,6 +97,9 @@ export function createGame(players: Player[], gameMode: GameMode = 'classic'): G
     boardPlayerCount,
     turnDeadline: Date.now() + TURN_ROLL_TIMEOUT_MS,
     turnMisses: Object.fromEntries(players.map((player) => [player.id, 0])),
+    turnMissLimits: Object.fromEntries(
+      players.map((player) => [player.id, MAX_TURN_MISSES]),
+    ),
     entryMisses: Object.fromEntries(players.map((player) => [player.id, 0])),
     finishMisses: Object.fromEntries(players.map((player) => [player.id, 0])),
     protectionForfeited: Object.fromEntries(
@@ -80,6 +114,7 @@ export function createGame(players: Player[], gameMode: GameMode = 'classic'): G
       })),
     ),
     lastAction: `${players[0].name} starts`,
+    stats: Object.fromEntries(players.map((player) => [player.id, emptyPlayerStats()])),
     activeMove: null,
     powerTiles:
       gameMode === 'power' ? generatePowerTiles(boardPlayerCount) : {},
@@ -159,21 +194,13 @@ export function resolveLandingCapture(
         sharedProtectedCell = true
       } else {
         opponent.progress = -1
+        recordCapture(game, playerId, opponent.playerId)
         captured = true
       }
     }
   }
 
   return { captured, sharedProtectedCell }
-}
-
-export function resolveTntBackslideElimination(
-  room: Room,
-  playerId: string,
-  token: Token,
-): boolean {
-  if (!room.game) return false
-  return eliminateTokenFromTnt(room, playerId, token, globalCell(token, room))
 }
 
 export function hasActiveToken(
@@ -315,6 +342,45 @@ export function movableTokens(room: Room) {
   )
 }
 
+/** Prefer captures, home finishes, then yard exits for auto/bot moves. */
+export function pickBestMovableToken(room: Room): Token | null {
+  const game = room.game
+  if (!game?.dice) return null
+
+  const candidates = movableTokens(room)
+  if (candidates.length === 0) return null
+  if (candidates.length === 1) return candidates[0]
+
+  const finish = finishedProgress(room)
+  const dice = game.dice
+
+  const scoreToken = (token: Token) => {
+    const targetProgress = token.progress === -1 ? 0 : token.progress + dice
+    let score = targetProgress
+
+    if (token.progress === -1) score += 120
+    if (targetProgress === finish) score += 250
+
+    const landingToken = { ...token, progress: targetProgress }
+    const landingCell = globalCell(landingToken, room)
+    if (landingCell !== null && !safeCells(room).has(landingCell)) {
+      for (const opponent of game.tokens) {
+        if (opponent.playerId === token.playerId) continue
+        if (globalCell(opponent, room) !== landingCell) continue
+        if (isSoleTokenProtected(game, opponent.playerId, room)) continue
+        if (game.shieldBuff?.[opponent.playerId]) continue
+        score += 500
+      }
+    }
+
+    return score
+  }
+
+  return candidates.reduce((best: Token, token: Token) =>
+    scoreToken(token) > scoreToken(best) ? token : best,
+  )
+}
+
 function nextActiveTurn(room: Room, game: GameState) {
   for (let offset = 1; offset <= room.players.length; offset += 1) {
     const index = (game.turnIndex + offset) % room.players.length
@@ -327,6 +393,32 @@ function passTurn(room: Room, game: GameState) {
   game.turnIndex = nextActiveTurn(room, game)
   game.consecutiveSixes = 0
   beginRollPhase(game)
+}
+
+export function playerTurnMissLimit(game: GameState, playerId: string) {
+  game.turnMissLimits ??= {}
+  return game.turnMissLimits[playerId] ?? MAX_TURN_MISSES
+}
+
+export function grantExtraTurnChances(
+  room: Room,
+  playerId: string,
+  amount = 5,
+) {
+  const game = room.game
+  if (!game) throw new Error('Game has not started.')
+  if (!Number.isInteger(amount) || amount < 1) {
+    throw new Error('Invalid chance amount.')
+  }
+  const player = room.players.find((candidate) => candidate.id === playerId)
+  if (!player) throw new Error('Player not found.')
+  if (player.isBot) throw new Error('Bots do not use turn misses.')
+
+  game.turnMissLimits ??= {}
+  const current = playerTurnMissLimit(game, playerId)
+  game.turnMissLimits[playerId] = current + amount
+  const misses = game.turnMisses?.[playerId] ?? 0
+  game.lastAction = `${player.name} was given +${amount} roll chances (${misses}/${game.turnMissLimits[playerId]})`
 }
 
 export function applyRollTimeout(room: Room): {
@@ -343,13 +435,13 @@ export function applyRollTimeout(room: Room): {
   game.turnMisses ??= {}
   const misses = (game.turnMisses[player.id] ?? 0) + 1
   game.turnMisses[player.id] = misses
+  const limit = playerTurnMissLimit(game, player.id)
 
-  if (misses >= MAX_TURN_MISSES) {
+  if (misses >= limit) {
     return { shouldRemove: true, playerId: player.id }
   }
 
-  game.lastAction = `${player.name} ran out of time (${misses}/${MAX_TURN_MISSES})`
-  passTurn(room, game)
+  game.lastAction = `${player.name} ran out of roll time (${misses}/${limit})`
   return { shouldRemove: false, playerId: player.id }
 }
 
@@ -362,6 +454,9 @@ export function applyRoll(room: Room, value: number) {
   game.dice = value
   game.consecutiveSixes = value === 6 ? game.consecutiveSixes + 1 : 0
   game.lastAction = `${player.name} rolled ${value}`
+  if (value === 6) {
+    ensurePlayerStats(game, player.id).sixes += 1
+  }
 
   if (game.consecutiveSixes === 3) {
     game.lastAction = `${player.name} rolled three sixes and lost the turn`
@@ -370,8 +465,12 @@ export function applyRoll(room: Room, value: number) {
   }
 
   game.phase = 'move'
-  game.turnDeadline = null
-  if (movableTokens(room).length === 0) passTurn(room, game)
+  if (movableTokens(room).length === 0) {
+    game.turnDeadline = null
+    passTurn(room, game)
+    return
+  }
+  game.turnDeadline = Date.now() + TURN_MOVE_TIMEOUT_MS
 }
 
 function formatMoveAction(
@@ -471,18 +570,17 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
 
   let captured = pending.captured
   let sharedProtectedCell = pending.sharedProtectedCell ?? false
-  let selfEliminated = false
   if (token.progress !== progressBeforePower) {
     const powerLandingCapture = resolveLandingCapture(room, player.id, token)
     captured = captured || powerLandingCapture.captured
     sharedProtectedCell =
       sharedProtectedCell || powerLandingCapture.sharedProtectedCell
-    if (pending.type === 'back2' || pending.type === 'back3') {
-      selfEliminated = resolveTntBackslideElimination(room, player.id, token)
-    }
   }
 
   const reachedHomeAfterPower = token.progress === finish
+  if (reachedHomeAfterPower && token.progress !== progressBeforePower) {
+    ensurePlayerStats(game, player.id).tokensHome += 1
+  }
   const allHome = game.tokens
     .filter((candidate) => candidate.playerId === player.id)
     .every((candidate) => candidate.progress >= finish)
@@ -490,8 +588,6 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
   if (allHome && !game.winnerIds.includes(player.id)) {
     game.winnerIds.push(player.id)
     game.lastAction = `${player.name} finished in place #${game.winnerIds.length}`
-  } else if (selfEliminated) {
-    game.lastAction = `${player.name} hit TNT after sliding back`
   } else if (captured) {
     game.lastAction = `${player.name} captured a token`
   } else {
@@ -595,6 +691,9 @@ export function applyMove(room: Room, tokenId: number) {
   )
 
   const reachedHome = token.progress === finish
+  if (reachedHome) {
+    ensurePlayerStats(game, player.id).tokensHome += 1
+  }
   const allHome = game.tokens
     .filter((candidate) => candidate.playerId === player.id)
     .every((candidate) => candidate.progress >= finish)

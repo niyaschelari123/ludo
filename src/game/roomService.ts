@@ -46,11 +46,9 @@ export function watchRoom(
   onMoveStart?: (move: ActiveMove) => void,
 ) {
   const socket = getSocket()
-  let latestRoom: Room | null = null
 
   const handleState = (room: Room) => {
     if (room.id !== roomId) return
-    latestRoom = room
     onRoom(room)
   }
 
@@ -185,6 +183,37 @@ export async function removePlayer(
     roomId,
     userId,
     targetUserId,
+  })
+  return room
+}
+
+export async function grantExtraTurnChances(
+  roomId: string,
+  userId: string,
+  targetUserId: string,
+  amount = 5,
+) {
+  const { room } = await emitAck<{ room: Room }>('grantExtraTurnChances', {
+    roomId,
+    userId,
+    targetUserId,
+    amount,
+  })
+  return room
+}
+
+export async function skipMoveTimer(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room }>('skipMoveTimer', {
+    roomId,
+    userId,
+  })
+  return room
+}
+
+export async function skipRollTimer(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room }>('skipRollTimer', {
+    roomId,
+    userId,
   })
   return room
 }

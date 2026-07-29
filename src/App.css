@@ -195,6 +195,12 @@ select:focus {
   margin-top: 18px;
 }
 
+.skip-move-timer {
+  margin-top: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
 .divider {
   display: flex;
   align-items: center;
@@ -546,6 +552,29 @@ select:focus {
   display: block;
 }
 
+.player-row strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shield-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  background: rgba(59, 130, 246, 0.22);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.45);
+}
+
+.player-row.has-shield {
+  border-color: rgba(96, 165, 250, 0.45);
+  background: color-mix(in srgb, #3b82f6 10%, transparent);
+}
+
 .player-row small {
   margin-top: 3px;
   color: var(--muted);
@@ -591,6 +620,18 @@ select:focus {
 
 .player-row .player-remove {
   margin-left: auto;
+}
+
+.player-row .player-boost {
+  margin-left: auto;
+  min-width: 40px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.player-row .player-boost+.player-remove {
+  margin-left: 0;
 }
 
 .departed-label {
@@ -656,9 +697,31 @@ select:focus {
 }
 
 .safe-star {
-  fill: #64748b;
+  fill: #f59e0b;
   font-size: 22px;
   font-weight: 800;
+  paint-order: stroke;
+  stroke: #fff7cc;
+  stroke-width: 1.5px;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: safe-star-twinkle 1.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.safe-cell {
+  stroke: #facc15;
+  stroke-width: 2.5;
+  animation: safe-cell-glow 1.5s ease-in-out infinite;
+}
+
+.safe-cell-aura {
+  fill: none;
+  stroke: #facc15;
+  stroke-width: 5;
+  filter: url("#safe-cell-neon-glow");
+  pointer-events: none;
+  animation: safe-cell-aura-pulse 1.15s ease-in-out infinite;
 }
 
 .square-player-label {
@@ -809,18 +872,76 @@ select:focus {
 }
 
 .radial-star {
-  fill: #64748b;
+  fill: #f59e0b;
   font-size: 13px;
   font-weight: 900;
   paint-order: stroke;
-  stroke: #fff;
+  stroke: #fff7cc;
   stroke-width: 2px;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: safe-star-twinkle 1.5s ease-in-out infinite;
+  pointer-events: none;
 }
 
 .six-star {
-  fill: #334155;
+  fill: #f59e0b;
   font-size: 10px;
   stroke-width: 1.5px;
+}
+
+@keyframes safe-cell-glow {
+
+  0%,
+  100% {
+    fill: #fff9db;
+    stroke: #f59e0b;
+  }
+
+  50% {
+    fill: #fde68a;
+    stroke: #fff7ae;
+  }
+}
+
+@keyframes safe-cell-aura-pulse {
+
+  0%,
+  100% {
+    opacity: .55;
+    stroke-width: 4;
+  }
+
+  50% {
+    opacity: 1;
+    stroke-width: 7;
+  }
+}
+
+@keyframes safe-star-twinkle {
+
+  0%,
+  100% {
+    opacity: .72;
+    transform: scale(.88) rotate(-5deg);
+    filter: drop-shadow(0 0 1px rgba(245, 158, 11, .45));
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.16) rotate(5deg);
+    filter: drop-shadow(0 0 4px rgba(245, 158, 11, 1));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  .safe-cell,
+  .safe-cell-aura,
+  .safe-star,
+  .radial-star {
+    animation: none;
+  }
 }
 
 .radial-finish {
@@ -862,18 +983,14 @@ select:focus {
 
 .token {
   filter:
-    drop-shadow(0 0 2px rgba(255, 255, 255, 0.85))
-    drop-shadow(0 0 6px rgba(255, 255, 255, 0.35))
-    drop-shadow(0 3px 5px rgba(0, 0, 0, 0.55));
+    drop-shadow(0 0 2px rgba(255, 255, 255, 0.85)) drop-shadow(0 0 6px rgba(255, 255, 255, 0.35)) drop-shadow(0 3px 5px rgba(0, 0, 0, 0.55));
   transition: transform .12s linear, filter .2s;
   will-change: transform;
 }
 
 .token.finished {
   filter:
-    drop-shadow(0 0 1px rgba(255, 255, 255, 0.6))
-    drop-shadow(0 0 4px rgba(255, 255, 255, 0.25))
-    drop-shadow(0 2px 3px rgba(0, 0, 0, 0.42));
+    drop-shadow(0 0 1px rgba(255, 255, 255, 0.6)) drop-shadow(0 0 4px rgba(255, 255, 255, 0.25)) drop-shadow(0 2px 3px rgba(0, 0, 0, 0.42));
   opacity: 0.92;
 }
 
@@ -1069,6 +1186,11 @@ select:focus {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.35;
+}
+
+.power-legend-icon.power-icon--half {
+  background: #ddd6fe;
+  color: #6d28d9;
 }
 
 .power-legend-icon.power-icon--tnt {
@@ -1340,7 +1462,7 @@ select:focus {
 }
 
 .host-leave-card h2,
-.host-leave-card > p {
+.host-leave-card>p {
   text-align: center;
 }
 
@@ -1641,6 +1763,73 @@ select:focus {
   font-size: 9px;
 }
 
+.match-stats {
+  width: 100%;
+  margin-top: 22px;
+  text-align: left;
+}
+
+.match-stats h2 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #cbd5e1;
+}
+
+.match-stats-list {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.match-stats-row {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--player) 35%, transparent);
+  background: color-mix(in srgb, var(--player) 12%, rgba(15, 23, 42, 0.55));
+}
+
+.match-stats-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.match-stats-player strong {
+  font-size: 14px;
+}
+
+.match-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.match-stats-grid span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 4px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.35);
+  color: #94a3b8;
+  font-size: 10px;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.match-stats-grid em {
+  font-style: normal;
+  font-size: 16px;
+  font-weight: 800;
+  color: #f8fafc;
+}
+
 .results-button {
   min-width: 190px;
   padding: 13px 26px;
@@ -1765,6 +1954,10 @@ select:focus {
   .remaining-places {
     grid-template-columns: 1fr;
   }
+
+  .match-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .mode-picker {
@@ -1833,8 +2026,20 @@ select:focus {
   font-size: 11px;
 }
 
+.power-half .power-marker-bg {
+  fill: #ddd6fe;
+}
+
+.power-half .power-marker-label.text {
+  fill: #6d28d9;
+}
+
 .power-tnt .power-marker-bg {
   fill: #fecaca;
+}
+
+.power-tnt .power-marker-label.text {
+  fill: #b91c1c;
 }
 
 .power-rocket .power-marker-bg {
@@ -1847,6 +2052,29 @@ select:focus {
 
 .power-shield .power-marker-bg {
   fill: #bfdbfe;
+  stroke: #38bdf8;
+  stroke-width: 1.8;
+}
+
+.shield-box-glow {
+  fill: rgba(56, 189, 248, .08);
+  stroke: #38bdf8;
+  stroke-width: 2;
+  filter:
+    drop-shadow(0 0 2px rgba(56, 189, 248, .95))
+    drop-shadow(0 0 3px rgba(37, 99, 235, .65));
+  pointer-events: none;
+  animation: shield-small-glow 1.4s ease-in-out infinite;
+}
+
+@keyframes shield-small-glow {
+  0%, 100% {
+    opacity: .65;
+  }
+  50% {
+    opacity: 1;
+    stroke: #7dd3fc;
+  }
 }
 
 .power-flame .power-marker-bg {

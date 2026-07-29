@@ -4,6 +4,8 @@ import {
   globalCell,
   homeEntryProgress,
   isSoleTokenProtected,
+  recordCapture,
+  recordEliminated,
   safeCells,
   trackLength,
 } from './engine'
@@ -18,11 +20,13 @@ export const ACTIVE_POWER_TYPES: PowerUpType[] = [
   'back2',
   'back3',
   'yard',
+  'half',
   'tnt',
   'ice',
 ]
 
 export const POWER_UP_ICONS: Record<PowerUpType, string> = {
+  half: '½',
   tnt: 'TNT',
   rocket: '🚀',
   spring: '↗',
@@ -43,7 +47,7 @@ export const POWER_UP_INFO: {
   label: string
   description: string
 }[] = [
-  { type: 'rocket', label: 'Rocket', description: 'Surge 3 extra steps forward' },
+  { type: 'rocket', label: 'Rocket', description: 'x3 your dice roll as a forward surge' },
   { type: 'spring', label: 'Spring', description: 'Bounce 2 extra steps ahead' },
   { type: 'x2', label: 'x2', description: 'Repeats your dice roll as bonus steps' },
   { type: 'shield', label: 'Shield', description: 'Blocks the next capture attempt' },
@@ -51,7 +55,12 @@ export const POWER_UP_INFO: {
   { type: 'back2', label: 'Back 2', description: 'Slides your token 2 steps backward' },
   { type: 'back3', label: 'Back 3', description: 'Slides your token 3 steps backward' },
   { type: 'yard', label: 'Yard', description: 'Sends your token back to your starting square' },
-  { type: 'tnt', label: 'TNT', description: 'Eliminates unprotected tokens on this cell and sends them to the yard' },
+  { type: 'half', label: 'Half', description: 'Surges you halfway around the board' },
+  {
+    type: 'tnt',
+    label: 'TNT',
+    description: 'Eliminates unprotected tokens on this cell and sends them to the yard',
+  },
   { type: 'ice', label: 'Ice', description: 'Pushes rivals on this cell back 3 steps' },
 ]
 
@@ -65,7 +74,8 @@ export function powerUpDescription(type: PowerUpType) {
 
 const SLOT_OFFSETS = [4, 10]
 const YARD_OFFSET = 7
-const TNT_OFFSET = 3
+const HALF_OFFSET = 3
+const TNT_OFFSET = 9
 const RARE_POWER_COUNT = 2
 
 const COMMON_CYCLE: PowerUpType[] = [
@@ -96,18 +106,22 @@ export function generatePowerTiles(playerCount: number): Record<number, PowerUpT
   }
 
   const yardSeats = spacedSeats(playerCount, RARE_POWER_COUNT, 0)
-  const tntSeats = spacedSeats(
+  const halfSeats = spacedSeats(
     playerCount,
     RARE_POWER_COUNT,
     Math.max(1, Math.floor(playerCount / 4)),
   )
+  const tntSeat = Math.floor(playerCount / 2) % playerCount
 
   for (const seat of yardSeats) {
+    if (seat === tntSeat) continue
     tiles[(seat * CELLS_PER_PLAYER + YARD_OFFSET) % length] = 'yard'
   }
-  for (const seat of tntSeats) {
-    tiles[(seat * CELLS_PER_PLAYER + TNT_OFFSET) % length] = 'tnt'
+  for (const seat of halfSeats) {
+    tiles[(seat * CELLS_PER_PLAYER + HALF_OFFSET) % length] = 'half'
   }
+
+  tiles[(tntSeat * CELLS_PER_PLAYER + TNT_OFFSET) % length] = 'tnt'
 
   return tiles
 }
@@ -159,7 +173,7 @@ function opponentsOnCell(
   )
 }
 
-export function eliminateTokenFromTnt(
+function eliminateTokenFromTnt(
   room: Room,
   playerId: string,
   token: Token,
@@ -177,6 +191,7 @@ export function eliminateTokenFromTnt(
   if (isSoleTokenProtected(game, playerId, room)) return false
 
   token.progress = -1
+  recordEliminated(game, playerId)
   return true
 }
 
@@ -200,6 +215,7 @@ export function applyPowerUp(
           continue
         }
         opponent.progress = -1
+        recordCapture(game, player.id, opponent.playerId)
         blasted += 1
       }
       const selfEliminated = eliminateTokenFromTnt(
@@ -217,9 +233,16 @@ export function applyPowerUp(
         ? `${player.name} triggered TNT and blasted ${blasted} token(s)`
         : `${player.name} triggered TNT`
     }
-    case 'rocket':
-      advanceToken(token, 3, room)
-      return `${player.name} hit a rocket and surged ahead`
+    case 'half': {
+      const steps = Math.max(1, Math.floor(trackLength(room) / 2))
+      advanceToken(token, steps, room)
+      return `${player.name} surged halfway around the board`
+    }
+    case 'rocket': {
+      const bonus = (game.dice ?? 0) * 2
+      advanceToken(token, bonus, room)
+      return `${player.name} hit a rocket and surged x3`
+    }
     case 'spring':
       advanceToken(token, 2, room)
       return `${player.name} bounced on a spring`

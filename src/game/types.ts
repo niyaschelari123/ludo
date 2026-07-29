@@ -14,7 +14,7 @@ export type RoomStatus = 'lobby' | 'playing' | 'finished'
 export type TurnPhase = 'roll' | 'move' | 'power'
 export type GameMode = 'classic' | 'power'
 export type PowerUpType =
-  | 'tnt'
+  | 'half'
   | 'rocket'
   | 'spring'
   | 'shield'
@@ -27,6 +27,7 @@ export type PowerUpType =
   | 'back2'
   | 'back3'
   | 'yard'
+  | 'tnt' // legacy; treated as half if present in old rooms
 
 export interface PowerTile {
   cell: number
@@ -153,6 +154,13 @@ export interface PendingPower {
   forfeitedProtection: boolean
 }
 
+export interface PlayerStats {
+  captures: number
+  eliminated: number
+  tokensHome: number
+  sixes: number
+}
+
 export interface GameState {
   turnIndex: number
   phase: TurnPhase
@@ -161,12 +169,15 @@ export interface GameState {
   boardPlayerCount: number
   turnDeadline: number | null
   turnMisses: Record<string, number>
+  /** Per-player miss allowance before removal. Defaults to MAX_TURN_MISSES. */
+  turnMissLimits?: Record<string, number>
   entryMisses: Record<string, number>
   finishMisses: Record<string, number>
   protectionForfeited: Record<string, boolean>
   winnerIds: string[]
   tokens: Token[]
   lastAction: string
+  stats?: Record<string, PlayerStats>
   activeMove?: ActiveMove | null
   powerTiles?: Record<number, PowerUpType>
   shieldBuff?: Record<string, boolean>

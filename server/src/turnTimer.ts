@@ -1,4 +1,7 @@
-import { TURN_ROLL_TIMEOUT_MS } from '../../src/game/engine.js'
+import {
+  TURN_MOVE_TIMEOUT_MS,
+  TURN_ROLL_TIMEOUT_MS,
+} from '../../src/game/engine.js'
 import type { Room } from '../../src/game/types.js'
 import { getRoom } from './roomManager.js'
 
@@ -25,14 +28,16 @@ export function scheduleTurnTimer(
     return
   }
 
-  if (room.status !== 'playing' || !room.game || room.game.phase !== 'roll') {
-    return
-  }
+  if (room.status !== 'playing' || !room.game) return
+  const phase = room.game.phase
+  if (phase !== 'roll' && phase !== 'move') return
 
   const player = room.players[room.game.turnIndex]
   if (!player || player.isBot) return
 
-  const deadline = room.game.turnDeadline ?? Date.now() + TURN_ROLL_TIMEOUT_MS
+  const fallback =
+    phase === 'move' ? TURN_MOVE_TIMEOUT_MS : TURN_ROLL_TIMEOUT_MS
+  const deadline = room.game.turnDeadline ?? Date.now() + fallback
   const delay = Math.max(0, deadline - Date.now())
 
   turnTimers.set(

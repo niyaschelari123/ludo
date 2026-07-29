@@ -13,6 +13,7 @@ import { Server, type Socket } from 'socket.io'
 import {
   createRoom,
   getRoom,
+  handleMoveTimeout,
   handleRollTimeout,
   joinRoom,
   leaveRoom,
@@ -22,8 +23,11 @@ import {
   resolvePendingPower,
   rollDice,
   setSlotBot,
+  skipMoveTimer,
+  skipRollTimer,
   startRoom,
   storeRollHint,
+  grantExtraTurnChances,
 } from './roomManager.js'
 import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.js'
 import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
@@ -58,7 +62,10 @@ const sessions = new Map<string, SocketSession>()
 
 function broadcastState(room: Room) {
   io.to(room.id).emit('stateUpdate', room)
-  if (room.status === 'playing' && room.game?.phase === 'roll') {
+  if (
+    room.status === 'playing' &&
+    (room.game?.phase === 'roll' || room.game?.phase === 'move')
+  ) {
     scheduleTurnTimer(room.id, handleTurnTimeout)
   } else {
     stopTurnTimer(room.id)
@@ -68,6 +75,18 @@ function broadcastState(room: Room) {
 
 function handleTurnTimeout(roomId: string) {
   try {
+    const current = getRoom(roomId)
+    if (current.game?.phase === 'move') {
+      const result = handleMoveTimeout(roomId)
+      if (!result) return
+      if (result.previewRoom.game?.activeMove) {
+        emitAnimatedMove(roomId, result.previewRoom, result.room)
+      } else {
+        broadcastState(result.room)
+      }
+      return
+    }
+
     const room = handleRollTimeout(roomId)
     if (!room) return
     broadcastState(room)
@@ -346,6 +365,75 @@ io.on('connection', (socket) => {
         )
         callback?.({ ok: true, data: { room } })
         broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'grantExtraTurnChances',
+    (
+      payload: {
+        roomId: string
+        userId: string
+        targetUserId: string
+        amount?: number
+      },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = grantExtraTurnChances(
+          payload.roomId,
+          payload.userId,
+          payload.targetUserId,
+          payload.amount ?? 5,
+        )
+        callback?.({ ok: true, data: { room } })
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'skipRollTimer',
+    (
+      payload: { roomId: string; userId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = skipRollTimer(payload.roomId, payload.userId)
+        if (!room) {
+          throw new Error('Room closed.')
+        }
+        callback?.({ ok: true, data: { room } })
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'skipMoveTimer',
+    (
+      payload: { roomId: string; userId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        stopTurnTimer(payload.roomId)
+        const result = skipMoveTimer(payload.roomId, payload.userId)
+        if (!result) {
+          throw new Error('No move timer to skip.')
+        }
+        callback?.({ ok: true, data: { room: result.room } })
+        if (result.previewRoom.game?.activeMove) {
+          emitAnimatedMove(payload.roomId, result.previewRoom, result.room)
+        } else {
+          broadcastState(result.room)
+        }
       } catch (error) {
         ackError(callback, error)
       }

@@ -1,12 +1,8 @@
 import {
-  finishedProgress,
-  globalCell,
-  isSoleTokenProtected,
-  movableTokens,
+  pickBestMovableToken,
   resolveDiceValue,
-  safeCells,
 } from '../../src/game/engine.js'
-import { type Room, type Token } from '../../src/game/types.js'
+import { type Room } from '../../src/game/types.js'
 import {
   getRoom,
   movePawn,
@@ -36,44 +32,6 @@ function clearBotTimer(roomId: string) {
     clearTimeout(timer)
     botTimers.delete(roomId)
   }
-}
-
-function pickBotToken(room: Room) {
-  const game = room.game
-  if (!game?.dice) return null
-
-  const candidates = movableTokens(room)
-  if (candidates.length === 0) return null
-  if (candidates.length === 1) return candidates[0]
-
-  const finish = finishedProgress(room)
-  const dice = game.dice
-
-  const scoreToken = (token: (typeof candidates)[number]) => {
-    const targetProgress = token.progress === -1 ? 0 : token.progress + dice
-    let score = targetProgress
-
-    if (token.progress === -1) score += 120
-    if (targetProgress === finish) score += 250
-
-    const landingToken = { ...token, progress: targetProgress }
-    const landingCell = globalCell(landingToken, room)
-    if (landingCell !== null && !safeCells(room).has(landingCell)) {
-      for (const opponent of game.tokens) {
-        if (opponent.playerId === token.playerId) continue
-        if (globalCell(opponent, room) !== landingCell) continue
-        if (isSoleTokenProtected(game, opponent.playerId, room)) continue
-        if (game.shieldBuff?.[opponent.playerId]) continue
-        score += 500
-      }
-    }
-
-    return score
-  }
-
-  return candidates.reduce((best: Token, token: Token) =>
-    scoreToken(token) > scoreToken(best) ? token : best,
-  )
 }
 
 function botDelay(room: Room, pause: BotPauseKind = 'default') {
@@ -111,7 +69,7 @@ export function runBotStep(roomId: string): BotActionResult {
   }
 
   if (game.phase === 'move') {
-    const token = pickBotToken(room)
+    const token = pickBestMovableToken(room)
     if (!token) return { kind: 'none' }
     const startedAt = Date.now()
     const targetProgress =

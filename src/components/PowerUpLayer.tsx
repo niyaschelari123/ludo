@@ -58,13 +58,16 @@ function PowerMarker({
   x,
   y,
   type,
+  rotation = 0,
 }: {
   x: number
   y: number
   type: PowerUpType
+  rotation?: number
 }) {
   const label = POWER_UP_ICONS[type]
   const isText =
+    type === 'half' ||
     type === 'tnt' ||
     type === 'x2' ||
     type === 'x3' ||
@@ -74,6 +77,17 @@ function PowerMarker({
 
   return (
     <g className={`power-marker power-${type}`}>
+      {type === 'shield' && (
+        <rect
+          x={x - 13}
+          y={y - 13}
+          width="26"
+          height="26"
+          rx="3"
+          className="shield-box-glow"
+          transform={`rotate(${rotation} ${x} ${y})`}
+        />
+      )}
       <circle cx={x} cy={y} r="11" className="power-marker-bg" />
       <text
         x={x}
@@ -101,7 +115,18 @@ export function PowerUpLayer({ room }: { room: Room }) {
           ? squarePoint(cell)
           : radialPoint(cell, count)
         if (!position) return null
-        return <PowerMarker key={`${cell}-${type}`} x={position.x} y={position.y} type={type} />
+        const rotation = isSquare
+          ? 0
+          : radialCellAngle(cell, count) * 180 / Math.PI + 90
+        return (
+          <PowerMarker
+            key={`${cell}-${type}`}
+            x={position.x}
+            y={position.y}
+            type={type}
+            rotation={rotation}
+          />
+        )
       })}
     </g>
   )

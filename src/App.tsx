@@ -18,6 +18,7 @@ import { PowerLegend } from './components/PowerLegend'
 import { PowerToast } from './components/PowerToast'
 import {
   createRoom,
+  grantExtraTurnChances,
   joinRoom,
   leaveRoom,
   moveTokenWithRetry,
@@ -25,6 +26,8 @@ import {
   resolvePendingPower,
   rollDice,
   setSlotBot,
+  skipMoveTimer,
+  skipRollTimer,
   startRoom,
   watchRoom,
 } from './game/roomService'
@@ -36,9 +39,11 @@ import {
   performLocalMove,
   performLocalResolvePower,
   performLocalRoll,
+  playerTurnMissLimit,
+  TURN_MOVE_TIMEOUT_MS,
   TURN_ROLL_TIMEOUT_MS,
 } from './game/engine'
-import type { GameMode, MovingToken, PowerUpType, Room } from './game/types'
+import type { GameMode, MovingToken, PlayerStats, PowerUpType, Room } from './game/types'
 import {
   moveBaseSignature,
   movingTokenTarget,
@@ -389,7 +394,11 @@ function App() {
 
   useEffect(() => {
     const game = displayRoom?.game
-    if (!game || displayRoom?.status !== 'playing' || game.phase !== 'roll') {
+    if (
+      !game ||
+      displayRoom?.status !== 'playing' ||
+      (game.phase !== 'roll' && game.phase !== 'move')
+    ) {
       setTurnSecondsLeft(null)
       return
     }
@@ -754,7 +763,7 @@ function App() {
                   onClick={() => setGameMode('power')}
                 >
                   <strong>Power</strong>
-                  <span>TNT, rockets, springs & more</span>
+                  <span>Half-board surge, rockets, springs & more</span>
                 </button>
               </div>
             </label>
@@ -810,6 +819,14 @@ function App() {
     .sort((first, second) => second.leftAt - first.leftAt)
     .map((player) => ({ ...player, leftEarly: true as const }))
   const finalRanking = [...activeRanking, ...departedRanking]
+  const emptyStats = (): PlayerStats => ({
+    captures: 0,
+    eliminated: 0,
+    tokensHome: 0,
+    sixes: 0,
+  })
+  const playerStats = (playerId: string) =>
+    viewRoom.game?.stats?.[playerId] ?? emptyStats()
   const bannerAction =
     rolling && viewRoom.game?.lastAction?.includes(' rolled ')
       ? 'Rolling dice…'
@@ -939,15 +956,27 @@ function App() {
             <h2>Players</h2>
             {viewRoom.players.map((player, index) => {
               const misses = viewRoom.game?.turnMisses?.[player.id] ?? 0
+              const missLimit = viewRoom.game
+                ? playerTurnMissLimit(viewRoom.game, player.id)
+                : MAX_TURN_MISSES
+              const isHost = room.hostId === userId
+              const hasShield = Boolean(viewRoom.game?.shieldBuff?.[player.id])
               return (
               <div
                 key={player.id}
-                className={`player-row ${player.color} ${viewRoom.game?.turnIndex === index ? 'active' : ''}`}
+                className={`player-row ${player.color} ${viewRoom.game?.turnIndex === index ? 'active' : ''} ${hasShield ? 'has-shield' : ''}`}
               >
                 <div className="player-row-main">
                 <span className="avatar">{player.name[0].toUpperCase()}</span>
                 <div>
-                  <strong>{player.name}</strong>
+                  <strong>
+                    {player.name}
+                    {hasShield ? (
+                      <span className="shield-badge" title="Shield active — next capture blocked">
+                        🛡
+                      </span>
+                    ) : null}
+                  </strong>
                   <small>
                     {viewRoom.game?.winnerIds.includes(player.id)
                       ? `Finished #${viewRoom.game.winnerIds.indexOf(player.id) + 1}`
@@ -956,10 +985,27 @@ function App() {
                         : player.isBot
                           ? 'Bot'
                           : 'Online'}
-                    {misses > 0 ? ` · ${misses}/${MAX_TURN_MISSES} misses` : ''}
+                    {hasShield ? ' · Shield' : ''}
+                    {misses > 0 ? ` · ${misses}/${missLimit} misses` : ''}
                   </small>
                 </div>
-                {room.hostId === userId && player.id !== userId ? (
+                {isHost && !player.isBot && viewRoom.status === 'playing' ? (
+                  <button
+                    type="button"
+                    className="slot-action player-boost"
+                    disabled={busy}
+                    title="Give +5 roll chances"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void perform(async () => {
+                        await grantExtraTurnChances(room.id, userId, player.id, 5)
+                      })
+                    }}
+                  >
+                    +5
+                  </button>
+                ) : null}
+                {isHost && player.id !== userId ? (
                   <button
                     type="button"
                     className="slot-action player-remove"
@@ -992,9 +1038,10 @@ function App() {
             <div className="turn-banner">
               <strong>{isMyTurn ? 'Your turn' : `${currentPlayer?.name}'s turn`}</strong>
               <span>{bannerAction}</span>
-              {viewRoom.game?.phase === 'roll' && turnSecondsLeft !== null ? (
+              {turnSecondsLeft !== null &&
+              (viewRoom.game?.phase === 'roll' || viewRoom.game?.phase === 'move') ? (
                 <span className={`turn-timer ${turnSecondsLeft <= 5 ? 'urgent' : ''}`}>
-                  Roll within {turnSecondsLeft}s
+                  {viewRoom.game?.phase === 'roll' ? 'Roll' : 'Move'} within {turnSecondsLeft}s
                 </span>
               ) : null}
             </div>
@@ -1026,6 +1073,42 @@ function App() {
             ) : isMyTurn ? (
               <p className="action-hint">Choose a glowing {me?.color} token.</p>
             ) : <p className="action-hint">Waiting for {currentPlayer?.name}…</p>}
+            {room.hostId === userId &&
+            viewRoom.status === 'playing' &&
+            viewRoom.game?.phase === 'roll' &&
+            currentPlayer &&
+            !currentPlayer.isBot ? (
+              <button
+                type="button"
+                className="secondary-button skip-move-timer"
+                disabled={busy || rolling}
+                onClick={() =>
+                  void perform(async () => {
+                    await skipRollTimer(room.id, userId)
+                  })
+                }
+              >
+                Skip wait · auto-roll
+              </button>
+            ) : null}
+            {room.hostId === userId &&
+            viewRoom.status === 'playing' &&
+            viewRoom.game?.phase === 'move' &&
+            currentPlayer &&
+            !currentPlayer.isBot ? (
+              <button
+                type="button"
+                className="secondary-button skip-move-timer"
+                disabled={busy || rolling}
+                onClick={() =>
+                  void perform(async () => {
+                    await skipMoveTimer(room.id, userId)
+                  })
+                }
+              >
+                Skip wait · auto-move
+              </button>
+            ) : null}
             <div className="rules">
               <h3>Quick rules</h3>
               <p>Roll 6 to leave the yard.</p>
@@ -1035,7 +1118,11 @@ function App() {
               <p>No active tokens: the sixth failed entry attempt guarantees a 6.</p>
               <p>Last token 1–3 steps away: the eighth attempt guarantees the exact roll.</p>
               <p>Three consecutive 6s lose the turn.</p>
-              <p>Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or skip turn. {MAX_TURN_MISSES} misses removes you.</p>
+              <p>
+                Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or an auto-roll is made. Move within{' '}
+                {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Default{' '}
+                {MAX_TURN_MISSES} roll misses removes you; host can grant +5 and skip either wait.
+              </p>
               <p>Reach home with an exact roll.</p>
             </div>
             {error && <p className="error">{error}</p>}
@@ -1226,6 +1313,44 @@ function App() {
                 ))}
               </div>
             )}
+
+            <div className="match-stats">
+              <h2>Match stats</h2>
+              <div className="match-stats-list">
+                {finalRanking.map((player) => {
+                  const stats = playerStats(player.id)
+                  return (
+                    <div
+                      key={`stats-${player.id}`}
+                      className={`match-stats-row ${player.color}`}
+                    >
+                      <div className="match-stats-player">
+                        <span className="avatar">{player.name[0].toUpperCase()}</span>
+                        <strong>{player.name}</strong>
+                      </div>
+                      <div className="match-stats-grid">
+                        <span>
+                          <em>{stats.captures}</em>
+                          Eliminations
+                        </span>
+                        <span>
+                          <em>{stats.eliminated}</em>
+                          Times out
+                        </span>
+                        <span>
+                          <em>{stats.tokensHome}</em>
+                          Tokens home
+                        </span>
+                        <span>
+                          <em>{stats.sixes}</em>
+                          Sixes
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
 
             <button className="results-button" onClick={exitRoom}>Back to home</button>
           </div>
