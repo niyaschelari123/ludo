@@ -54,6 +54,37 @@ function sortPlayers(room: Room) {
   room.players.sort((first, second) => first.seat - second.seat)
 }
 
+function assignRandomGameColors(room: Room) {
+  const previousColors = room.players.map((player) => player.color)
+
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const colors = [...previousColors]
+    for (let index = colors.length - 1; index > 0; index -= 1) {
+      const randomIndex =
+        crypto.getRandomValues(new Uint32Array(1))[0] % (index + 1)
+      ;[colors[index], colors[randomIndex]] = [
+        colors[randomIndex],
+        colors[index],
+      ]
+    }
+
+    if (
+      room.players.every(
+        (player, index) => colors[index] !== previousColors[index],
+      )
+    ) {
+      room.players.forEach((player, index) => {
+        player.color = colors[index]
+      })
+      return
+    }
+  }
+
+  room.players.forEach((player, index) => {
+    player.color = previousColors[(index + 1) % previousColors.length]
+  })
+}
+
 function firstOpenSeat(room: Room) {
   const occupied = new Set(room.players.map((player) => player.seat))
   for (let seat = 0; seat < room.maxPlayers; seat += 1) {
@@ -197,6 +228,7 @@ export function startRoom(roomId: string, userId: string) {
   }
 
   sortPlayers(room)
+  assignRandomGameColors(room)
   room.game = createGame(room.players, room.gameMode ?? 'classic')
   room.status = 'playing'
   room.updatedAt = Date.now()
