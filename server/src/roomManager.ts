@@ -54,35 +54,40 @@ function sortPlayers(room: Room) {
   room.players.sort((first, second) => first.seat - second.seat)
 }
 
-function assignRandomGameColors(room: Room) {
-  const previousColors = room.players.map((player) => player.color)
-
+function assignRandomGamePositions(room: Room) {
+  const originalPlayers = [...room.players]
   for (let attempt = 0; attempt < 32; attempt += 1) {
-    const colors = [...previousColors]
-    for (let index = colors.length - 1; index > 0; index -= 1) {
+    const shuffledPlayers = [...originalPlayers]
+    for (let index = shuffledPlayers.length - 1; index > 0; index -= 1) {
       const randomIndex =
         crypto.getRandomValues(new Uint32Array(1))[0] % (index + 1)
-      ;[colors[index], colors[randomIndex]] = [
-        colors[randomIndex],
-        colors[index],
+      ;[shuffledPlayers[index], shuffledPlayers[randomIndex]] = [
+        shuffledPlayers[randomIndex],
+        shuffledPlayers[index],
       ]
     }
 
     if (
-      room.players.every(
-        (player, index) => colors[index] !== previousColors[index],
+      shuffledPlayers.every(
+        (player, index) =>
+          player.seat !== index && player.color !== PLAYER_COLORS[index],
       )
     ) {
-      room.players.forEach((player, index) => {
-        player.color = colors[index]
+      shuffledPlayers.forEach((player, index) => {
+        player.seat = index
+        player.color = PLAYER_COLORS[index]
       })
+      room.players = shuffledPlayers
       return
     }
   }
 
-  room.players.forEach((player, index) => {
-    player.color = previousColors[(index + 1) % previousColors.length]
+  const rotatedPlayers = [...originalPlayers.slice(1), originalPlayers[0]]
+  rotatedPlayers.forEach((player, index) => {
+    player.seat = index
+    player.color = PLAYER_COLORS[index]
   })
+  room.players = rotatedPlayers
 }
 
 function firstOpenSeat(room: Room) {
@@ -228,7 +233,7 @@ export function startRoom(roomId: string, userId: string) {
   }
 
   sortPlayers(room)
-  assignRandomGameColors(room)
+  assignRandomGamePositions(room)
   room.game = createGame(room.players, room.gameMode ?? 'classic')
   room.status = 'playing'
   room.updatedAt = Date.now()
