@@ -67,19 +67,24 @@ function beginRollPhase(game: GameState) {
 }
 
 function emptyPlayerStats(): PlayerStats {
-  return { captures: 0, eliminated: 0, tokensHome: 0, sixes: 0 }
+  return { captures: 0, eliminated: 0, tokensHome: 0, sixes: 0, eliminatedPlayers: {} }
 }
 
 export function ensurePlayerStats(game: GameState, playerId: string): PlayerStats {
   game.stats ??= {}
   if (!game.stats[playerId]) {
     game.stats[playerId] = emptyPlayerStats()
+  } else {
+    game.stats[playerId].eliminatedPlayers ??= {}
   }
   return game.stats[playerId]
 }
 
 export function recordCapture(game: GameState, attackerId: string, victimId: string) {
-  ensurePlayerStats(game, attackerId).captures += 1
+  const attacker = ensurePlayerStats(game, attackerId)
+  attacker.captures += 1
+  attacker.eliminatedPlayers[victimId] =
+    (attacker.eliminatedPlayers[victimId] ?? 0) + 1
   ensurePlayerStats(game, victimId).eliminated += 1
 }
 
@@ -110,7 +115,8 @@ export function createGame(players: Player[], gameMode: GameMode = 'classic'): G
       Array.from({ length: TOKENS_PER_PLAYER }, (_, id) => ({
         id,
         playerId: player.id,
-        progress: -1,
+        // Start with one token already on the start square so games open faster.
+        progress: id === 0 ? 0 : -1,
       })),
     ),
     lastAction: `${players[0].name} starts`,

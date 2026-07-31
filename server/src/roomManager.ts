@@ -15,10 +15,100 @@ import {
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
 import { PLAYER_COLORS, type Room } from '../../src/game/types.js'
+import { normalizeColorKey } from '../../src/game/colors.js'
 
 const rooms = new Map<string, Room>()
 const codeIndex = new Map<string, string>()
 const rollHints = new Map<string, Record<string, number>>()
+/** colorKey -> accountId */
+const colorClaims = new Map<string, string>()
+
+function shuffleInPlace<T>(items: T[]) {
+  for (let index = items.length - 1; index > 0; index -= 1) {
+    const randomIndex =
+      crypto.getRandomValues(new Uint32Array(1))[0] % (index + 1)
+    ;[items[index], items[randomIndex]] = [items[randomIndex], items[index]]
+  }
+  return items
+}
+
+function usedColorsInRoom(room: Room, exceptUserId?: string) {
+  return new Set(
+    room.players
+      .filter((player) => player.id !== exceptUserId)
+      .map((player) => {
+        try {
+          return normalizeColorKey(player.color)
+        } catch {
+          return player.color
+        }
+      }),
+  )
+}
+
+function nextFreePresetColor(room: Room, exceptUserId?: string) {
+  const used = usedColorsInRoom(room, exceptUserId)
+  for (const color of PLAYER_COLORS) {
+    const key = normalizeColorKey(color)
+    if (used.has(key)) continue
+    const owner = colorClaims.get(key)
+    if (owner && owner !== exceptUserId) continue
+    return color
+  }
+  for (const color of PLAYER_COLORS) {
+    if (!used.has(normalizeColorKey(color))) return color
+  }
+  return PLAYER_COLORS[room.players.length % PLAYER_COLORS.length]
+}
+
+export function listColorClaims() {
+  return Object.fromEntries(colorClaims.entries())
+}
+
+export function claimPlayerColor(accountId: string, color: string) {
+  const key = normalizeColorKey(color)
+  const owner = colorClaims.get(key)
+  if (owner && owner !== accountId) {
+    throw new Error('That color is already taken.')
+  }
+  for (const [claimed, ownerId] of colorClaims) {
+    if (ownerId === accountId && claimed !== key) colorClaims.delete(claimed)
+  }
+  colorClaims.set(key, accountId)
+  return listColorClaims()
+}
+
+export function releasePlayerColor(accountId: string) {
+  for (const [claimed, ownerId] of colorClaims) {
+    if (ownerId === accountId) colorClaims.delete(claimed)
+  }
+  return listColorClaims()
+}
+
+function resolveJoinColor(
+  room: Room,
+  userId: string,
+  preferredColor?: string,
+  lockColor?: boolean,
+) {
+  if (preferredColor && lockColor) {
+    const key = normalizeColorKey(preferredColor)
+    const claimOwner = colorClaims.get(key)
+    if (claimOwner && claimOwner !== userId) {
+      throw new Error('That color is already taken.')
+    }
+    const used = usedColorsInRoom(room, userId)
+    if (used.has(key)) {
+      throw new Error('That color is already used in this room.')
+    }
+    if (!claimOwner) colorClaims.set(key, userId)
+    return { color: preferredColor, colorLocked: true as const }
+  }
+  return {
+    color: nextFreePresetColor(room, userId),
+    colorLocked: false as const,
+  }
+}
 
 function clearRollHints(roomId: string) {
   rollHints.delete(roomId)
@@ -58,24 +148,11 @@ function assignRandomGamePositions(room: Room) {
   const originalPlayers = [...room.players]
   for (let attempt = 0; attempt < 32; attempt += 1) {
     const shuffledPlayers = [...originalPlayers]
-    for (let index = shuffledPlayers.length - 1; index > 0; index -= 1) {
-      const randomIndex =
-        crypto.getRandomValues(new Uint32Array(1))[0] % (index + 1)
-      ;[shuffledPlayers[index], shuffledPlayers[randomIndex]] = [
-        shuffledPlayers[randomIndex],
-        shuffledPlayers[index],
-      ]
-    }
+    shuffleInPlace(shuffledPlayers)
 
-    if (
-      shuffledPlayers.every(
-        (player, index) =>
-          player.seat !== index && player.color !== PLAYER_COLORS[index],
-      )
-    ) {
+    if (shuffledPlayers.every((player, index) => player.seat !== index)) {
       shuffledPlayers.forEach((player, index) => {
         player.seat = index
-        player.color = PLAYER_COLORS[index]
       })
       room.players = shuffledPlayers
       return
@@ -85,7 +162,6 @@ function assignRandomGamePositions(room: Room) {
   const rotatedPlayers = [...originalPlayers.slice(1), originalPlayers[0]]
   rotatedPlayers.forEach((player, index) => {
     player.seat = index
-    player.color = PLAYER_COLORS[index]
   })
   room.players = rotatedPlayers
 }
@@ -109,6 +185,8 @@ export function createRoom(
   name: string,
   maxPlayers: number,
   gameMode: Room['gameMode'] = 'classic',
+  preferredColor?: string,
+  lockColor?: boolean,
 ) {
   if (maxPlayers < 2 || maxPlayers > 8) {
     throw new Error('Room size must be between 2 and 8 players.')
@@ -118,6 +196,16 @@ export function createRoom(
   const id = crypto.randomUUID()
   let code = roomCode()
   while (codeIndex.has(code)) code = roomCode()
+
+  const stubRoom = {
+    players: [] as Room['players'],
+  } as Room
+  const { color, colorLocked } = resolveJoinColor(
+    stubRoom,
+    userId,
+    preferredColor,
+    lockColor,
+  )
 
   const room: Room = {
     id,
@@ -131,9 +219,10 @@ export function createRoom(
       {
         id: userId,
         name: cleanName(name),
-        color: PLAYER_COLORS[0],
+        color,
         seat: 0,
         connected: true,
+        colorLocked,
         joinedAt: now,
       },
     ],
@@ -148,7 +237,13 @@ export function createRoom(
   return room
 }
 
-export function joinRoom(userId: string, name: string, code: string) {
+export function joinRoom(
+  userId: string,
+  name: string,
+  code: string,
+  preferredColor?: string,
+  lockColor?: boolean,
+) {
   const roomId = codeIndex.get(code.trim().toUpperCase())
   if (!roomId) throw new Error('Room not found. Check the room code.')
 
@@ -158,6 +253,11 @@ export function joinRoom(userId: string, name: string, code: string) {
   if (returning) {
     returning.connected = true
     returning.name = cleanName(name)
+    if (lockColor && preferredColor) {
+      const resolved = resolveJoinColor(room, userId, preferredColor, true)
+      returning.color = resolved.color
+      returning.colorLocked = true
+    }
   } else {
     if (room.status !== 'lobby') {
       throw new Error('This game has already started.')
@@ -167,12 +267,19 @@ export function joinRoom(userId: string, name: string, code: string) {
     }
     const seat = firstOpenSeat(room)
     if (seat === -1) throw new Error('This room is full.')
+    const resolved = resolveJoinColor(
+      room,
+      userId,
+      preferredColor,
+      lockColor,
+    )
     room.players.push({
       id: userId,
       name: cleanName(name),
-      color: PLAYER_COLORS[seat],
+      color: resolved.color,
       seat,
       connected: true,
+      colorLocked: resolved.colorLocked,
       joinedAt: Date.now(),
     })
     sortPlayers(room)
@@ -206,7 +313,7 @@ export function setSlotBot(
     room.players.push({
       id: crypto.randomUUID(),
       name: `Bot ${botCount + 1}`,
-      color: PLAYER_COLORS[seat],
+      color: nextFreePresetColor(room),
       seat,
       connected: true,
       isBot: true,

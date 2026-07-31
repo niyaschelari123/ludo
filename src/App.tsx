@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
 import './App.css'
 import {
   getSoundVolume,
@@ -17,11 +17,13 @@ import { Dice3D } from './components/Dice3D'
 import { PowerLegend } from './components/PowerLegend'
 import { PowerToast } from './components/PowerToast'
 import {
+  claimColor,
   createRoom,
   grantExtraTurnChances,
   joinRoom,
   leaveRoom,
   moveTokenWithRetry,
+  releaseColor,
   removePlayer,
   resolvePendingPower,
   rollDice,
@@ -29,9 +31,18 @@ import {
   skipMoveTimer,
   skipRollTimer,
   startRoom,
+  watchColorClaims,
   watchRoom,
 } from './game/roomService'
-import { getPlayerId } from './lib/playerId'
+import {
+  clearProfile,
+  getActiveUserId,
+  loadProfile,
+  loginWithPin,
+  saveProfile,
+  type UserProfile,
+} from './lib/profile'
+import { PLAYER_COLOR_HEX, isNamedPlayerColor, normalizeColorKey, resolveColorHex } from './game/colors'
 import {
   activeMoveToMovingToken,
   MAX_TURN_MISSES,
@@ -42,7 +53,8 @@ import {
   TURN_MOVE_TIMEOUT_MS,
   TURN_ROLL_TIMEOUT_MS,
 } from './game/engine'
-import type { GameMode, MovingToken, PlayerStats, PowerUpType, Room } from './game/types'
+import { computeMotm, computeWorstPlayer, computeWinOdds, readPlayerStats, type MotmCandidate } from './game/matchAwards'
+import { PLAYER_COLORS, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room } from './game/types'
 import {
   moveBaseSignature,
   movingTokenTarget,
@@ -101,9 +113,77 @@ function roomTokensMatch(first: Room, second: Room) {
   })
 }
 
+function playerColorClass(color: string) {
+  return isNamedPlayerColor(color) ? color : 'custom-color'
+}
+
+function playerColorStyle(color: string): CSSProperties | undefined {
+  return isNamedPlayerColor(color)
+    ? undefined
+    : ({ ['--player' as string]: resolveColorHex(color) } as CSSProperties)
+}
+
+function formatAwardScore(score: number) {
+  return Number.isInteger(score) ? String(score) : score.toFixed(1)
+}
+
+function MatchAwardCard({
+  title,
+  award,
+  variant = 'best',
+}: {
+  title: string
+  award: MotmCandidate
+  variant?: 'best' | 'worst'
+}) {
+  return (
+    <div
+      className={`motm-card ${variant === 'worst' ? 'motm-card--worst' : ''} ${playerColorClass(award.player.color)}`}
+      style={playerColorStyle(award.player.color)}
+    >
+      <span className="motm-eyebrow">{title}</span>
+      <div className="motm-body">
+        <span className="motm-avatar">{award.player.name[0].toUpperCase()}</span>
+        <div>
+          <strong>{award.player.name}</strong>
+          <small>Total {formatAwardScore(award.score)} pts</small>
+        </div>
+      </div>
+      <ul className="motm-breakdown">
+        <li>
+          <span>Eliminations ({award.stats.captures} × 3)</span>
+          <em>+{award.breakdown.eliminations}</em>
+        </li>
+        <li>
+          <span>
+            Finish place
+            {award.place <= 3 ? ` (#${award.place})` : ''}
+          </span>
+          <em>+{award.breakdown.placeBonus}</em>
+        </li>
+        <li>
+          <span>Tokens home ({award.stats.tokensHome} × 2)</span>
+          <em>+{award.breakdown.tokensHome}</em>
+        </li>
+        <li>
+          <span>Sixes ({award.stats.sixes} × 0.5)</span>
+          <em>+{award.breakdown.sixes}</em>
+        </li>
+        <li className="motm-breakdown-penalty">
+          <span>Times eliminated ({award.stats.eliminated})</span>
+          <em>−{award.breakdown.timesEliminated}</em>
+        </li>
+      </ul>
+    </div>
+  )
+}
+
 function App() {
-  const userId = getPlayerId()
-  const [name, setName] = useState(() => localStorage.getItem('ludo-name') ?? '')
+  const [profile, setProfile] = useState<UserProfile | null>(() => loadProfile())
+  const [userId, setUserId] = useState(() => getActiveUserId(loadProfile()))
+  const [name, setName] = useState(
+    () => loadProfile()?.name ?? localStorage.getItem('ludo-name') ?? '',
+  )
   const [joinCode, setJoinCode] = useState('')
   const [maxPlayers, setMaxPlayers] = useState(6)
   const [gameMode, setGameMode] = useState<GameMode>('classic')
@@ -115,6 +195,10 @@ function App() {
   const displayRoom = optimisticRoom ?? room
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [loginOpen, setLoginOpen] = useState(false)
+  const [loginPin, setLoginPin] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [colorClaims, setColorClaims] = useState<Record<string, string>>({})
   const [rolling, setRolling] = useState(false)
   const [diceFace, setDiceFace] = useState(1)
   const [displayDice, setDisplayDice] = useState<number | null>(null)
@@ -181,6 +265,16 @@ function App() {
     },
     [optimisticRoom, room, userId],
   )
+
+  useEffect(() => watchColorClaims(setColorClaims), [])
+
+  useEffect(() => {
+    if (!profile?.color) return
+    void claimColor(profile.accountId, profile.color)
+      .then(setColorClaims)
+      .catch(() => {})
+  }, [profile?.accountId, profile?.color])
+
   movingTokenRef.current = movingToken
   roomRef.current = room
 
@@ -447,7 +541,68 @@ function App() {
     }
   }, [])
 
-  const rememberName = () => localStorage.setItem('ludo-name', name.trim())
+  const rememberName = () => {
+    const next = name.trim()
+    localStorage.setItem('ludo-name', next)
+    if (profile) {
+      const updated = { ...profile, name: next || profile.name }
+      saveProfile(updated)
+      setProfile(updated)
+    }
+  }
+
+  const submitLogin = () => {
+    setLoginError('')
+    try {
+      const next = loginWithPin(loginPin.trim())
+      setProfile(next)
+      setUserId(next.accountId)
+      setName(next.name)
+      setLoginOpen(false)
+      setLoginPin('')
+    } catch (reason) {
+      setLoginError(reason instanceof Error ? reason.message : 'Invalid code.')
+    }
+  }
+
+  const logoutProfile = async () => {
+    if (profile) {
+      try {
+        const claims = await releaseColor(profile.accountId)
+        setColorClaims(claims)
+      } catch {
+        /* ignore */
+      }
+    }
+    clearProfile()
+    setProfile(null)
+    setUserId(getActiveUserId(null))
+  }
+
+  const pickProfileColor = async (color: string) => {
+    if (!profile) return
+    setError('')
+    try {
+      const key = normalizeColorKey(color)
+      const owner = colorClaims[key]
+      if (owner && owner !== profile.accountId) {
+        setError('That color is already taken.')
+        return
+      }
+      const claims = await claimColor(profile.accountId, color)
+      setColorClaims(claims)
+      const updated = { ...profile, color }
+      saveProfile(updated)
+      setProfile(updated)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not claim color.')
+    }
+  }
+
+  const roomColorOptions = profile?.color
+    ? { color: profile.color, lockColor: true as const }
+    : undefined
+
   const copyCode = () => void navigator.clipboard.writeText(room?.code ?? '')
   const playButtonSound = (event: MouseEvent<HTMLElement>) => {
     if ((event.target as HTMLElement).closest('button')) playClick()
@@ -697,13 +852,34 @@ function App() {
   }
 
   if (!roomId || !room) {
+    const canPlay = Boolean(name.trim()) && (!profile || Boolean(profile.color))
     return (
       <main className="home-screen" onClickCapture={playButtonSound}>
         <section className="hero-panel">
-          <div className="brand"><span className="brand-mark">L</span> Ludo Live</div>
-          <button className="sound-toggle home-sound" onClick={toggleSound} title={soundOn ? 'Mute sounds' : 'Enable sounds'}>
-            {soundOn ? '🔊' : '🔇'}
-          </button>
+          <div className="home-topbar">
+            <div className="brand"><span className="brand-mark">L</span> Ludo Live</div>
+            <div className="home-topbar-actions">
+              {profile ? (
+                <div className="profile-chip">
+                  <span
+                    className="profile-chip-swatch"
+                    style={{ background: profile.color ? resolveColorHex(profile.color) : '#64748b' }}
+                  />
+                  <strong>{profile.name}</strong>
+                  <button type="button" className="text-button" onClick={() => void logoutProfile()}>
+                    Log out
+                  </button>
+                </div>
+              ) : (
+                <button type="button" className="login-button" onClick={() => setLoginOpen(true)}>
+                  Login
+                </button>
+              )}
+              <button className="sound-toggle home-sound" onClick={toggleSound} title={soundOn ? 'Mute sounds' : 'Enable sounds'}>
+                {soundOn ? '🔊' : '🔇'}
+              </button>
+            </div>
+          </div>
           <div className="hero-copy">
             <span className="eyebrow">REAL-TIME MULTIPLAYER</span>
             <h1>Roll. Race. Rule the board.</h1>
@@ -720,6 +896,11 @@ function App() {
         <section className="entry-panel">
           <div className="entry-card">
             <h2>Enter the arena</h2>
+            {profile ? (
+              <p className="guest-note">Logged in — your color stays with you in every game.</p>
+            ) : (
+              <p className="guest-note">Playing as guest. Login is optional.</p>
+            )}
             <label>
               Display name
               <input
@@ -729,6 +910,48 @@ function App() {
                 placeholder="Your name"
               />
             </label>
+            {profile ? (
+              <div className="color-picker-block">
+                <span className="color-picker-label">Your color</span>
+                <div className="color-swatches">
+                  {PLAYER_COLORS.map((color) => {
+                    let takenByOther = false
+                    try {
+                      const key = normalizeColorKey(color)
+                      const owner = colorClaims[key]
+                      takenByOther = Boolean(owner && owner !== profile.accountId)
+                    } catch {
+                      takenByOther = false
+                    }
+                    return (
+                      <button
+                        key={color}
+                        type="button"
+                        className={`color-swatch ${profile.color === color ? 'selected' : ''}`}
+                        style={{ background: PLAYER_COLOR_HEX[color] }}
+                        disabled={takenByOther}
+                        title={takenByOther ? 'Taken' : color}
+                        onClick={() => void pickProfileColor(color)}
+                      />
+                    )
+                  })}
+                  <label className="color-swatch color-swatch-custom" title="Custom color">
+                    <input
+                      type="color"
+                      value={
+                        profile.color?.startsWith('#')
+                          ? profile.color
+                          : resolveColorHex(profile.color || 'red')
+                      }
+                      onChange={(event) => void pickProfileColor(event.target.value)}
+                    />
+                  </label>
+                </div>
+                {!profile.color ? (
+                  <p className="color-hint">Pick a color before joining a room.</p>
+                ) : null}
+              </div>
+            ) : null}
             <div className="join-row">
               <input
                 value={joinCode}
@@ -737,10 +960,10 @@ function App() {
                 placeholder="ROOM CODE"
               />
               <button
-                disabled={busy || !name.trim() || joinCode.length !== 6}
+                disabled={busy || !canPlay || joinCode.length !== 6}
                 onClick={() => perform(async () => {
                   rememberName()
-                  const joined = await joinRoom(userId, name, joinCode)
+                  const joined = await joinRoom(userId, name, joinCode, roomColorOptions)
                   setRoom(joined)
                   setRoomId(joined.id)
                 })}
@@ -778,10 +1001,16 @@ function App() {
             </label>
             <button
               className="secondary-button"
-              disabled={busy || !name.trim()}
+              disabled={busy || !canPlay}
               onClick={() => perform(async () => {
                 rememberName()
-                const created = await createRoom(userId, name, maxPlayers, gameMode)
+                const created = await createRoom(
+                  userId,
+                  name,
+                  maxPlayers,
+                  gameMode,
+                  roomColorOptions,
+                )
                 setRoom(created)
                 setRoomId(created.id)
               })}
@@ -789,6 +1018,40 @@ function App() {
             {error && <p className="error">{error}</p>}
           </div>
         </section>
+
+        {loginOpen ? (
+          <div className="confirm-overlay" onClick={() => setLoginOpen(false)}>
+            <div className="confirm-card login-modal" onClick={(event) => event.stopPropagation()}>
+              <h2>Login</h2>
+              <p>Enter your 4-digit code.</p>
+              <input
+                className="login-pin-input"
+                value={loginPin}
+                maxLength={4}
+                inputMode="numeric"
+                autoFocus
+                placeholder="••••"
+                onChange={(event) => setLoginPin(event.target.value.replace(/\D/g, '').slice(0, 4))}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && loginPin.length === 4) submitLogin()
+                }}
+              />
+              {loginError ? <p className="error">{loginError}</p> : null}
+              <div className="confirm-actions">
+                <button type="button" className="ghost-button" onClick={() => setLoginOpen(false)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={loginPin.length !== 4}
+                  onClick={submitLogin}
+                >
+                  Continue
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </main>
     )
   }
@@ -805,7 +1068,6 @@ function App() {
     if (turnPlayer?.id === playerId && viewRoom.game.phase !== 'roll') return false
     return true
   }
-  const me = viewRoom.players.find((player) => player.id === userId)
   const activeRanking = viewRoom.game
     ? [...viewRoom.players].sort((first, second) => {
         const firstPlace = viewRoom.game!.winnerIds.indexOf(first.id)
@@ -820,14 +1082,51 @@ function App() {
     .sort((first, second) => second.leftAt - first.leftAt)
     .map((player) => ({ ...player, leftEarly: true as const }))
   const finalRanking = [...activeRanking, ...departedRanking]
-  const emptyStats = (): PlayerStats => ({
-    captures: 0,
-    eliminated: 0,
-    tokensHome: 0,
-    sixes: 0,
-  })
-  const playerStats = (playerId: string) =>
-    viewRoom.game?.stats?.[playerId] ?? emptyStats()
+  const playerStats = (playerId: string): PlayerStats =>
+    readPlayerStats(viewRoom, playerId)
+
+  const playerNameById = (playerId: string) =>
+    [...viewRoom.players, ...(viewRoom.departedPlayers ?? [])].find(
+      (player) => player.id === playerId,
+    )?.name ?? 'Player'
+
+  const topEliminations = [...viewRoom.players, ...(viewRoom.departedPlayers ?? [])]
+    .flatMap((attacker) => {
+      const pairs = playerStats(attacker.id).eliminatedPlayers
+      return Object.entries(pairs).map(([victimId, count]) => ({
+        attackerId: attacker.id,
+        attackerName: attacker.name,
+        victimId,
+        victimName: playerNameById(victimId),
+        count,
+      }))
+    })
+    .sort((first, second) => second.count - first.count || first.attackerName.localeCompare(second.attackerName))
+    .slice(0, 5)
+
+  const awardPool =
+    finalRanking.filter((player) => !player.leftEarly).length > 0
+      ? finalRanking.filter((player) => !player.leftEarly)
+      : finalRanking
+  const liveMotm = viewRoom.game
+    ? computeMotm(viewRoom, viewRoom.players)
+    : null
+  const winOdds = viewRoom.game ? computeWinOdds(viewRoom) : []
+  const motm =
+    viewRoom.status === 'finished'
+      ? computeMotm(viewRoom, awardPool)
+      : liveMotm
+  const worstPlayer =
+    viewRoom.status === 'finished'
+      ? computeWorstPlayer(viewRoom, awardPool)
+      : null
+  const showWorst =
+    Boolean(
+      worstPlayer &&
+        motm &&
+        worstPlayer.player.id !== motm.player.id,
+    )
+
   const bannerAction =
     rolling && viewRoom.game?.lastAction?.includes(' rolled ')
       ? 'Rolling dice…'
@@ -837,11 +1136,29 @@ function App() {
     <main className="room-screen" onClickCapture={playButtonSound}>
       <header className="room-header">
         <div className="brand"><span className="brand-mark small">L</span> Ludo Live</div>
-        <div className="room-code">
-          Room <strong>{room.code}</strong>
-          <button className="icon-button" onClick={copyCode} title="Copy room code">⧉</button>
-        </div>
+        {room.status === 'playing' && liveMotm ? (
+          <div
+            className={`live-motm ${playerColorClass(liveMotm.player.color)}`}
+            style={playerColorStyle(liveMotm.player.color)}
+            title={liveMotm.reason}
+          >
+            <span className="live-motm-label">MOTM</span>
+            <strong>{liveMotm.player.name}</strong>
+            <em>({Number.isInteger(liveMotm.score) ? liveMotm.score : liveMotm.score.toFixed(1)})</em>
+          </div>
+        ) : (
+          <div className="room-code">
+            Room <strong>{room.code}</strong>
+            <button className="icon-button" onClick={copyCode} title="Copy room code">⧉</button>
+          </div>
+        )}
         <div className="header-actions">
+          {room.status === 'playing' ? (
+            <div className="room-code room-code--compact">
+              <strong>{room.code}</strong>
+              <button className="icon-button" onClick={copyCode} title="Copy room code">⧉</button>
+            </div>
+          ) : null}
           <input
             className="volume-slider"
             type="range"
@@ -879,7 +1196,11 @@ function App() {
                 const player = room.players.find((candidate) => candidate.seat === index)
                 const isHost = room.hostId === userId
                 return player ? (
-                  <div className={`player-slot ${player.color} ${player.isBot ? 'bot' : ''}`} key={player.id}>
+                  <div
+                    className={`player-slot ${playerColorClass(player.color)} ${player.isBot ? 'bot' : ''}`}
+                    style={playerColorStyle(player.color)}
+                    key={player.id}
+                  >
                     <span>{player.isBot ? '🤖' : player.name.slice(0, 1).toUpperCase()}</span>
                     <div className="player-slot-copy">
                       <strong>{player.name}</strong>
@@ -965,7 +1286,8 @@ function App() {
               return (
               <div
                 key={player.id}
-                className={`player-row ${player.color} ${viewRoom.game?.turnIndex === index ? 'active' : ''} ${hasShield ? 'has-shield' : ''}`}
+                className={`player-row ${playerColorClass(player.color)} ${viewRoom.game?.turnIndex === index ? 'active' : ''} ${hasShield ? 'has-shield' : ''}`}
+                style={playerColorStyle(player.color)}
               >
                 <div className="player-row-main">
                 <span className="avatar">{player.name[0].toUpperCase()}</span>
@@ -1072,7 +1394,7 @@ function App() {
             ) : viewRoom.game?.phase === 'power' ? (
               <p className="action-hint">Power tile activating…</p>
             ) : isMyTurn ? (
-              <p className="action-hint">Choose a glowing {me?.color} token.</p>
+              <p className="action-hint">Choose a glowing token.</p>
             ) : <p className="action-hint">Waiting for {currentPlayer?.name}…</p>}
             {room.hostId === userId &&
             viewRoom.status === 'playing' &&
@@ -1125,12 +1447,16 @@ function App() {
                 {MAX_TURN_MISSES} roll misses removes you; host can grant +5 and skip either wait.
               </p>
               <p>Reach home with an exact roll.</p>
+              <p className="power-rules-title">
+                <strong>Man of the Match:</strong> scored from eliminations, finish place,
+                tokens home, sixes, and times eliminated. Highest score wins (not always the champion).
+              </p>
             </div>
             {error && <p className="error">{error}</p>}
           </aside>
-          {isPowerMode && (
+          {(isPowerMode || room.status === 'playing') && (
             <div className="power-legend-bar">
-              <PowerLegend />
+              <PowerLegend showPowers={isPowerMode} winOdds={winOdds} />
             </div>
           )}
         </section>
@@ -1196,7 +1522,8 @@ function App() {
                 .map((player) => (
                   <label
                     key={player.id}
-                    className={`host-option ${player.color} ${newHostId === player.id ? 'selected' : ''}`}
+                    className={`host-option ${playerColorClass(player.color)} ${newHostId === player.id ? 'selected' : ''}`}
+                    style={playerColorStyle(player.color)}
                   >
                     <input
                       type="radio"
@@ -1280,7 +1607,11 @@ function App() {
 
             <div className="podium">
               {finalRanking.slice(0, 3).map((player, index) => (
-                <div className={`podium-place place-${index + 1} ${player.color} ${player.leftEarly ? 'left-early' : ''}`} key={player.id}>
+                <div
+                  className={`podium-place place-${index + 1} ${playerColorClass(player.color)} ${player.leftEarly ? 'left-early' : ''}`}
+                  style={playerColorStyle(player.color)}
+                  key={player.id}
+                >
                   <span className="medal">{player.leftEarly ? '🚪' : ['🥇', '🥈', '🥉'][index]}</span>
                   <span className="podium-avatar">{player.name[0].toUpperCase()}</span>
                   <strong>{player.name}</strong>
@@ -1299,7 +1630,11 @@ function App() {
             {finalRanking.length > 3 && (
               <div className="remaining-places">
                 {finalRanking.slice(3).map((player, index) => (
-                  <div className={`result-row ${player.color} ${player.leftEarly ? 'left-early' : ''}`} key={player.id}>
+                  <div
+                    className={`result-row ${playerColorClass(player.color)} ${player.leftEarly ? 'left-early' : ''}`}
+                    style={playerColorStyle(player.color)}
+                    key={player.id}
+                  >
                     <span className="result-position">#{index + 4}</span>
                     <span className="avatar">{player.name[0].toUpperCase()}</span>
                     <strong>{player.name}</strong>
@@ -1315,36 +1650,55 @@ function App() {
               </div>
             )}
 
+            {motm ? <MatchAwardCard title="Man of the Match" award={motm} /> : null}
+            {showWorst && worstPlayer ? (
+              <MatchAwardCard
+                title="Worst Player of the Match"
+                award={worstPlayer}
+                variant="worst"
+              />
+            ) : null}
+
             <div className="match-stats">
-              <h2>Match stats</h2>
+              <h2>Eliminations</h2>
+              {topEliminations.length > 0 ? (
+                <ol className="elim-top-list">
+                  {topEliminations.map((entry, index) => (
+                    <li key={`${entry.attackerId}-${entry.victimId}-${index}`}>
+                      <span className="elim-rank">{index + 1}</span>
+                      <span className="elim-pair">
+                        <strong>{entry.attackerName}</strong> eliminated{' '}
+                        <strong>{entry.victimName}</strong>
+                      </span>
+                      <em className="elim-count">×{entry.count}</em>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="elim-empty">No player eliminations this match.</p>
+              )}
+
               <div className="match-stats-list">
                 {finalRanking.map((player) => {
                   const stats = playerStats(player.id)
                   return (
                     <div
                       key={`stats-${player.id}`}
-                      className={`match-stats-row ${player.color}`}
+                      className={`match-stats-row ${playerColorClass(player.color)}`}
+                      style={playerColorStyle(player.color)}
                     >
                       <div className="match-stats-player">
                         <span className="avatar">{player.name[0].toUpperCase()}</span>
                         <strong>{player.name}</strong>
                       </div>
-                      <div className="match-stats-grid">
+                      <div className="match-stats-grid match-stats-grid--elim">
                         <span>
                           <em>{stats.captures}</em>
-                          Eliminations
+                          Eliminations done
                         </span>
                         <span>
                           <em>{stats.eliminated}</em>
-                          Times out
-                        </span>
-                        <span>
-                          <em>{stats.tokensHome}</em>
-                          Tokens home
-                        </span>
-                        <span>
-                          <em>{stats.sixes}</em>
-                          Sixes
+                          Times eliminated
                         </span>
                       </div>
                     </div>

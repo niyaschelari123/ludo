@@ -10,23 +10,70 @@ export async function createRoom(
   name: string,
   maxPlayers: number,
   gameMode: Room['gameMode'] = 'classic',
+  options?: { color?: string; lockColor?: boolean },
 ) {
   const { room } = await emitAck<{ room: Room }>('createRoom', {
     userId,
     name,
     maxPlayers,
     gameMode,
+    ...(options?.color ? { color: options.color, lockColor: options.lockColor } : {}),
   })
   return room
 }
 
-export async function joinRoom(userId: string, name: string, code: string) {
+export async function joinRoom(
+  userId: string,
+  name: string,
+  code: string,
+  options?: { color?: string; lockColor?: boolean },
+) {
   const { room } = await emitAck<{ room: Room }>('joinRoom', {
     userId,
     name,
     code,
+    ...(options?.color ? { color: options.color, lockColor: options.lockColor } : {}),
   })
   return room
+}
+
+export async function listColorClaims() {
+  const { claims } = await emitAck<{ claims: Record<string, string> }>(
+    'listColorClaims',
+    {},
+  )
+  return claims
+}
+
+export async function claimColor(accountId: string, color: string) {
+  const { claims } = await emitAck<{ claims: Record<string, string> }>(
+    'claimColor',
+    { accountId, color },
+  )
+  return claims
+}
+
+export async function releaseColor(accountId: string) {
+  const { claims } = await emitAck<{ claims: Record<string, string> }>(
+    'releaseColor',
+    { accountId },
+  )
+  return claims
+}
+
+export function watchColorClaims(
+  onClaims: (claims: Record<string, string>) => void,
+) {
+  const socket = getSocket()
+  const handle = (claims: Record<string, string>) => onClaims(claims)
+  socket.on('colorClaimsUpdate', handle)
+  void whenConnected()
+    .then(() => listColorClaims())
+    .then(onClaims)
+    .catch(() => {})
+  return () => {
+    socket.off('colorClaimsUpdate', handle)
+  }
 }
 
 export async function syncRoom(roomId: string, userId: string) {

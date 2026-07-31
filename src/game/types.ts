@@ -7,6 +7,8 @@ export const PLAYER_COLORS = [
   'purple',
   'cyan',
   'pink',
+  'teal',
+  'lime',
 ] as const
 
 export type PlayerColor = (typeof PLAYER_COLORS)[number]
@@ -27,7 +29,8 @@ export type PowerUpType =
   | 'portal'
   | 'back2'
   | 'back3'
-  | 'yard'
+  | 'back5'
+  | 'yard' // legacy; no longer generated
   | 'tnt'
 
 export interface PowerTile {
@@ -38,10 +41,13 @@ export interface PowerTile {
 export interface Player {
   id: string
   name: string
-  color: PlayerColor
+  /** Named preset or #rrggbb hex. */
+  color: string
   seat: number
   connected: boolean
   isBot?: boolean
+  /** Locked profile color — preserved across seat shuffle. */
+  colorLocked?: boolean
   joinedAt: number
 }
 
@@ -160,6 +166,8 @@ export interface PlayerStats {
   eliminated: number
   tokensHome: number
   sixes: number
+  /** attacker -> how many times this player eliminated that opponent */
+  eliminatedPlayers: Record<string, number>
 }
 
 export interface GameState {

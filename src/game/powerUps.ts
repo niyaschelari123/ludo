@@ -19,7 +19,7 @@ export const ACTIVE_POWER_TYPES: PowerUpType[] = [
   'flame',
   'back2',
   'back3',
-  'yard',
+  'back5',
   'plus10',
   'tnt',
   'ice',
@@ -40,6 +40,7 @@ export const POWER_UP_ICONS: Record<PowerUpType, string> = {
   portal: '◎',
   back2: '←2',
   back3: '←3',
+  back5: '-5',
   yard: 'YRD',
 }
 
@@ -51,11 +52,11 @@ export const POWER_UP_INFO: {
   { type: 'rocket', label: 'Rocket', description: 'x3 your dice roll as a forward surge' },
   { type: 'spring', label: 'Spring', description: 'Bounce 2 extra steps ahead' },
   { type: 'x2', label: 'x2', description: 'Repeats your dice roll as bonus steps' },
-  { type: 'shield', label: 'Shield', description: 'Blocks the next capture attempt' },
+  { type: 'shield', label: 'Shield', description: 'Blocks the next capture attempt (one shield at a time)' },
   { type: 'flame', label: 'Flame', description: 'Grants a bonus roll after this turn' },
   { type: 'back2', label: 'Back 2', description: 'Slides your token 2 steps backward' },
   { type: 'back3', label: 'Back 3', description: 'Slides your token 3 steps backward' },
-  { type: 'yard', label: 'Yard', description: 'Sends your token back to your starting square' },
+  { type: 'back5', label: '-5', description: 'Slides your token 5 steps backward' },
   { type: 'plus10', label: '+10', description: 'Surges your token 10 steps forward' },
   {
     type: 'tnt',
@@ -76,10 +77,12 @@ export function powerUpDescription(type: PowerUpType) {
 }
 
 const SLOT_OFFSETS = [4, 10]
-const YARD_OFFSET = 7
 const PLUS10_OFFSET = 3
 const TNT_OFFSET = 9
 const RARE_POWER_COUNT = 2
+const SHIELD_COUNT = 3
+const EXTRA_ROCKET_COUNT = 2
+const BACK5_COUNT = 1
 
 const COMMON_CYCLE: PowerUpType[] = [
   'rocket',
@@ -87,7 +90,6 @@ const COMMON_CYCLE: PowerUpType[] = [
   'spring',
   'x2',
   'back3',
-  'shield',
   'ice',
   'flame',
 ]
@@ -95,6 +97,31 @@ const COMMON_CYCLE: PowerUpType[] = [
 function spacedSeats(playerCount: number, count: number, startSeat: number): number[] {
   const step = Math.max(1, Math.floor(playerCount / count))
   return Array.from({ length: count }, (_, index) => (startSeat + index * step) % playerCount)
+}
+
+function placeSpacedPower(
+  tiles: Record<number, PowerUpType>,
+  length: number,
+  count: number,
+  type: PowerUpType,
+  startShift = 0,
+) {
+  const step = Math.max(1, Math.floor(length / count))
+  const start = (Math.floor(step / 2) + startShift) % length
+  let placed = 0
+
+  for (let index = 0; index < count; index += 1) {
+    const preferred = (start + index * step) % length
+    for (let offset = 0; offset < length; offset += 1) {
+      const cell = (preferred + offset) % length
+      if (tiles[cell]) continue
+      tiles[cell] = type
+      placed += 1
+      break
+    }
+  }
+
+  return placed
 }
 
 export function generatePowerTiles(playerCount: number): Record<number, PowerUpType> {
@@ -108,7 +135,6 @@ export function generatePowerTiles(playerCount: number): Record<number, PowerUpT
     }
   }
 
-  const yardSeats = spacedSeats(playerCount, RARE_POWER_COUNT, 0)
   const plus10Seats = spacedSeats(
     playerCount,
     RARE_POWER_COUNT,
@@ -116,15 +142,15 @@ export function generatePowerTiles(playerCount: number): Record<number, PowerUpT
   )
   const tntSeat = Math.floor(playerCount / 2) % playerCount
 
-  for (const seat of yardSeats) {
-    if (seat === tntSeat) continue
-    tiles[(seat * CELLS_PER_PLAYER + YARD_OFFSET) % length] = 'yard'
-  }
   for (const seat of plus10Seats) {
+    if (seat === tntSeat) continue
     tiles[(seat * CELLS_PER_PLAYER + PLUS10_OFFSET) % length] = 'plus10'
   }
 
   tiles[(tntSeat * CELLS_PER_PLAYER + TNT_OFFSET) % length] = 'tnt'
+  placeSpacedPower(tiles, length, SHIELD_COUNT, 'shield')
+  placeSpacedPower(tiles, length, EXTRA_ROCKET_COUNT, 'rocket', 3)
+  placeSpacedPower(tiles, length, BACK5_COUNT, 'back5', 5)
 
   return tiles
 }
@@ -250,6 +276,9 @@ export function applyPowerUp(
       advanceToken(token, 2, room)
       return `${player.name} bounced on a spring`
     case 'shield':
+      if (game.shieldBuff[player.id]) {
+        return `${player.name} already has shield protection`
+      }
       game.shieldBuff[player.id] = true
       return `${player.name} picked up a shield`
     case 'flame':
@@ -296,9 +325,12 @@ export function applyPowerUp(
     case 'back3':
       retreatToken(token, 3)
       return `${player.name} slid back 3 steps`
+    case 'back5':
+      retreatToken(token, 5)
+      return `${player.name} slid back 5 steps`
     case 'yard':
-      token.progress = 0
-      return `${player.name} was sent back to the start`
+      // Legacy tile — no longer generated; treat as a harmless pass.
+      return `${player.name} passed an old yard tile`
     default:
       return `${player.name} triggered a power tile`
   }

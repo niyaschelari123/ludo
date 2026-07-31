@@ -74,6 +74,7 @@ function PowerMarker({
     type === 'x3' ||
     type === 'back2' ||
     type === 'back3' ||
+    type === 'back5' ||
     type === 'yard'
 
   return (

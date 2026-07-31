@@ -11,7 +11,8 @@ import {
   movableTokens,
   safeCells,
 } from '../game/engine'
-import type { MovingToken, PlayerColor, Room, Token } from '../game/types'
+import type { MovingToken, Room, Token } from '../game/types'
+import { resolveColorHex, tokenStyleFor } from '../game/colors'
 import {
   resolveAnimationProgress,
 } from '../game/types'
@@ -19,30 +20,6 @@ import { PowerUpLayer } from './PowerUpLayer'
 
 const SIZE = 600
 const CENTER = SIZE / 2
-const COLORS: Record<PlayerColor, string> = {
-  red: '#ed1c24',
-  green: '#00a651',
-  yellow: '#ffd400',
-  blue: '#0095da',
-  orange: '#f58220',
-  purple: '#92278f',
-  cyan: '#00bcd4',
-  pink: '#ec407a',
-}
-
-const TOKEN_STYLES: Record<
-  PlayerColor,
-  { fill: string; rim: string; shine: string; glow: string }
-> = {
-  red: { fill: '#ed1c24', rim: '#9a1212', shine: '#ff6b6b', glow: '#ffb3b3' },
-  green: { fill: '#00a651', rim: '#006b32', shine: '#4cd98a', glow: '#9dffc8' },
-  yellow: { fill: '#ffd400', rim: '#c9a000', shine: '#fff1a0', glow: '#ffe9a0' },
-  blue: { fill: '#0095da', rim: '#005f8f', shine: '#7fd4ff', glow: '#a8dcff' },
-  orange: { fill: '#f58220', rim: '#b85a00', shine: '#ffc27a', glow: '#ffc899' },
-  purple: { fill: '#92278f', rim: '#5f1a5d', shine: '#e08adf', glow: '#e8b0e8' },
-  cyan: { fill: '#00bcd4', rim: '#007f96', shine: '#8cecff', glow: '#9ef4ff' },
-  pink: { fill: '#ec407a', rim: '#a8325c', shine: '#ffb3cb', glow: '#ffb8d4' },
-}
 
 interface Point {
   x: number
@@ -318,11 +295,11 @@ function TokenDisc({
   radius,
   finished,
 }: {
-  color: PlayerColor
+  color: string
   radius: number
   finished?: boolean
 }) {
-  const style = TOKEN_STYLES[color]
+  const style = tokenStyleFor(color)
   const rim = Math.max(1.4, radius * 0.16)
   const body = Math.max(0, radius - rim * 0.45)
   const glowWidth = Math.max(1.2, radius * 0.14)
@@ -395,7 +372,7 @@ function SquareBoard({ room }: { room: Room }) {
           : 0
         return (
           <g key={player.id}>
-            <rect x={position.x} y={position.y} width="192" height="192" fill={COLORS[player.color]} />
+            <rect x={position.x} y={position.y} width="192" height="192" fill={resolveColorHex(player.color)} />
             <rect x={position.x + 34} y={position.y + 34} width="124" height="124" rx="8" className="yard-inner" />
             {place > 0 && (
               <g className="home-rank-badge">
@@ -403,7 +380,7 @@ function SquareBoard({ room }: { room: Room }) {
                   cx={position.x + 96}
                   cy={position.y + 96}
                   r="25"
-                  fill={COLORS[player.color]}
+                  fill={resolveColorHex(player.color)}
                 />
                 <text
                   x={position.x + 96}
@@ -422,7 +399,7 @@ function SquareBoard({ room }: { room: Room }) {
                 cy={slot.y}
                 r="18"
                 fill="#fff"
-                stroke={COLORS[player.color]}
+                stroke={resolveColorHex(player.color)}
                 className="yard-slot"
               />
             ))}
@@ -451,7 +428,7 @@ function SquareBoard({ room }: { room: Room }) {
               y={cell.y - 16}
               width="32"
               height="32"
-              fill={owner ? COLORS[owner.color] : '#fff'}
+              fill={owner ? resolveColorHex(owner.color) : '#fff'}
               className={`square-cell ${safe.has(index) && !owner ? 'safe-cell' : ''}`}
             />
             {safe.has(index) && !owner && (
@@ -469,7 +446,7 @@ function SquareBoard({ room }: { room: Room }) {
             y={cell.y - 16}
             width="32"
             height="32"
-            fill={COLORS[player.color]}
+            fill={resolveColorHex(player.color)}
             className="square-cell"
           />
         )),
@@ -495,10 +472,10 @@ function SquareBoard({ room }: { room: Room }) {
         )
       })}
 
-      <polygon points="252,252 348,252 300,300" fill={COLORS[boardPlayers[1]?.color ?? 'green']} className="center-triangle" />
-      <polygon points="348,252 348,348 300,300" fill={COLORS[boardPlayers[2]?.color ?? 'yellow']} className="center-triangle" />
-      <polygon points="348,348 252,348 300,300" fill={COLORS[boardPlayers[3]?.color ?? 'blue']} className="center-triangle" />
-      <polygon points="252,348 252,252 300,300" fill={COLORS[boardPlayers[0]?.color ?? 'red']} className="center-triangle" />
+      <polygon points="252,252 348,252 300,300" fill={resolveColorHex(boardPlayers[1]?.color ?? 'green')} className="center-triangle" />
+      <polygon points="348,252 348,348 300,300" fill={resolveColorHex(boardPlayers[2]?.color ?? 'yellow')} className="center-triangle" />
+      <polygon points="348,348 252,348 300,300" fill={resolveColorHex(boardPlayers[3]?.color ?? 'blue')} className="center-triangle" />
+      <polygon points="252,348 252,252 300,300" fill={resolveColorHex(boardPlayers[0]?.color ?? 'red')} className="center-triangle" />
     </>
   )
 }
@@ -575,7 +552,7 @@ function RadialBoard({ room }: { room: Room }) {
           <g key={player.id}>
             <polygon
               points={pointList([outerLeft, outerRight, centerRight, centerLeft])}
-              fill={COLORS[player.color]}
+              fill={resolveColorHex(player.color)}
               className={`radial-sector ${sectorClass}`}
             />
             <polygon
@@ -592,7 +569,7 @@ function RadialBoard({ room }: { room: Room }) {
                   cx={rankPoint.x}
                   cy={rankPoint.y}
                   r={count >= 7 ? 14 : 18}
-                  fill={COLORS[player.color]}
+                  fill={resolveColorHex(player.color)}
                 />
                 <text
                   x={rankPoint.x}
@@ -613,7 +590,7 @@ function RadialBoard({ room }: { room: Room }) {
                   cy={slot.y}
                   r={layout.yardTokenRadius}
                   fill="#fff"
-                  stroke={COLORS[player.color]}
+                  stroke={resolveColorHex(player.color)}
                   className={`yard-slot ${yardSlotClass}`}
                 />
               )
@@ -638,7 +615,7 @@ function RadialBoard({ room }: { room: Room }) {
                   y={lane.y - layout.cellSize / 2}
                   width={layout.cellSize}
                   height={layout.cellSize}
-                  fill={COLORS[player.color]}
+                  fill={resolveColorHex(player.color)}
                   className={`radial-cell ${homeCellClass}`}
                   transform={`rotate(${angle * 180 / Math.PI + 90} ${lane.x} ${lane.y})`}
                 />
@@ -673,7 +650,7 @@ function RadialBoard({ room }: { room: Room }) {
               width={layout.cellSize}
               height={layout.cellSize}
               rx="1"
-              fill={owner ? COLORS[owner.color] : '#fff'}
+              fill={owner ? resolveColorHex(owner.color) : '#fff'}
               className={`radial-cell ${trackCellClass} ${safe.has(index) && !owner ? 'safe-cell' : ''}`}
               transform={`rotate(${angle * 180 / Math.PI + 90} ${cell.x} ${cell.y})`}
             />
@@ -702,7 +679,7 @@ function RadialBoard({ room }: { room: Room }) {
                 point(layout.finishRadius, angle - sector / 2),
                 point(layout.finishRadius, angle + sector / 2),
               ])}
-              fill={COLORS[player.color]}
+              fill={resolveColorHex(player.color)}
               className={finishClass}
             />
           )

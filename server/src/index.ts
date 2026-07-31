@@ -11,14 +11,17 @@ import express from 'express'
 import { createServer } from 'node:http'
 import { Server, type Socket } from 'socket.io'
 import {
+  claimPlayerColor,
   createRoom,
   getRoom,
   handleMoveTimeout,
   handleRollTimeout,
   joinRoom,
   leaveRoom,
+  listColorClaims,
   markDisconnected,
   movePawn,
+  releasePlayerColor,
   removePlayer,
   resolvePendingPower,
   rollDice,
@@ -147,6 +150,49 @@ function ackError(callback: Ack<unknown> | undefined, error: unknown) {
 }
 
 io.on('connection', (socket) => {
+  socket.on(
+    'listColorClaims',
+    (_payload: unknown, callback?: Ack<{ claims: Record<string, string> }>) => {
+      try {
+        callback?.({ ok: true, data: { claims: listColorClaims() } })
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'claimColor',
+    (
+      payload: { accountId: string; color: string },
+      callback?: Ack<{ claims: Record<string, string> }>,
+    ) => {
+      try {
+        const claims = claimPlayerColor(payload.accountId, payload.color)
+        callback?.({ ok: true, data: { claims } })
+        io.emit('colorClaimsUpdate', claims)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'releaseColor',
+    (
+      payload: { accountId: string },
+      callback?: Ack<{ claims: Record<string, string> }>,
+    ) => {
+      try {
+        const claims = releasePlayerColor(payload.accountId)
+        callback?.({ ok: true, data: { claims } })
+        io.emit('colorClaimsUpdate', claims)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
   // --- createRoom: host a new private lobby ---
   socket.on(
     'createRoom',
@@ -156,6 +202,8 @@ io.on('connection', (socket) => {
         name: string
         maxPlayers: number
         gameMode?: Room['gameMode']
+        color?: string
+        lockColor?: boolean
       },
       callback?: Ack<{ room: Room }>,
     ) => {
@@ -165,6 +213,8 @@ io.on('connection', (socket) => {
           payload.name,
           payload.maxPlayers,
           payload.gameMode ?? 'classic',
+          payload.color,
+          payload.lockColor,
         )
         bindSession(socket, payload.userId, room.id)
         callback?.({ ok: true, data: { room } })
@@ -179,11 +229,23 @@ io.on('connection', (socket) => {
   socket.on(
     'joinRoom',
     (
-      payload: { userId: string; name: string; code: string },
+      payload: {
+        userId: string
+        name: string
+        code: string
+        color?: string
+        lockColor?: boolean
+      },
       callback?: Ack<{ room: Room }>,
     ) => {
       try {
-        const room = joinRoom(payload.userId, payload.name, payload.code)
+        const room = joinRoom(
+          payload.userId,
+          payload.name,
+          payload.code,
+          payload.color,
+          payload.lockColor,
+        )
         bindSession(socket, payload.userId, room.id)
         callback?.({ ok: true, data: { room } })
         broadcastState(room)
