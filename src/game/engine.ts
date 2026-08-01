@@ -8,7 +8,7 @@ import type {
   Room,
   Token,
 } from './types'
-import { allowsCaptures, hasPowerBoard, usesQuickPowerBoard } from './types'
+import { allowsCaptures, hasPowerBoard, isBlitzMode, returnsCaptureToStart, usesQuickPowerBoard, normalizeBlitzDurationMs } from './types'
 import {
   applyPowerUp,
   generatePowerTiles,
@@ -31,9 +31,9 @@ export function tokensPerPlayer(gameMode: GameMode | null | undefined) {
   return gameMode === 'quick' ? QUICK_TOKENS_PER_PLAYER : TOKENS_PER_PLAYER
 }
 
-/** Captured tokens go to the yard (−1), except Quick mode (back to start at 0). */
+/** Captured tokens go to the yard (−1), except Quick/Blitz (back to start at 0). */
 export function eliminatedProgress(room: Room) {
-  return room.gameMode === 'quick' ? 0 : -1
+  return returnsCaptureToStart(room.gameMode) ? 0 : -1
 }
 
 /** Five-player pentagon boards use one extra home cell before the center. */
@@ -109,12 +109,18 @@ export function recordEliminated(game: GameState, playerId: string) {
   ensurePlayerStats(game, playerId).eliminated += 1
 }
 
-export function createGame(players: Player[], gameMode: GameMode = 'classic'): GameState {
+export function createGame(
+  players: Player[],
+  gameMode: GameMode = 'classic',
+  options?: { blitzDurationMs?: number | null },
+): GameState {
   const boardPlayerCount = players.length
+  const blitzMs = normalizeBlitzDurationMs(options?.blitzDurationMs)
   return {
     turnIndex: 0,
     phase: 'roll',
     dice: null,
+    lastDice: null,
     consecutiveSixes: 0,
     boardPlayerCount,
     turnDeadline: Date.now() + TURN_ROLL_TIMEOUT_MS,
@@ -148,6 +154,7 @@ export function createGame(players: Player[], gameMode: GameMode = 'classic'): G
     shieldBuff: {},
     pendingExtraTurn: null,
     pendingPower: null,
+    endsAt: gameMode === 'blitz' ? Date.now() + blitzMs : null,
   }
 }
 
@@ -364,10 +371,21 @@ export function pickBestMovableToken(room: Room): Token | null {
   )
 }
 
+function playerHasAllTokensHome(room: Room, game: GameState, playerId: string) {
+  const finish = finishedProgress(room)
+  const tokens = game.tokens.filter((token) => token.playerId === playerId)
+  return tokens.length > 0 && tokens.every((token) => token.progress >= finish)
+}
+
 function nextActiveTurn(room: Room, game: GameState) {
   for (let offset = 1; offset <= room.players.length; offset += 1) {
     const index = (game.turnIndex + offset) % room.players.length
-    if (!game.winnerIds.includes(room.players[index].id)) return index
+    const playerId = room.players[index].id
+    if (game.winnerIds.includes(playerId)) continue
+    if (isBlitzMode(room.gameMode) && playerHasAllTokensHome(room, game, playerId)) {
+      continue
+    }
+    return index
   }
   return game.turnIndex
 }
@@ -435,6 +453,7 @@ export function applyRoll(room: Room, value: number) {
   if (!player) throw new Error('Current player is missing.')
 
   game.dice = value
+  game.lastDice = value
   game.consecutiveSixes = value === 6 ? game.consecutiveSixes + 1 : 0
   game.lastAction = `${player.name} rolled ${value}`
   if (value === 6) {
@@ -449,6 +468,7 @@ export function applyRoll(room: Room, value: number) {
 
   game.phase = 'move'
   if (movableTokens(room).length === 0) {
+    game.lastAction = `${player.name} rolled ${value} — no moves`
     game.turnDeadline = null
     passTurn(room, game)
     return
@@ -495,14 +515,7 @@ function completeTurnAfterMove(
   },
   preserveActiveMove = false,
 ) {
-  if (game.winnerIds.length >= room.players.length - 1) {
-    const lastPlayer = room.players.find(
-      (candidate) => !game.winnerIds.includes(candidate.id),
-    )
-    if (lastPlayer) game.winnerIds.push(lastPlayer.id)
-    room.status = 'finished'
-    return
-  }
+  if (tryConcludeByFinishPlaces(room, game)) return
 
   const earnsExtraTurn =
     dice === 6 ||
@@ -520,6 +533,28 @@ function completeTurnAfterMove(
   } else {
     beginRollPhase(game)
   }
+}
+
+/** Classic/Power/Quick/Race: filling places can end the match. Blitz waits for the clock. */
+function tryConcludeByFinishPlaces(room: Room, game: GameState) {
+  if (isBlitzMode(room.gameMode)) return false
+  if (game.winnerIds.length < room.players.length - 1) return false
+  const lastPlayer = room.players.find(
+    (candidate) => !game.winnerIds.includes(candidate.id),
+  )
+  if (lastPlayer) game.winnerIds.push(lastPlayer.id)
+  room.status = 'finished'
+  return true
+}
+
+function notePlayerFinished(room: Room, game: GameState, player: Player) {
+  if (isBlitzMode(room.gameMode)) {
+    game.lastAction = `${player.name} got all tokens home!`
+    return
+  }
+  if (game.winnerIds.includes(player.id)) return
+  game.winnerIds.push(player.id)
+  game.lastAction = `${player.name} finished in place #${game.winnerIds.length}`
 }
 
 export function applyPendingPower(room: Room, startedAt = Date.now()) {
@@ -568,9 +603,8 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
     .filter((candidate) => candidate.playerId === player.id)
     .every((candidate) => candidate.progress >= finish)
 
-  if (allHome && !game.winnerIds.includes(player.id)) {
-    game.winnerIds.push(player.id)
-    game.lastAction = `${player.name} finished in place #${game.winnerIds.length}`
+  if (allHome) {
+    notePlayerFinished(room, game, player)
   } else if (captured) {
     game.lastAction = `${player.name} captured a token`
   } else {
@@ -590,14 +624,7 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
     game.activeMove = null
   }
 
-  if (game.winnerIds.length >= room.players.length - 1) {
-    const lastPlayer = room.players.find(
-      (candidate) => !game.winnerIds.includes(candidate.id),
-    )
-    if (lastPlayer) game.winnerIds.push(lastPlayer.id)
-    room.status = 'finished'
-    return
-  }
+  if (tryConcludeByFinishPlaces(room, game)) return
 
   completeTurnAfterMove(
     room,
@@ -715,21 +742,13 @@ export function applyMove(room: Room, tokenId: number) {
     }
   }
 
-  if (allHome && !game.winnerIds.includes(player.id)) {
-    game.winnerIds.push(player.id)
-    game.lastAction = `${player.name} finished in place #${game.winnerIds.length}`
+  if (allHome) {
+    notePlayerFinished(room, game, player)
   } else {
     game.lastAction = formatMoveAction(player, moveContext)
   }
 
-  if (game.winnerIds.length >= room.players.length - 1) {
-    const lastPlayer = room.players.find(
-      (candidate) => !game.winnerIds.includes(candidate.id),
-    )
-    if (lastPlayer) game.winnerIds.push(lastPlayer.id)
-    room.status = 'finished'
-    return
-  }
+  if (tryConcludeByFinishPlaces(room, game)) return
 
   completeTurnAfterMove(room, game, player, dice, {
     captured,

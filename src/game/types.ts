@@ -14,16 +14,52 @@ export const PLAYER_COLORS = [
 export type PlayerColor = (typeof PLAYER_COLORS)[number]
 export type RoomStatus = 'lobby' | 'playing' | 'finished'
 export type TurnPhase = 'roll' | 'move' | 'power'
-export type GameMode = 'classic' | 'power' | 'quick' | 'race'
+export type GameMode = 'classic' | 'power' | 'quick' | 'race' | 'blitz'
 
-/** Power, Quick, and Race place tiles on the track. */
+/** Allowed Blitz match lengths (minutes). */
+export const BLITZ_DURATION_OPTIONS = [
+  { minutes: 15, label: '15 min' },
+  { minutes: 20, label: '20 min' },
+  { minutes: 30, label: '30 min' },
+  { minutes: 45, label: '45 min' },
+  { minutes: 50, label: '50 min' },
+  { minutes: 60, label: '1 hr' },
+  { minutes: 75, label: '1.25 hr' },
+  { minutes: 90, label: '1.5 hr' },
+] as const
+
+export type BlitzDurationMinutes = (typeof BLITZ_DURATION_OPTIONS)[number]['minutes']
+
+export const DEFAULT_BLITZ_DURATION_MS = 45 * 60 * 1000
+/** @deprecated Prefer DEFAULT_BLITZ_DURATION_MS / room.blitzDurationMs */
+export const BLITZ_DURATION_MS = DEFAULT_BLITZ_DURATION_MS
+
+const BLITZ_DURATION_MS_SET = new Set(
+  BLITZ_DURATION_OPTIONS.map((option) => option.minutes * 60 * 1000),
+)
+
+export function normalizeBlitzDurationMs(ms?: number | null): number {
+  if (typeof ms === 'number' && BLITZ_DURATION_MS_SET.has(ms)) return ms
+  return DEFAULT_BLITZ_DURATION_MS
+}
+
+export function blitzDurationLabel(ms?: number | null): string {
+  const normalized = normalizeBlitzDurationMs(ms)
+  const minutes = normalized / 60_000
+  return (
+    BLITZ_DURATION_OPTIONS.find((option) => option.minutes === minutes)?.label ??
+    `${minutes} min`
+  )
+}
+
+/** Power, Quick, Race, and Blitz place tiles on the track. */
 export function hasPowerBoard(mode: GameMode | null | undefined): boolean {
-  return mode === 'power' || mode === 'quick' || mode === 'race'
+  return mode === 'power' || mode === 'quick' || mode === 'race' || mode === 'blitz'
 }
 
 /** Quick-style board: no TNT / −5, includes Super tiles. */
 export function usesQuickPowerBoard(mode: GameMode | null | undefined): boolean {
-  return mode === 'quick' || mode === 'race'
+  return mode === 'quick' || mode === 'race' || mode === 'blitz'
 }
 
 /** Race mode: tokens share cells; captures are disabled. */
@@ -31,10 +67,21 @@ export function allowsCaptures(mode: GameMode | null | undefined): boolean {
   return mode !== 'race'
 }
 
+/** Captures send tokens to start (0) instead of the yard. */
+export function returnsCaptureToStart(mode: GameMode | null | undefined): boolean {
+  return mode === 'quick' || mode === 'blitz'
+}
+
+/** 45-minute clock; winner is highest score when time expires. */
+export function isBlitzMode(mode: GameMode | null | undefined): boolean {
+  return mode === 'blitz'
+}
+
 export function gameModeLabel(mode: GameMode | null | undefined): string {
   if (mode === 'power') return 'Power'
   if (mode === 'quick') return 'Quick'
   if (mode === 'race') return 'Race'
+  if (mode === 'blitz') return 'Blitz'
   return 'Classic'
 }
 export type PowerUpType =
@@ -73,6 +120,11 @@ export interface Player {
   autoPlay?: boolean
   /** Locked profile color — preserved across seat shuffle. */
   colorLocked?: boolean
+  /**
+   * Secret seat code (host-only in client views). Anyone with it can reclaim
+   * this seat mid-game at the same board position.
+   */
+  rejoinCode?: string
   joinedAt: number
 }
 
@@ -83,6 +135,18 @@ export function isAutoControlled(player: Player | null | undefined): boolean {
 
 export interface DepartedPlayer extends Player {
   leftAt: number
+  /** Mid-game leave: can reclaim board state with rejoinCode. */
+  reclaimable?: boolean
+  savedTokens?: Token[]
+  savedStats?: PlayerStats
+  savedEntryMisses?: number
+  savedFinishMisses?: number
+  savedProtectionForfeited?: boolean
+  savedTurnMisses?: number
+  savedTurnMissLimit?: number
+  savedShieldBuff?: boolean
+  /** Index in winnerIds when they left, if they had finished. */
+  savedWinnerPlace?: number
 }
 
 export interface Token {
@@ -204,6 +268,8 @@ export interface GameState {
   turnIndex: number
   phase: TurnPhase
   dice: number | null
+  /** Most recent roll — kept after turn pass so the UI can show unusable rolls. */
+  lastDice?: number | null
   consecutiveSixes: number
   boardPlayerCount: number
   turnDeadline: number | null
@@ -222,6 +288,8 @@ export interface GameState {
   shieldBuff?: Record<string, boolean>
   pendingExtraTurn?: string | null
   pendingPower?: PendingPower | null
+  /** Blitz: wall-clock end time (ms since epoch). */
+  endsAt?: number | null
 }
 
 export interface Room {
@@ -231,6 +299,8 @@ export interface Room {
   memberIds: string[]
   maxPlayers: number
   gameMode: GameMode
+  /** Blitz only: selected match length in ms (from BLITZ_DURATION_OPTIONS). */
+  blitzDurationMs?: number | null
   status: RoomStatus
   players: Player[]
   departedPlayers: DepartedPlayer[]

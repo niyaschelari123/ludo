@@ -10,7 +10,7 @@ export async function createRoom(
   name: string,
   maxPlayers: number,
   gameMode: Room['gameMode'] = 'classic',
-  options?: { color?: string; lockColor?: boolean },
+  options?: { color?: string; lockColor?: boolean; blitzDurationMs?: number },
 ) {
   const { room } = await emitAck<{ room: Room }>('createRoom', {
     userId,
@@ -18,6 +18,22 @@ export async function createRoom(
     maxPlayers,
     gameMode,
     ...(options?.color ? { color: options.color, lockColor: options.lockColor } : {}),
+    ...(gameMode === 'blitz'
+      ? { blitzDurationMs: options?.blitzDurationMs }
+      : {}),
+  })
+  return room
+}
+
+export async function setBlitzDuration(
+  roomId: string,
+  userId: string,
+  blitzDurationMs: number,
+) {
+  const { room } = await emitAck<{ room: Room }>('setBlitzDuration', {
+    roomId,
+    userId,
+    blitzDurationMs,
   })
   return room
 }
@@ -33,6 +49,22 @@ export async function joinRoom(
     name,
     code,
     ...(options?.color ? { color: options.color, lockColor: options.lockColor } : {}),
+  })
+  return room
+}
+
+/** Take over a seat with room code + host seat code (works mid-game). */
+export async function claimSeat(
+  userId: string,
+  name: string,
+  roomCode: string,
+  seatCode: string,
+) {
+  const { room } = await emitAck<{ room: Room }>('claimSeat', {
+    userId,
+    name,
+    roomCode,
+    seatCode,
   })
   return room
 }

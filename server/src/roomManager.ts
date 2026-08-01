@@ -14,7 +14,8 @@ import {
   resolveDiceValue,
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
-import { PLAYER_COLORS, isAutoControlled, type Room } from '../../src/game/types.js'
+import { PLAYER_COLORS, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, type Room } from '../../src/game/types.js'
+import { finalizeBlitzGame } from '../../src/game/matchAwards.js'
 import { normalizeColorKey } from '../../src/game/colors.js'
 
 const rooms = new Map<string, Room>()
@@ -138,6 +139,35 @@ const roomCode = () =>
     .map((value) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[value % 32])
     .join('')
 
+const seatCode = () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(4)))
+    .map((value) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[value % 32])
+    .join('')
+
+function allocateRejoinCode(room: Room) {
+  let code = seatCode()
+  while (
+    room.players.some((player) => player.rejoinCode === code) ||
+    (room.departedPlayers ?? []).some((player) => player.rejoinCode === code)
+  ) {
+    code = seatCode()
+  }
+  return code
+}
+
+/** Strip seat rejoin codes unless the viewer is the current host. */
+export function roomViewFor(room: Room, viewerId: string | null | undefined): Room {
+  const view = structuredClone(room) as Room
+  if (viewerId && viewerId === room.hostId) return view
+  for (const player of view.players) {
+    delete player.rejoinCode
+  }
+  for (const player of view.departedPlayers ?? []) {
+    delete player.rejoinCode
+  }
+  return view
+}
+
 const cleanName = (name: string) => name.trim().slice(0, 18) || 'Player'
 
 function sortPlayers(room: Room) {
@@ -187,6 +217,7 @@ export function createRoom(
   gameMode: Room['gameMode'] = 'classic',
   preferredColor?: string,
   lockColor?: boolean,
+  blitzDurationMs?: number | null,
 ) {
   if (maxPlayers < 2 || maxPlayers > 8) {
     throw new Error('Room size must be between 2 and 8 players.')
@@ -214,6 +245,8 @@ export function createRoom(
     memberIds: [userId],
     maxPlayers,
     gameMode,
+    blitzDurationMs:
+      gameMode === 'blitz' ? normalizeBlitzDurationMs(blitzDurationMs) : null,
     status: 'lobby',
     players: [
       {
@@ -223,6 +256,7 @@ export function createRoom(
         seat: 0,
         connected: true,
         colorLocked,
+        rejoinCode: seatCode(),
         joinedAt: now,
       },
     ],
@@ -253,6 +287,8 @@ export function joinRoom(
   if (returning) {
     returning.connected = true
     returning.name = cleanName(name)
+    returning.autoPlay = undefined
+    if (!returning.rejoinCode) returning.rejoinCode = allocateRejoinCode(room)
     if (lockColor && preferredColor) {
       const resolved = resolveJoinColor(room, userId, preferredColor, true)
       returning.color = resolved.color
@@ -280,6 +316,7 @@ export function joinRoom(
       seat,
       connected: true,
       colorLocked: resolved.colorLocked,
+      rejoinCode: allocateRejoinCode(room),
       joinedAt: Date.now(),
     })
     sortPlayers(room)
@@ -317,6 +354,7 @@ export function setSlotBot(
       seat,
       connected: true,
       isBot: true,
+      rejoinCode: allocateRejoinCode(room),
       joinedAt: Date.now(),
     })
   } else {
@@ -341,10 +379,49 @@ export function startRoom(roomId: string, userId: string) {
 
   sortPlayers(room)
   assignRandomGamePositions(room)
-  room.game = createGame(room.players, room.gameMode ?? 'classic')
+  for (const player of room.players) {
+    if (!player.rejoinCode) player.rejoinCode = allocateRejoinCode(room)
+  }
+  room.game = createGame(room.players, room.gameMode ?? 'classic', {
+    blitzDurationMs: room.blitzDurationMs,
+  })
   room.status = 'playing'
   room.updatedAt = Date.now()
   return room
+}
+
+/** Host can change Blitz length while still in the lobby. */
+export function setBlitzDuration(
+  roomId: string,
+  hostId: string,
+  blitzDurationMs: number,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can change the Blitz duration.')
+  }
+  if (room.status !== 'lobby') {
+    throw new Error('Blitz duration can only be changed in the lobby.')
+  }
+  if (room.gameMode !== 'blitz') {
+    throw new Error('Duration only applies to Blitz mode.')
+  }
+  room.blitzDurationMs = normalizeBlitzDurationMs(blitzDurationMs)
+  room.updatedAt = Date.now()
+  return room
+}
+
+/** Force-end a Blitz room when the clock hits zero. */
+export function endBlitzRoom(roomId: string) {
+  const room = rooms.get(roomId)
+  if (!room) return null
+  if (!isBlitzMode(room.gameMode) || room.status !== 'playing' || !room.game) {
+    return room
+  }
+  const next = structuredClone(room) as Room
+  finalizeBlitzGame(next)
+  rooms.set(roomId, next)
+  return next
 }
 
 /**
@@ -530,11 +607,149 @@ function transferHost(room: Room, previousHostId: string) {
   if (room.players.length === 0 || room.hostId !== previousHostId) return
   const nextHost =
     room.players.find(
+      (player) =>
+        player.id !== previousHostId &&
+        !player.isBot &&
+        player.connected,
+    ) ??
+    room.players.find(
       (player) => player.id !== previousHostId && !player.isBot,
     ) ??
     room.players.find((player) => player.id !== previousHostId) ??
     room.players[0]
   room.hostId = nextHost.id
+}
+
+function snapshotForReclaim(room: Room, player: Room['players'][number]) {
+  const game = room.game
+  if (!game) return {}
+  const winnerPlace = game.winnerIds.indexOf(player.id)
+  return {
+    reclaimable: true as const,
+    savedTokens: game.tokens
+      .filter((token) => token.playerId === player.id)
+      .map((token) => ({ ...token })),
+    savedStats: game.stats?.[player.id]
+      ? structuredClone(game.stats[player.id])
+      : undefined,
+    savedEntryMisses: game.entryMisses?.[player.id],
+    savedFinishMisses: game.finishMisses?.[player.id],
+    savedProtectionForfeited: game.protectionForfeited?.[player.id],
+    savedTurnMisses: game.turnMisses?.[player.id],
+    savedTurnMissLimit: game.turnMissLimits?.[player.id],
+    savedShieldBuff: game.shieldBuff?.[player.id],
+    savedWinnerPlace: winnerPlace >= 0 ? winnerPlace : undefined,
+  }
+}
+
+/**
+ * Claim a departed reclaimable seat with room code + seat code.
+ * Restores tokens/stats at the exact board position.
+ */
+export function claimSeat(
+  userId: string,
+  name: string,
+  roomCodeValue: string,
+  rejoinCodeValue: string,
+) {
+  const roomId = codeIndex.get(roomCodeValue.trim().toUpperCase())
+  if (!roomId) throw new Error('Room not found. Check the room code.')
+
+  const room = getRoom(roomId)
+  if (room.status !== 'playing' || !room.game) {
+    throw new Error('Seat reclaim is only available during a match.')
+  }
+
+  const code = rejoinCodeValue.trim().toUpperCase()
+  if (code.length < 4) throw new Error('Enter the seat code from the host.')
+
+  if (room.players.some((player) => player.id === userId)) {
+    throw new Error('You are already in this room.')
+  }
+
+  room.departedPlayers ??= []
+  const departedIndex = room.departedPlayers.findIndex(
+    (player) =>
+      player.reclaimable &&
+      (player.rejoinCode ?? '').toUpperCase() === code,
+  )
+  if (departedIndex === -1) {
+    throw new Error('Invalid seat code, or that seat is not open to reclaim.')
+  }
+
+  const departed = room.departedPlayers[departedIndex]
+  if (room.players.some((player) => player.seat === departed.seat)) {
+    throw new Error('That seat is already taken.')
+  }
+
+  const game = room.game
+  const currentTurnId = room.players[game.turnIndex]?.id
+  const displayName = cleanName(name)
+
+  const restored: Room['players'][number] = {
+    id: userId,
+    name: displayName,
+    color: departed.color,
+    seat: departed.seat,
+    connected: true,
+    colorLocked: departed.colorLocked,
+    rejoinCode: departed.rejoinCode ?? allocateRejoinCode(room),
+    joinedAt: departed.joinedAt,
+  }
+
+  room.departedPlayers.splice(departedIndex, 1)
+  room.players.push(restored)
+  sortPlayers(room)
+  if (!room.memberIds.includes(userId)) room.memberIds.push(userId)
+
+  const tokens = (departed.savedTokens ?? []).map((token) => ({
+    ...token,
+    playerId: userId,
+  }))
+  game.tokens.push(...tokens)
+
+  if (departed.savedStats) {
+    game.stats ??= {}
+    game.stats[userId] = structuredClone(departed.savedStats)
+  }
+  if (departed.savedEntryMisses !== undefined) {
+    game.entryMisses[userId] = departed.savedEntryMisses
+  }
+  if (departed.savedFinishMisses !== undefined) {
+    game.finishMisses[userId] = departed.savedFinishMisses
+  }
+  if (departed.savedProtectionForfeited !== undefined) {
+    game.protectionForfeited[userId] = departed.savedProtectionForfeited
+  }
+  if (departed.savedTurnMisses !== undefined) {
+    game.turnMisses ??= {}
+    game.turnMisses[userId] = departed.savedTurnMisses
+  }
+  if (departed.savedTurnMissLimit !== undefined) {
+    game.turnMissLimits ??= {}
+    game.turnMissLimits[userId] = departed.savedTurnMissLimit
+  }
+  if (departed.savedShieldBuff) {
+    game.shieldBuff ??= {}
+    game.shieldBuff[userId] = true
+  }
+  if (
+    typeof departed.savedWinnerPlace === 'number' &&
+    departed.savedWinnerPlace >= 0 &&
+    !game.winnerIds.includes(userId)
+  ) {
+    const place = Math.min(departed.savedWinnerPlace, game.winnerIds.length)
+    game.winnerIds.splice(place, 0, userId)
+  }
+
+  if (currentTurnId) {
+    const nextIndex = room.players.findIndex((player) => player.id === currentTurnId)
+    if (nextIndex >= 0) game.turnIndex = nextIndex
+  }
+
+  game.lastAction = `${displayName} reclaimed seat ${restored.seat + 1}`
+  room.updatedAt = Date.now()
+  return room
 }
 
 function rebalanceTurnAfterRemoval(room: Room, removedIndex: number) {
@@ -582,19 +797,26 @@ export function removePlayerFromRoom(
   room: Room,
   userId: string,
   lastAction: string,
+  options?: { reclaimable?: boolean },
 ): Room | null {
   const leavingIndex = room.players.findIndex((player) => player.id === userId)
   if (leavingIndex === -1) return room
 
   const leavingPlayer = room.players[leavingIndex]
+  const reclaimable = Boolean(options?.reclaimable && room.game)
 
   if (room.game) {
     room.departedPlayers ??= []
     if (!room.departedPlayers.some((player) => player.id === userId)) {
+      if (!leavingPlayer.rejoinCode) {
+        leavingPlayer.rejoinCode = allocateRejoinCode(room)
+      }
       room.departedPlayers.push({
         ...leavingPlayer,
         connected: false,
+        autoPlay: undefined,
         leftAt: Date.now(),
+        ...(reclaimable ? snapshotForReclaim(room, leavingPlayer) : { reclaimable: false }),
       })
     }
   }
@@ -620,9 +842,16 @@ export function removePlayerFromRoom(
     delete game.protectionForfeited?.[userId]
     delete game.turnMisses?.[userId]
     delete game.turnMissLimits?.[userId]
+    delete game.stats?.[userId]
+    delete game.shieldBuff?.[userId]
+    if (game.pendingExtraTurn === userId) game.pendingExtraTurn = null
+    if (game.pendingPower?.playerId === userId) game.pendingPower = null
+    if (game.activeMove?.playerId === userId) game.activeMove = null
 
     rebalanceTurnAfterRemoval(room, leavingIndex)
-    game.lastAction = lastAction
+    game.lastAction = reclaimable
+      ? `${leavingPlayer.name} left — seat open for reclaim`
+      : lastAction
     finalizeGameIfNeeded(room)
   }
 
@@ -706,6 +935,7 @@ export function removePlayer(
     room,
     targetUserId,
     `${target.name} was removed`,
+    { reclaimable: !target.isBot },
   )
   if (!next) throw new Error('Room closed.')
   rooms.set(roomId, next)
@@ -727,7 +957,12 @@ export function handleRollTimeout(roomId: string) {
   if (shouldRemove) {
     const removed = room.players.find((candidate) => candidate.id === playerId)
     const name = removed?.name ?? 'Player'
-    const next = removePlayerFromRoom(room, playerId, `${name} was removed for inactivity`)
+    const next = removePlayerFromRoom(
+      room,
+      playerId,
+      `${name} was removed for inactivity`,
+      { reclaimable: !removed?.isBot },
+    )
     if (!next) {
       rooms.delete(roomId)
       codeIndex.delete(room.code)
@@ -815,10 +1050,14 @@ export function leaveRoom(
     room.hostId = newHostId
   }
 
+  const reclaimable =
+    room.status === 'playing' && Boolean(room.game) && !leavingPlayer.isBot
+
   const next = removePlayerFromRoom(
     room,
     userId,
     `${leavingPlayer.name} left the game`,
+    { reclaimable },
   )
   if (!next) return null
   rooms.set(roomId, next)

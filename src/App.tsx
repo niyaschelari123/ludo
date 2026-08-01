@@ -19,6 +19,7 @@ import { PowerToast } from './components/PowerToast'
 import {
   claimColor,
   createRoom,
+  claimSeat,
   grantExtraTurnChances,
   joinRoom,
   leaveRoom,
@@ -29,6 +30,7 @@ import {
   rollDice,
   setSlotBot,
   setPlayerAutoPlay,
+  setBlitzDuration,
   skipMoveTimer,
   skipPowerTimer,
   skipRollTimer,
@@ -39,11 +41,19 @@ import {
 import {
   clearProfile,
   getActiveUserId,
+  hydrateProfileFromCloud,
+  isLoginAccountId,
   loadProfile,
   loginWithPin,
   saveProfile,
+  saveProfileAsync,
   type UserProfile,
 } from './lib/profile'
+import {
+  fetchCareerBoard,
+  recordMatchWin,
+  type CareerBoardEntry,
+} from './lib/profileCloud'
 import { PLAYER_COLOR_HEX, isNamedPlayerColor, normalizeColorKey, resolveColorHex } from './game/colors'
 import {
   activeMoveToMovingToken,
@@ -55,8 +65,8 @@ import {
   TURN_MOVE_TIMEOUT_MS,
   TURN_ROLL_TIMEOUT_MS,
 } from './game/engine'
-import { computeMotm, computeWorstPlayer, computeWinOdds, readPlayerStats, type MotmCandidate } from './game/matchAwards'
-import { PLAYER_COLORS, gameModeLabel, hasPowerBoard, isAutoControlled, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room } from './game/types'
+import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWinOdds, rankBlitzPlayers, readPlayerStats, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
+import { PLAYER_COLORS, BLITZ_DURATION_OPTIONS, DEFAULT_BLITZ_DURATION_MS, blitzDurationLabel, gameModeLabel, hasPowerBoard, isAutoControlled, isBlitzMode, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room } from './game/types'
 import {
   moveBaseSignature,
   movingTokenTarget,
@@ -187,8 +197,10 @@ function App() {
     () => loadProfile()?.name ?? localStorage.getItem('ludo-name') ?? '',
   )
   const [joinCode, setJoinCode] = useState('')
+  const [seatCode, setSeatCode] = useState('')
   const [maxPlayers, setMaxPlayers] = useState(6)
   const [gameMode, setGameMode] = useState<GameMode>('classic')
+  const [blitzDurationMs, setBlitzDurationMs] = useState(DEFAULT_BLITZ_DURATION_MS)
   const [roomId, setRoomId] = useState<string | null>(() =>
     localStorage.getItem('ludo-room'),
   )
@@ -200,6 +212,8 @@ function App() {
   const [loginOpen, setLoginOpen] = useState(false)
   const [loginPin, setLoginPin] = useState('')
   const [loginError, setLoginError] = useState('')
+  const [profileSaveMsg, setProfileSaveMsg] = useState('')
+  const [careerBoard, setCareerBoard] = useState<CareerBoardEntry[] | null>(null)
   const [colorClaims, setColorClaims] = useState<Record<string, string>>({})
   const [rolling, setRolling] = useState(false)
   const [diceFace, setDiceFace] = useState(1)
@@ -215,6 +229,7 @@ function App() {
   const [newHostId, setNewHostId] = useState('')
   const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmTarget | null>(null)
   const [turnSecondsLeft, setTurnSecondsLeft] = useState<number | null>(null)
+  const [blitzSecondsLeft, setBlitzSecondsLeft] = useState<number | null>(null)
   const rollSyncRef = useRef<Promise<unknown> | null>(null)
   const moveInFlightRef = useRef(false)
   const powerResolveInFlightRef = useRef(false)
@@ -269,6 +284,53 @@ function App() {
   )
 
   useEffect(() => watchColorClaims(setColorClaims), [])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const next = await hydrateProfileFromCloud()
+      if (cancelled || !next) return
+      setProfile(next)
+      setUserId(next.accountId)
+      setName(next.name)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!profile || !room || room.status !== 'lobby') {
+      setCareerBoard(null)
+      return
+    }
+    let cancelled = false
+    void fetchCareerBoard().then((board) => {
+      if (!cancelled) setCareerBoard(board)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [profile?.accountId, room?.id, room?.status])
+
+  useEffect(() => {
+    if (!room || room.status !== 'finished' || !room.game) return
+    const winnerId = room.game.winnerIds[0]
+    if (!isLoginAccountId(winnerId)) return
+    void recordMatchWin(room.id, winnerId).then((recorded) => {
+      if (!recorded) return
+      setCareerBoard((prev) => {
+        if (!prev) return prev
+        return [...prev]
+          .map((entry) =>
+            entry.accountId === winnerId
+              ? { ...entry, wins: entry.wins + 1 }
+              : entry,
+          )
+          .sort((a, b) => b.wins - a.wins || a.name.localeCompare(b.name))
+      })
+    })
+  }, [room?.id, room?.status, room?.game?.winnerIds])
 
   useEffect(() => {
     if (!profile?.color) return
@@ -442,17 +504,22 @@ function App() {
 
   useLayoutEffect(() => {
     const game = room?.game
-    if (!game?.dice || game.phase !== 'move' || !room) return
+    if (!game || !room) return
 
     const action = game.lastAction
-    if (!action.includes(' rolled ')) return
+    const rolledMatch = action.match(/\brolled (\d)\b/)
+    const isThreeSixes = action.includes('rolled three sixes')
+    if (!rolledMatch && !isThreeSixes) return
 
     const roller = room.players.find((player) => action.startsWith(player.name))
     if (!isAutoControlled(roller) || lastBotRollRef.current === action) return
     lastBotRollRef.current = action
 
+    const finalDice = rolledMatch
+      ? Number(rolledMatch[1])
+      : (game.lastDice ?? game.dice ?? 6)
+
     setRolling(true)
-    const finalDice = game.dice
     const timer = window.setTimeout(() => {
       setDiceFace(finalDice)
       setDisplayDice(finalDice)
@@ -467,12 +534,26 @@ function App() {
     if (rolling) return
     const game = displayRoom?.game
     if (!game) return
-    if (game.phase === 'roll' || !game.dice) {
-      setDisplayDice(null)
+    const shown = game.dice ?? game.lastDice ?? null
+    if (shown) {
+      setDisplayDice(shown)
       return
     }
-    setDisplayDice(game.dice)
-  }, [displayRoom?.game?.phase, displayRoom?.game?.dice, rolling])
+    const rolledMatch = game.lastAction.match(/\brolled (\d)\b/)
+    if (rolledMatch) {
+      setDisplayDice(Number(rolledMatch[1]))
+      return
+    }
+    if (game.lastAction.includes('rolled three sixes')) {
+      setDisplayDice(6)
+    }
+  }, [
+    displayRoom?.game?.phase,
+    displayRoom?.game?.dice,
+    displayRoom?.game?.lastDice,
+    displayRoom?.game?.lastAction,
+    rolling,
+  ])
 
   useEffect(() => {
     const action = displayRoom?.game?.lastAction
@@ -517,6 +598,26 @@ function App() {
   ])
 
   useEffect(() => {
+    const game = displayRoom?.game
+    if (
+      !displayRoom ||
+      displayRoom.status !== 'playing' ||
+      !isBlitzMode(displayRoom.gameMode) ||
+      !game?.endsAt
+    ) {
+      setBlitzSecondsLeft(null)
+      return
+    }
+
+    const tick = () => {
+      setBlitzSecondsLeft(Math.max(0, Math.ceil((game.endsAt! - Date.now()) / 1000)))
+    }
+    tick()
+    const timer = window.setInterval(tick, 250)
+    return () => window.clearInterval(timer)
+  }, [displayRoom?.status, displayRoom?.gameMode, displayRoom?.game?.endsAt])
+
+  useEffect(() => {
     if (!moveReadyToClear || !movingToken || !room?.game) return
     const serverToken = room.game.tokens.find(
       (token) =>
@@ -555,16 +656,18 @@ function App() {
 
   const submitLogin = () => {
     setLoginError('')
-    try {
-      const next = loginWithPin(loginPin.trim())
-      setProfile(next)
-      setUserId(next.accountId)
-      setName(next.name)
-      setLoginOpen(false)
-      setLoginPin('')
-    } catch (reason) {
-      setLoginError(reason instanceof Error ? reason.message : 'Invalid code.')
-    }
+    void (async () => {
+      try {
+        const next = await loginWithPin(loginPin.trim())
+        setProfile(next)
+        setUserId(next.accountId)
+        setName(next.name)
+        setLoginOpen(false)
+        setLoginPin('')
+      } catch (reason) {
+        setLoginError(reason instanceof Error ? reason.message : 'Invalid code.')
+      }
+    })()
   }
 
   const logoutProfile = async () => {
@@ -581,9 +684,10 @@ function App() {
     setUserId(getActiveUserId(null))
   }
 
-  const pickProfileColor = async (color: string) => {
+  const pickProfileColor = (color: string) => {
     if (!profile) return
     setError('')
+    setProfileSaveMsg('')
     try {
       const key = normalizeColorKey(color)
       const owner = colorClaims[key]
@@ -591,14 +695,30 @@ function App() {
         setError('That color is already taken.')
         return
       }
-      const claims = await claimColor(profile.accountId, color)
-      setColorClaims(claims)
-      const updated = { ...profile, color }
-      saveProfile(updated)
-      setProfile(updated)
+      setProfile({ ...profile, color })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not claim color.')
+      setError(reason instanceof Error ? reason.message : 'Could not set color.')
     }
+  }
+
+  const saveProfileDetails = () => {
+    if (!profile) return
+    setError('')
+    setProfileSaveMsg('')
+    void perform(async () => {
+      const nextName = name.trim().slice(0, 18) || profile.name
+      if (!profile.color) {
+        throw new Error('Pick a color before saving.')
+      }
+      const claims = await claimColor(profile.accountId, profile.color)
+      setColorClaims(claims)
+      const updated = { ...profile, name: nextName, color: profile.color }
+      await saveProfileAsync(updated)
+      setProfile(updated)
+      setName(updated.name)
+      setProfileSaveMsg('Profile saved')
+      window.setTimeout(() => setProfileSaveMsg(''), 2500)
+    })
   }
 
   const roomColorOptions = profile?.color
@@ -952,6 +1072,19 @@ function App() {
                 {!profile.color ? (
                   <p className="color-hint">Pick a color before joining a room.</p>
                 ) : null}
+                <div className="profile-save-row">
+                  <button
+                    type="button"
+                    className="secondary-button profile-save-button"
+                    disabled={busy || !profile.color || !name.trim()}
+                    onClick={saveProfileDetails}
+                  >
+                    Save profile
+                  </button>
+                  {profileSaveMsg ? (
+                    <span className="profile-save-status">{profileSaveMsg}</span>
+                  ) : null}
+                </div>
               </div>
             ) : null}
             <div className="join-row">
@@ -961,16 +1094,38 @@ function App() {
                 onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
                 placeholder="ROOM CODE"
               />
+              <input
+                className="seat-code-input"
+                value={seatCode}
+                maxLength={4}
+                onChange={(event) => setSeatCode(event.target.value.toUpperCase())}
+                placeholder="SEAT"
+                title="Seat code from host (to rejoin mid-game)"
+              />
               <button
-                disabled={busy || !canPlay || joinCode.length !== 6}
+                disabled={
+                  busy ||
+                  !canPlay ||
+                  joinCode.length !== 6 ||
+                  (seatCode.length > 0 && seatCode.length !== 4)
+                }
                 onClick={() => perform(async () => {
                   rememberName()
+                  if (seatCode.length === 4) {
+                    const claimed = await claimSeat(userId, name, joinCode, seatCode)
+                    setRoom(claimed)
+                    setRoomId(claimed.id)
+                    return
+                  }
                   const joined = await joinRoom(userId, name, joinCode, roomColorOptions)
                   setRoom(joined)
                   setRoomId(joined.id)
                 })}
-              >Join room</button>
+              >{seatCode.length === 4 ? 'Reclaim seat' : 'Join room'}</button>
             </div>
+            <p className="join-hint">
+              Mid-game return: ask the host for your seat code, then enter room + seat codes.
+            </p>
             <div className="divider"><span>or host a game</span></div>
             <label>
               Game mode
@@ -1007,8 +1162,31 @@ function App() {
                   <strong>Race</strong>
                   <span>4 tokens, no captures — first home wins</span>
                 </button>
+                <button
+                  type="button"
+                  className={`mode-option ${gameMode === 'blitz' ? 'active' : ''}`}
+                  onClick={() => setGameMode('blitz')}
+                >
+                  <strong>Blitz</strong>
+                  <span>Timed scoring · 4 tokens · pick match length</span>
+                </button>
               </div>
             </label>
+            {gameMode === 'blitz' ? (
+              <label>
+                Blitz duration
+                <select
+                  value={blitzDurationMs}
+                  onChange={(event) => setBlitzDurationMs(Number(event.target.value))}
+                >
+                  {BLITZ_DURATION_OPTIONS.map((option) => (
+                    <option key={option.minutes} value={option.minutes * 60_000}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             <label>
               Room size
               <select value={maxPlayers} onChange={(event) => setMaxPlayers(Number(event.target.value))}>
@@ -1027,7 +1205,10 @@ function App() {
                   name,
                   maxPlayers,
                   gameMode,
-                  roomColorOptions,
+                  {
+                    ...roomColorOptions,
+                    ...(gameMode === 'blitz' ? { blitzDurationMs } : {}),
+                  },
                 )
                 setRoom(created)
                 setRoomId(created.id)
@@ -1078,6 +1259,8 @@ function App() {
   const isPowerMode = hasPowerBoard(viewRoom.gameMode)
   const isQuickMode = (viewRoom.gameMode ?? 'classic') === 'quick'
   const isRaceMode = (viewRoom.gameMode ?? 'classic') === 'race'
+  const isBlitz = isBlitzMode(viewRoom.gameMode)
+  const blitzScores = isBlitz && viewRoom.game ? rankBlitzPlayers(viewRoom) : []
 
   const currentPlayer = viewRoom.game ? viewRoom.players[viewRoom.game.turnIndex] : null
   const isMyTurn = currentPlayer?.id === userId
@@ -1128,9 +1311,13 @@ function App() {
     finalRanking.filter((player) => !player.leftEarly).length > 0
       ? finalRanking.filter((player) => !player.leftEarly)
       : finalRanking
-  const liveMotm = viewRoom.game
-    ? computeMotm(viewRoom, viewRoom.players)
-    : null
+  const liveMotmStandings =
+    viewRoom.game && room.status === 'playing' && !isBlitz
+      ? computeMotmStandings(viewRoom, viewRoom.players)
+      : []
+  const liveMotm = liveMotmStandings[0] ?? (
+    viewRoom.game && !isBlitz ? computeMotm(viewRoom, viewRoom.players) : null
+  )
   const winOdds = viewRoom.game ? computeWinOdds(viewRoom) : []
   const motm =
     viewRoom.status === 'finished'
@@ -1156,15 +1343,15 @@ function App() {
     <main className="room-screen" onClickCapture={playButtonSound}>
       <header className="room-header">
         <div className="brand"><span className="brand-mark small">L</span> Ludo Live</div>
-        {room.status === 'playing' && liveMotm ? (
+        {room.status === 'playing' && isBlitz && blitzScores[0] ? (
           <div
-            className={`live-motm ${playerColorClass(liveMotm.player.color)}`}
-            style={playerColorStyle(liveMotm.player.color)}
-            title={liveMotm.reason}
+            className={`live-motm ${playerColorClass(blitzScores[0].player.color)}`}
+            style={playerColorStyle(blitzScores[0].player.color)}
+            title={`${blitzScores[0].breakdown.total} pts`}
           >
-            <span className="live-motm-label">MOTM</span>
-            <strong>{liveMotm.player.name}</strong>
-            <em>({Number.isInteger(liveMotm.score) ? liveMotm.score : liveMotm.score.toFixed(1)})</em>
+            <span className="live-motm-label">LEAD</span>
+            <strong>{blitzScores[0].player.name}</strong>
+            <em>{blitzScores[0].breakdown.total} pts</em>
           </div>
         ) : (
           <div className="room-code">
@@ -1173,7 +1360,16 @@ function App() {
           </div>
         )}
         <div className="header-actions">
-          {room.status === 'playing' ? (
+          {room.status === 'playing' && isBlitz && blitzSecondsLeft !== null ? (
+            <div className={`blitz-clock ${blitzSecondsLeft <= 60 ? 'urgent' : ''}`}>
+              <span className="blitz-clock-label">Time</span>
+              <strong>
+                {Math.floor(blitzSecondsLeft / 60)}:
+                {String(blitzSecondsLeft % 60).padStart(2, '0')}
+              </strong>
+            </div>
+          ) : null}
+          {room.status === 'playing' && isBlitz ? (
             <div className="room-code room-code--compact">
               <strong>{room.code}</strong>
               <button className="icon-button" onClick={copyCode} title="Copy room code">⧉</button>
@@ -1202,13 +1398,42 @@ function App() {
       </header>
 
       {room.status === 'lobby' ? (
-        <section className="lobby">
+        <section className={`lobby ${profile ? 'lobby--with-wins' : ''}`}>
           <div className="lobby-card">
             <span className="eyebrow">PRIVATE ROOM</span>
             <h1>Waiting for players</h1>
             <p>Share this code with friends anywhere.</p>
             <p className="lobby-mode">
               Mode: <strong>{gameModeLabel(room.gameMode)}</strong>
+              {isBlitzMode(room.gameMode) ? (
+                <>
+                  {' '}
+                  ·{' '}
+                  {room.hostId === userId ? (
+                    <label className="lobby-blitz-duration">
+                      Time
+                      <select
+                        value={room.blitzDurationMs ?? DEFAULT_BLITZ_DURATION_MS}
+                        disabled={busy}
+                        onChange={(event) => {
+                          const next = Number(event.target.value)
+                          void perform(async () => {
+                            await setBlitzDuration(room.id, userId, next)
+                          })
+                        }}
+                      >
+                        {BLITZ_DURATION_OPTIONS.map((option) => (
+                          <option key={option.minutes} value={option.minutes * 60_000}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <strong>{blitzDurationLabel(room.blitzDurationMs)}</strong>
+                  )}
+                </>
+              ) : null}
             </p>
             <button className="code-display" onClick={copyCode}>{room.code} <span>⧉</span></button>
             <div className="players-grid">
@@ -1225,6 +1450,9 @@ function App() {
                     <div className="player-slot-copy">
                       <strong>{player.name}</strong>
                       {player.isBot && <em>Bot</em>}
+                      {isHost && player.rejoinCode ? (
+                        <em className="seat-code-label">Seat {player.rejoinCode}</em>
+                      ) : null}
                     </div>
                     {player.id === room.hostId && <small>HOST</small>}
                     {isHost && player.isBot ? (
@@ -1291,6 +1519,41 @@ function App() {
             )}
             {error && <p className="error">{error}</p>}
           </div>
+          {profile ? (
+            <aside className="lobby-wins-board">
+              <h3>Career wins</h3>
+              {careerBoard === null ? (
+                <p className="lobby-wins-loading">Loading…</p>
+              ) : (
+                <ol className="lobby-wins-list">
+                  {careerBoard.map((entry, index) => {
+                    const inRoom = room.players.some(
+                      (player) => player.id === entry.accountId,
+                    )
+                    return (
+                      <li
+                        key={entry.accountId}
+                        className={`lobby-wins-row ${playerColorClass(entry.color)} ${inRoom ? 'in-room' : 'away'}`}
+                        style={playerColorStyle(entry.color)}
+                      >
+                        <span className="lobby-wins-rank">#{index + 1}</span>
+                        <span className="lobby-wins-avatar">
+                          {entry.name[0]?.toUpperCase() ?? '?'}
+                        </span>
+                        <div className="lobby-wins-meta">
+                          <strong className="lobby-wins-name">{entry.name}</strong>
+                          <small>{inRoom ? 'In room' : 'Not joined'}</small>
+                        </div>
+                        <em className="lobby-wins-count">
+                          {entry.wins} {entry.wins === 1 ? 'win' : 'wins'}
+                        </em>
+                      </li>
+                    )
+                  })}
+                </ol>
+              )}
+            </aside>
+          ) : null}
         </section>
       ) : (
         <section className={`game-layout ${isPowerMode ? 'game-layout--power' : ''}`}>
@@ -1321,7 +1584,9 @@ function App() {
                     ) : null}
                   </strong>
                   <small>
-                    {viewRoom.game?.winnerIds.includes(player.id)
+                    {isBlitz
+                      ? `${blitzScores.find((entry) => entry.player.id === player.id)?.breakdown.total ?? 0} pts`
+                      : viewRoom.game?.winnerIds.includes(player.id)
                       ? `Finished #${viewRoom.game.winnerIds.indexOf(player.id) + 1}`
                       : player.isBot
                         ? 'Bot'
@@ -1331,6 +1596,7 @@ function App() {
                           ]
                             .filter(Boolean)
                             .join(' · ') || 'Online'}
+                    {isHost && player.rejoinCode ? ` · Seat ${player.rejoinCode}` : ''}
                     {hasShield ? ' · Shield' : ''}
                     {misses > 0 ? ` · ${misses}/${missLimit} misses` : ''}
                   </small>
@@ -1406,9 +1672,49 @@ function App() {
                 ) : null}
               </div>
             )})}
+            {room.hostId === userId &&
+            viewRoom.status === 'playing' &&
+            (viewRoom.departedPlayers ?? []).some((player) => player.reclaimable) ? (
+              <div className="reclaim-panel">
+                <h3>Left seats</h3>
+                <p>Share room + seat code to reclaim at the same spot.</p>
+                <ul className="reclaim-list">
+                  {(viewRoom.departedPlayers ?? [])
+                    .filter((player) => player.reclaimable)
+                    .sort((first, second) => first.seat - second.seat)
+                    .map((player) => (
+                      <li
+                        key={`${player.id}-${player.leftAt}`}
+                        className={playerColorClass(player.color)}
+                        style={playerColorStyle(player.color)}
+                      >
+                        <span className="reclaim-avatar">
+                          {player.name[0]?.toUpperCase() ?? '?'}
+                        </span>
+                        <div className="reclaim-copy">
+                          <strong>{player.name}</strong>
+                          <small>Seat {player.seat + 1}</small>
+                        </div>
+                        <em className="seat-code-label">{player.rejoinCode ?? '—'}</em>
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            ) : null}
           </aside>
 
           <div className="game-center">
+            {room.status === 'playing' && liveMotm ? (
+              <div
+                className={`live-motm live-motm--board ${playerColorClass(liveMotm.player.color)}`}
+                style={playerColorStyle(liveMotm.player.color)}
+                title={liveMotm.reason}
+              >
+                <span className="live-motm-label">MOTM</span>
+                <strong>{liveMotm.player.name}</strong>
+                <em>{formatAwardScore(liveMotm.score)} pts · {liveMotm.reason}</em>
+              </div>
+            ) : null}
             <div className="turn-banner">
               <strong>{isMyTurn ? 'Your turn' : `${currentPlayer?.name}'s turn`}</strong>
               <span>{bannerAction}</span>
@@ -1517,7 +1823,44 @@ function App() {
             ) : null}
             <div className="rules">
               <h3>Quick rules</h3>
-              {isRaceMode ? (
+              {isBlitz ? (
+                <>
+                  <p className="power-rules-title">
+                    <strong>Blitz mode:</strong> Quick-style board with a hard{' '}
+                    {blitzDurationLabel(viewRoom.blitzDurationMs)} clock.
+                    When time hits zero the match ends instantly — highest score wins (not necessarily
+                    who finished the most tokens first).
+                  </p>
+                  <p>Each player has 4 tokens. Captures send tokens back to their colored start (not the yard).</p>
+                  <p>No TNT or −5. Super (⚡) tiles leap halfway to a safe star.</p>
+                  <p>Getting all tokens home mid-match does <em>not</em> end the game — keep scoring until the buzzer.</p>
+                  <p className="power-rules-title"><strong>How points work</strong></p>
+                  <ul className="blitz-score-rules">
+                    {BLITZ_SCORE_RULES.map((rule) => (
+                      <li key={rule.label}>
+                        <strong>{rule.label}</strong> {rule.detail}
+                      </li>
+                    ))}
+                  </ul>
+                  <p>Ties break by tokens home, then eliminations, then name.</p>
+                  <p>Roll 6 to leave the yard. Capture and sixes still grant an extra turn.</p>
+                  <p>Three consecutive 6s lose the turn. Exact roll needed to finish a token.</p>
+                  {blitzScores.length > 0 ? (
+                    <>
+                      <p className="power-rules-title"><strong>Live scoreboard</strong></p>
+                      <ol className="blitz-scoreboard">
+                        {blitzScores.map((entry, index) => (
+                          <li key={entry.player.id}>
+                            <span>#{index + 1}</span>
+                            <strong>{entry.player.name}</strong>
+                            <em>{entry.breakdown.total} pts</em>
+                          </li>
+                        ))}
+                      </ol>
+                    </>
+                  ) : null}
+                </>
+              ) : isRaceMode ? (
                 <>
                   <p className="power-rules-title">
                     <strong>Race mode:</strong> Quick-style power board, pure race to home.
@@ -1578,6 +1921,24 @@ function App() {
                 <strong>Man of the Match:</strong> scored from eliminations, finish place,
                 tokens home, sixes, and times eliminated. Highest score wins (not always the champion).
               </p>
+              {liveMotmStandings.length > 1 ? (
+                <>
+                  <p className="power-rules-title"><strong>Live MotM points</strong></p>
+                  <ol className="motm-live-board">
+                    {liveMotmStandings.slice(1).map((entry, index) => (
+                      <li
+                        key={entry.player.id}
+                        className={playerColorClass(entry.player.color)}
+                        style={playerColorStyle(entry.player.color)}
+                      >
+                        <span>#{index + 2}</span>
+                        <strong>{entry.player.name}</strong>
+                        <em>{formatAwardScore(entry.score)}</em>
+                      </li>
+                    ))}
+                  </ol>
+                </>
+              ) : null}
             </div>
             {error && <p className="error">{error}</p>}
           </aside>
@@ -1644,7 +2005,9 @@ function App() {
             <h2>Choose new host</h2>
             <p>
               You are the host. Pick who should run the room before you leave.
-              Your tokens will be removed if the game has started.
+              {room.status === 'playing'
+                ? ' Your tokens leave the board; the host can still share your seat code to reclaim.'
+                : ''}
             </p>
             <div className="host-picker" role="radiogroup" aria-label="New host">
               {room.players
@@ -1734,7 +2097,11 @@ function App() {
             <div className="results-rays" />
             <span className="results-eyebrow">GAME COMPLETE</span>
             <h1>Final standings</h1>
-            <p className="results-subtitle">A champion has conquered the board!</p>
+            <p className="results-subtitle">
+              {isBlitzMode(room.gameMode)
+                ? 'Time expired — ranked by Blitz points!'
+                : 'A champion has conquered the board!'}
+            </p>
 
             <div className="podium">
               {finalRanking.slice(0, 3).map((player, index) => (
@@ -1749,9 +2116,11 @@ function App() {
                   <small>
                     {player.leftEarly
                       ? 'LEFT EARLY'
-                      : index === 0
-                        ? 'CHAMPION'
-                        : `PLACE ${index + 1}`}
+                      : isBlitzMode(room.gameMode)
+                        ? `${rankBlitzPlayers(room).find((entry) => entry.player.id === player.id)?.breakdown.total ?? 0} PTS`
+                        : index === 0
+                          ? 'CHAMPION'
+                          : `PLACE ${index + 1}`}
                   </small>
                   <div className="podium-block">{index + 1}</div>
                 </div>

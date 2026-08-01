@@ -2,6 +2,36 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // PIN login stays client-side. Profiles store display name, color, and wins.
+    match /profiles/{accountId} {
+      allow read: if request.auth != null;
+
+      allow create, update: if request.auth != null
+        && request.resource.data.accountId is string
+        && request.resource.data.keys().hasOnly(['accountId', 'name', 'color', 'updatedAt', 'wins'])
+        && (
+          !('name' in request.resource.data)
+          || (request.resource.data.name is string && request.resource.data.name.size() <= 18)
+        )
+        && (!('color' in request.resource.data) || request.resource.data.color is string)
+        && (
+          !('wins' in request.resource.data)
+          || (request.resource.data.wins is number && request.resource.data.wins >= 0)
+        );
+
+      allow delete: if false;
+    }
+
+    // One doc per finished room — prevents double-counting wins.
+    match /winEvents/{roomId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['roomId', 'winnerId', 'recordedAt'])
+        && request.resource.data.roomId is string
+        && request.resource.data.winnerId is string;
+      allow update, delete: if false;
+    }
+
     match /rooms/{roomId} {
       // Authenticated reads allow room-code lookup. Do not store private profile data here.
       allow read: if request.auth != null;

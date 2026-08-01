@@ -1,5 +1,6 @@
 import { finishedProgress } from './engine'
 import type { Player, PlayerStats, Room } from './types'
+import { isBlitzMode } from './types'
 
 export type MotmBreakdown = {
   eliminations: number
@@ -47,10 +48,13 @@ export function readPlayerStats(
   }
 }
 
-/** Same scoring used for live MOTM and the end-screen award. */
+/** Same scoring used for live MOTM and the end-screen award.
+ *  `placeIndex` is 0-based finish place, or `null` if the player has not finished yet
+ *  (no free place bonus mid-match).
+ */
 export function motmBreakdown(
   stats: PlayerStats,
-  placeIndex: number,
+  placeIndex: number | null,
 ): MotmBreakdown {
   const eliminations = stats.captures * 3
   const placeBonus =
@@ -68,65 +72,69 @@ export function motmBreakdown(
   }
 }
 
-export function scoreMotm(stats: PlayerStats, placeIndex: number): number {
+export function scoreMotm(stats: PlayerStats, placeIndex: number | null): number {
   return motmBreakdown(stats, placeIndex).total
 }
 
 export function motmReason(
   stats: PlayerStats,
-  placeIndex: number,
+  placeIndex: number | null,
 ): string {
   if (stats.captures > 0) {
     const placeBit =
       placeIndex === 0
         ? ' · Champion'
-        : placeIndex < 3
+        : placeIndex !== null && placeIndex < 3
           ? ` · ${placeIndex + 1}${placeIndex === 1 ? 'nd' : placeIndex === 2 ? 'rd' : 'th'} place`
           : ''
     return `${stats.captures} elimination${stats.captures === 1 ? '' : 's'}${placeBit}`
   }
   if (placeIndex === 0) return 'Champion of the board'
-  return `${stats.tokensHome} token${stats.tokensHome === 1 ? '' : 's'} home`
+  if (stats.tokensHome > 0) {
+    return `${stats.tokensHome} token${stats.tokensHome === 1 ? '' : 's'} home`
+  }
+  if (stats.sixes > 0) {
+    return `${stats.sixes} six${stats.sixes === 1 ? '' : 'es'}`
+  }
+  return 'No MotM points yet'
 }
 
 function scoreCandidates(room: Room, players: Player[]): MotmCandidate[] {
   if (!room.game || players.length === 0) return []
 
-  const ranked = [...players].sort((first, second) => {
-    const firstPlace = room.game!.winnerIds.indexOf(first.id)
-    const secondPlace = room.game!.winnerIds.indexOf(second.id)
-    return (
-      (firstPlace === -1 ? Number.MAX_SAFE_INTEGER : firstPlace) -
-      (secondPlace === -1 ? Number.MAX_SAFE_INTEGER : secondPlace)
-    )
-  })
-
-  return ranked.map((player, index) => {
+  return players.map((player) => {
+    const finishIndex = room.game!.winnerIds.indexOf(player.id)
+    const placeIndex = finishIndex === -1 ? null : finishIndex
     const stats = readPlayerStats(room, player.id)
-    const breakdown = motmBreakdown(stats, index)
+    const breakdown = motmBreakdown(stats, placeIndex)
     return {
       player,
       stats,
-      place: index + 1,
+      place: finishIndex === -1 ? Number.MAX_SAFE_INTEGER : finishIndex + 1,
       score: breakdown.total,
-      reason: motmReason(stats, index),
+      reason: motmReason(stats, placeIndex),
       breakdown,
     }
   })
+}
+
+export function computeMotmStandings(
+  room: Room,
+  players: Player[],
+): MotmCandidate[] {
+  return scoreCandidates(room, players).sort(
+    (first, second) =>
+      second.score - first.score ||
+      first.place - second.place ||
+      second.stats.captures - first.stats.captures,
+  )
 }
 
 export function computeMotm(
   room: Room,
   players: Player[],
 ): MotmCandidate | null {
-  return (
-    scoreCandidates(room, players).sort(
-      (first, second) =>
-        second.score - first.score ||
-        first.place - second.place ||
-        second.stats.captures - first.stats.captures,
-    )[0] ?? null
-  )
+  return computeMotmStandings(room, players)[0] ?? null
 }
 
 /** Lowest MOTM score — the weakest overall performance. */
@@ -232,4 +240,135 @@ export function computeWinOdds(room: Room): WinOddsEntry[] {
   }
 
   return rounded
+}
+
+/** Blitz scoring rules shown in the rules panel. */
+export const BLITZ_SCORE_RULES: { label: string; detail: string }[] = [
+  { label: '+15', detail: 'each token finished (home)' },
+  { label: '+5', detail: 'each elimination you make' },
+  { label: '−3', detail: 'each time one of your tokens is eliminated' },
+  { label: '+1', detail: 'each six you roll' },
+  { label: '+0–8', detail: 'per unfinished token based on how far it has raced (progress)' },
+  { label: '+12', detail: 'bonus if all 4 of your tokens are home before time runs out' },
+  { label: '+4', detail: 'bonus if you have the single farthest token on the board at the buzzer' },
+]
+
+export type BlitzBreakdown = {
+  tokensHome: number
+  eliminations: number
+  eliminatedPenalty: number
+  sixes: number
+  boardProgress: number
+  allHomeBonus: number
+  leadTokenBonus: number
+  total: number
+}
+
+export type BlitzScoreEntry = {
+  player: Player
+  breakdown: BlitzBreakdown
+  stats: PlayerStats
+}
+
+export function blitzBreakdown(room: Room, playerId: string): BlitzBreakdown {
+  const game = room.game
+  const stats = readPlayerStats(room, playerId)
+  const finish = game ? finishedProgress(room) : 1
+  const tokens = game?.tokens.filter((token) => token.playerId === playerId) ?? []
+
+  let boardProgress = 0
+  let homeCount = 0
+  for (const token of tokens) {
+    if (token.progress >= finish) {
+      homeCount += 1
+      continue
+    }
+    if (token.progress < 0) continue
+    boardProgress += Math.floor((token.progress / finish) * 8)
+  }
+
+  const tokensHomePts = stats.tokensHome * 15
+  const eliminations = stats.captures * 5
+  const eliminatedPenalty = stats.eliminated * 3
+  const sixes = stats.sixes
+  const allHomeBonus = homeCount === tokens.length && tokens.length > 0 ? 12 : 0
+
+  return {
+    tokensHome: tokensHomePts,
+    eliminations,
+    eliminatedPenalty,
+    sixes,
+    boardProgress,
+    allHomeBonus,
+    leadTokenBonus: 0,
+    total:
+      tokensHomePts +
+      eliminations -
+      eliminatedPenalty +
+      sixes +
+      boardProgress +
+      allHomeBonus,
+  }
+}
+
+export function rankBlitzPlayers(room: Room): BlitzScoreEntry[] {
+  if (!room.game) return []
+
+  const finish = finishedProgress(room)
+  let bestProgress = -1
+  let leadPlayerIds = new Set<string>()
+  for (const token of room.game.tokens) {
+    if (token.progress < 0 || token.progress >= finish) continue
+    if (token.progress > bestProgress) {
+      bestProgress = token.progress
+      leadPlayerIds = new Set([token.playerId])
+    } else if (token.progress === bestProgress) {
+      leadPlayerIds.add(token.playerId)
+    }
+  }
+
+  const entries = room.players.map((player) => {
+    const breakdown = blitzBreakdown(room, player.id)
+    if (leadPlayerIds.size === 1 && leadPlayerIds.has(player.id) && bestProgress > 0) {
+      breakdown.leadTokenBonus = 4
+      breakdown.total += 4
+    }
+    return {
+      player,
+      breakdown,
+      stats: readPlayerStats(room, player.id),
+    }
+  })
+
+  entries.sort(
+    (first, second) =>
+      second.breakdown.total - first.breakdown.total ||
+      second.stats.tokensHome - first.stats.tokensHome ||
+      second.stats.captures - first.stats.captures ||
+      first.player.name.localeCompare(second.player.name),
+  )
+  return entries
+}
+
+/** End a Blitz match by points and lock final standings. */
+export function finalizeBlitzGame(room: Room) {
+  const game = room.game
+  if (!game || !isBlitzMode(room.gameMode)) return room
+  if (room.status === 'finished') return room
+
+  const ranking = rankBlitzPlayers(room)
+  game.winnerIds = ranking.map((entry) => entry.player.id)
+  game.phase = 'roll'
+  game.dice = null
+  game.turnDeadline = null
+  game.pendingPower = null
+  game.activeMove = null
+  game.endsAt = game.endsAt ?? Date.now()
+  room.status = 'finished'
+  const lead = ranking[0]
+  game.lastAction = lead
+    ? `Time's up! ${lead.player.name} wins with ${lead.breakdown.total} pts`
+    : `Time's up!`
+  room.updatedAt = Date.now()
+  return room
 }

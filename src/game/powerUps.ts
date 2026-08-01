@@ -93,7 +93,7 @@ export function powerInfoForMode(mode: GameMode | null | undefined) {
           : entry,
     )
   }
-  if (mode === 'quick') {
+  if (mode === 'quick' || mode === 'blitz') {
     return POWER_UP_INFO.filter(
       (entry) => entry.type !== 'tnt' && entry.type !== 'back5',
     )
