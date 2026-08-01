@@ -8,7 +8,7 @@ import type {
   Room,
   Token,
 } from './types'
-import { hasPowerBoard } from './types'
+import { allowsCaptures, hasPowerBoard, usesQuickPowerBoard } from './types'
 import {
   applyPowerUp,
   generatePowerTiles,
@@ -21,8 +21,6 @@ import {
 export const CELLS_PER_PLAYER = 13
 // Inner home-lane cells before the center finish position.
 export const HOME_LENGTH = 5
-// Colored outer-track start cell counts as the first home-entry step.
-export const OUTER_HOME_ENTRY_TILES = 1
 export const TOKENS_PER_PLAYER = 4
 export const QUICK_TOKENS_PER_PLAYER = 3
 export const TURN_ROLL_TIMEOUT_MS = 20_000
@@ -59,12 +57,15 @@ export function getBoardPlayerCount(room: Room): number {
 export const trackLength = (room: Room) =>
   getBoardPlayerCount(room) * CELLS_PER_PLAYER
 
-export const homeEntryProgress = (room: Room) => trackLength(room) - 1
+/**
+ * First progress value on the inward home lane.
+ * Outer track is 0 … trackLength-1 (last cell is the normal square before your
+ * colored start). Tokens never re-enter that start square on the way home.
+ */
+export const homeEntryProgress = (room: Room) => trackLength(room)
 
 export const finishedProgress = (room: Room) =>
-  homeEntryProgress(room) +
-  OUTER_HOME_ENTRY_TILES +
-  homeLengthForBoard(getBoardPlayerCount(room))
+  homeEntryProgress(room) + homeLengthForBoard(getBoardPlayerCount(room))
 
 export const safeCells = (room: Room) => {
   const length = trackLength(room)
@@ -139,7 +140,7 @@ export function createGame(players: Player[], gameMode: GameMode = 'classic'): G
     stats: Object.fromEntries(players.map((player) => [player.id, emptyPlayerStats()])),
     activeMove: null,
     powerTiles:
-      gameMode === 'quick'
+      usesQuickPowerBoard(gameMode)
         ? generateQuickPowerTiles(boardPlayerCount)
         : gameMode === 'power'
           ? generatePowerTiles(boardPlayerCount)
@@ -198,6 +199,9 @@ export function resolveLandingCapture(
 ): { captured: boolean; sharedProtectedCell: boolean } {
   const game = room.game
   if (!game) return { captured: false, sharedProtectedCell: false }
+  if (!allowsCaptures(room.gameMode)) {
+    return { captured: false, sharedProtectedCell: false }
+  }
 
   game.shieldBuff ??= {}
   let captured = false

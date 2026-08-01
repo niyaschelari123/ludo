@@ -223,14 +223,8 @@ function radialTokenPoint(token: Token, room: Room): Point {
   }
   if (token.progress >= homeEntry) {
     const homeStep = token.progress - homeEntry
-    if (homeStep === 0) {
-      return point(
-        layout.trackRadius,
-        radialCellAngle(player.seat * CELLS_PER_PLAYER, count),
-      )
-    }
     return point(
-      layout.homeLaneStart - (homeStep - 1) * layout.homeLaneStep,
+      layout.homeLaneStart - homeStep * layout.homeLaneStep,
       angle,
     )
   }
@@ -252,10 +246,7 @@ function squareTokenPoint(token: Token, room: Room): Point {
   }
   if (token.progress >= homeEntry) {
     const homeStep = token.progress - homeEntry
-    if (homeStep === 0) {
-      return FOUR_TRACK[player.seat * CELLS_PER_PLAYER]
-    }
-    return FOUR_HOME_LANES[player.seat][homeStep - 1]
+    return FOUR_HOME_LANES[player.seat][homeStep]
   }
   return FOUR_TRACK[globalCell(token, room)!]
 }

@@ -14,16 +14,27 @@ export const PLAYER_COLORS = [
 export type PlayerColor = (typeof PLAYER_COLORS)[number]
 export type RoomStatus = 'lobby' | 'playing' | 'finished'
 export type TurnPhase = 'roll' | 'move' | 'power'
-export type GameMode = 'classic' | 'power' | 'quick'
+export type GameMode = 'classic' | 'power' | 'quick' | 'race'
 
-/** Power and Quick place tiles on the track. */
+/** Power, Quick, and Race place tiles on the track. */
 export function hasPowerBoard(mode: GameMode | null | undefined): boolean {
-  return mode === 'power' || mode === 'quick'
+  return mode === 'power' || mode === 'quick' || mode === 'race'
+}
+
+/** Quick-style board: no TNT / −5, includes Super tiles. */
+export function usesQuickPowerBoard(mode: GameMode | null | undefined): boolean {
+  return mode === 'quick' || mode === 'race'
+}
+
+/** Race mode: tokens share cells; captures are disabled. */
+export function allowsCaptures(mode: GameMode | null | undefined): boolean {
+  return mode !== 'race'
 }
 
 export function gameModeLabel(mode: GameMode | null | undefined): string {
   if (mode === 'power') return 'Power'
   if (mode === 'quick') return 'Quick'
+  if (mode === 'race') return 'Race'
   return 'Classic'
 }
 export type PowerUpType =

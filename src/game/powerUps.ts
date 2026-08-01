@@ -11,6 +11,7 @@ import {
   trackLength,
 } from './engine'
 import type { GameMode, GameState, Player, PowerTile, PowerUpType, Room, Token } from './types'
+import { allowsCaptures } from './types'
 
 export const ACTIVE_POWER_TYPES: PowerUpType[] = [
   'rocket',
@@ -75,6 +76,23 @@ export const POWER_UP_INFO: {
 ]
 
 export function powerInfoForMode(mode: GameMode | null | undefined) {
+  if (mode === 'race') {
+    return POWER_UP_INFO.filter(
+      (entry) => entry.type !== 'tnt' && entry.type !== 'back5',
+    ).map((entry) =>
+      entry.type === 'ice'
+        ? {
+            ...entry,
+            description: 'No rival push in Race — slide only',
+          }
+        : entry.type === 'shield'
+          ? {
+              ...entry,
+              description: 'Unused in Race (no captures)',
+            }
+          : entry,
+    )
+  }
   if (mode === 'quick') {
     return POWER_UP_INFO.filter(
       (entry) => entry.type !== 'tnt' && entry.type !== 'back5',
@@ -331,6 +349,9 @@ export function applyPowerUp(
 
   switch (type) {
     case 'tnt': {
+      if (!allowsCaptures(room.gameMode)) {
+        return `${player.name} triggered TNT — no effect in Race`
+      }
       let blasted = 0
       for (const opponent of opponentsOnCell(game, player.id, landingCell, room)) {
         if (isSoleTokenProtected(game, opponent.playerId, room)) continue
@@ -390,6 +411,9 @@ export function applyPowerUp(
     case 'star':
       return `${player.name} landed on a power star`
     case 'ice': {
+      if (!allowsCaptures(room.gameMode)) {
+        return `${player.name} slid over ice`
+      }
       let frozen = 0
       const floor = retreatFloor(room)
       for (const opponent of opponentsOnCell(game, player.id, landingCell, room)) {

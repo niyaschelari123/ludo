@@ -999,6 +999,14 @@ function App() {
                   <strong>Quick</strong>
                   <span>3 tokens, capture to start, Super leaps</span>
                 </button>
+                <button
+                  type="button"
+                  className={`mode-option ${gameMode === 'race' ? 'active' : ''}`}
+                  onClick={() => setGameMode('race')}
+                >
+                  <strong>Race</strong>
+                  <span>4 tokens, no captures — first home wins</span>
+                </button>
               </div>
             </label>
             <label>
@@ -1069,6 +1077,7 @@ function App() {
   const viewRoom: Room = optimisticRoom ?? room
   const isPowerMode = hasPowerBoard(viewRoom.gameMode)
   const isQuickMode = (viewRoom.gameMode ?? 'classic') === 'quick'
+  const isRaceMode = (viewRoom.gameMode ?? 'classic') === 'race'
 
   const currentPlayer = viewRoom.game ? viewRoom.players[viewRoom.game.turnIndex] : null
   const isMyTurn = currentPlayer?.id === userId
@@ -1508,7 +1517,25 @@ function App() {
             ) : null}
             <div className="rules">
               <h3>Quick rules</h3>
-              {isQuickMode ? (
+              {isRaceMode ? (
+                <>
+                  <p className="power-rules-title">
+                    <strong>Race mode:</strong> Quick-style power board, pure race to home.
+                  </p>
+                  <p>Each player has 4 tokens.</p>
+                  <p>No eliminations — landing on another token does nothing; share the cell and keep racing.</p>
+                  <p>Roll 6 to leave the yard.</p>
+                  <p>No TNT or −5 tiles. Two Super (⚡) tiles leap halfway around the board onto a safe star.</p>
+                  <p>Ice does not push rivals. Roll 6 still grants an extra turn.</p>
+                  <p>Three consecutive 6s lose the turn.</p>
+                  <p>
+                    Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or an auto-roll is made. Move within{' '}
+                    {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Default{' '}
+                    {MAX_TURN_MISSES} roll misses removes you; host can grant +5 and skip either wait.
+                  </p>
+                  <p>First to get all tokens home wins. Reach home with an exact roll.</p>
+                </>
+              ) : isQuickMode ? (
                 <>
                   <p className="power-rules-title">
                     <strong>Quick mode:</strong> a faster Power board with a few rule changes.
