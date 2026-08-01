@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { playEnter, playStep } from '../audio'
 import {
   allSeatPlayers,
@@ -11,6 +11,14 @@ import {
   movableTokens,
   safeCells,
 } from '../game/engine'
+import {
+  BOARD_SIZE,
+  getPolygonBoardGeometry,
+  pointList,
+  polygonTrackPoint,
+  type BoardGeometry,
+  type Point,
+} from '../game/boardGeometry'
 import type { MovingToken, Room, Token } from '../game/types'
 import { resolveColorHex, tokenStyleFor } from '../game/colors'
 import {
@@ -18,21 +26,13 @@ import {
 } from '../game/types'
 import { PowerUpLayer } from './PowerUpLayer'
 
-const SIZE = 600
+const SIZE = BOARD_SIZE
 const CENTER = SIZE / 2
-
-interface Point {
-  x: number
-  y: number
-}
 
 const point = (radius: number, angle: number): Point => ({
   x: CENTER + Math.cos(angle) * radius,
   y: CENTER + Math.sin(angle) * radius,
 })
-
-const pointList = (items: Point[]) =>
-  items.map(({ x, y }) => `${x},${y}`).join(' ')
 
 function boardSeatCount(room: Room) {
   return getBoardPlayerCount(room)
@@ -78,104 +78,8 @@ const FOUR_YARDS: Point[][] = FOUR_YARD_ORIGINS.map(({ x, y }) => [
   { x: x + 124, y: y + 124 },
 ])
 
-function boardStartAngle(count: number) {
-  return count === 4 ? (-Math.PI * 3) / 4 : -Math.PI / 2
-}
-
-function radialCellAngle(cell: number, count: number) {
-  return boardStartAngle(count) + (cell / (count * CELLS_PER_PLAYER)) * Math.PI * 2
-}
-
-interface RadialLayout {
-  outerRadius: number
-  trackFieldRadius: number
-  trackRadius: number
-  yardRadius: number
-  yardInnerRadius: number
-  homeLaneStart: number
-  homeLaneStep: number
-  finishRadius: number
-  labelRadius: number
-  rankRadius: number
-  cellSize: number
-  yardTokenRadius: number
-  sectorOuterSpan: number
-  sectorInnerSpan: number
-  yardSpan: number
-  yardInnerSpan: number
-  polygonBoard: boolean
-  quadYard: boolean
-}
-
-function radialBoardLayout(count: number): RadialLayout {
-  if (count === 6) {
-    return {
-      outerRadius: 292,
-      trackFieldRadius: 216,
-      trackRadius: 198,
-      yardRadius: 282,
-      yardInnerRadius: 222,
-      homeLaneStart: 166,
-      homeLaneStep: 22,
-      finishRadius: 60,
-      labelRadius: 286,
-      rankRadius: 202,
-      cellSize: 17,
-      yardTokenRadius: 12,
-      sectorOuterSpan: 0.48,
-      sectorInnerSpan: 0.49,
-      yardSpan: 0.31,
-      yardInnerSpan: 0.3,
-      polygonBoard: true,
-      quadYard: true,
-    }
-  }
-  if (count === 5) {
-    return {
-      outerRadius: 290,
-      trackFieldRadius: 212,
-      trackRadius: 196,
-      yardRadius: 278,
-      yardInnerRadius: 220,
-      homeLaneStart: 168,
-      homeLaneStep: 20,
-      finishRadius: 58,
-      labelRadius: 282,
-      rankRadius: 200,
-      cellSize: 18,
-      yardTokenRadius: 12,
-      sectorOuterSpan: 0.46,
-      sectorInnerSpan: 0.47,
-      yardSpan: 0.3,
-      yardInnerSpan: 0.29,
-      polygonBoard: true,
-      quadYard: true,
-    }
-  }
-  return {
-    outerRadius: 292,
-    trackFieldRadius: 45,
-    trackRadius: 194,
-    yardRadius: 278,
-    yardInnerRadius: 177,
-    homeLaneStart: 156,
-    homeLaneStep: 18,
-    finishRadius: 46,
-    labelRadius: 273,
-    rankRadius: 202,
-    cellSize: count >= 7 ? 13 : 17,
-    yardTokenRadius: count >= 7 ? 12 : 15,
-    sectorOuterSpan: 0.48,
-    sectorInnerSpan: 0.17,
-    yardSpan: 0.31,
-    yardInnerSpan: 0,
-    polygonBoard: false,
-    quadYard: false,
-  }
-}
-
-function finishSlot(angle: number, tokenId: number): Point {
-  const radialDistance = tokenId < 2 ? 20 : 36
+function finishSlot(angle: number, tokenId: number, finishRadius = 48): Point {
+  const radialDistance = tokenId < 2 ? finishRadius * 0.38 : finishRadius * 0.68
   const tangentDistance = tokenId % 2 === 0 ? -7 : 7
   const base = point(radialDistance, angle)
   return {
@@ -184,54 +88,64 @@ function finishSlot(angle: number, tokenId: number): Point {
   }
 }
 
-function radialYardPoint(seat: number, tokenId: number, count: number): Point {
-  const layout = radialBoardLayout(count)
-  const angle = radialCellAngle(seat * CELLS_PER_PLAYER, count)
-  const offsets = layout.quadYard
-    ? [
-      [-20, -18],
-      [20, -18],
-      [-20, 18],
-      [20, 18],
-    ]
-    : [
-      [-18, -17],
-      [18, -17],
-      [-18, 17],
-      [18, 17],
-    ]
-  const yard = point(layout.yardRadius, angle)
-  const [tangent, radial] = offsets[tokenId]
+/** Park finished tokens strictly inside that seat's colored center triangle. */
+function polygonFinishSlot(
+  geometry: BoardGeometry,
+  seat: number,
+  tokenId: number,
+): Point {
+  const sector = geometry.sectors[seat]
+  const [center, left, right] = sector.finishSector
+  // Barycentric weights (center, left, right) — keep clear of sector edges.
+  const nests: Array<[number, number, number]> = [
+    [0.62, 0.22, 0.16],
+    [0.62, 0.16, 0.22],
+    [0.48, 0.28, 0.24],
+    [0.48, 0.24, 0.28],
+  ]
+  const [wc, wl, wr] = nests[tokenId % 4]
   return {
-    x: yard.x + Math.cos(angle) * radial - Math.sin(angle) * tangent,
-    y: yard.y + Math.sin(angle) * radial + Math.cos(angle) * tangent,
+    x: center.x * wc + left.x * wl + right.x * wr,
+    y: center.y * wc + left.y * wl + right.y * wr,
   }
 }
 
-function radialTokenPoint(token: Token, room: Room): Point {
-  const count = boardSeatCount(room)
-  const layout = radialBoardLayout(count)
-  const player = room.players.find((candidate) => candidate.id === token.playerId)!
-  const angle = radialCellAngle(player.seat * CELLS_PER_PLAYER, count)
+function polygonTokenPoint(token: Token, room: Room, geometry: BoardGeometry): Point {
+  const player = allSeatPlayers(room).find(
+    (candidate) => candidate.id === token.playerId,
+  )!
+  const sector = geometry.sectors[player.seat]
   const homeEntry = homeEntryProgress(room)
+  const finished = finishedProgress(room)
 
   if (token.progress === -1) {
-    return radialYardPoint(player.seat, token.id, count)
+    return sector.yardSlots[token.id] ?? sector.yardSlots[0]
   }
-  if (token.progress >= finishedProgress(room)) {
-    return finishSlot(angle, token.id)
+  if (token.progress >= finished) {
+    return polygonFinishSlot(geometry, player.seat, token.id)
   }
   if (token.progress >= homeEntry) {
-    const homeStep = token.progress - homeEntry
-    return point(
-      layout.homeLaneStart - homeStep * layout.homeLaneStep,
-      angle,
+    const homeStep = Math.min(
+      geometry.homeLength - 1,
+      Math.max(0, Math.floor(token.progress - homeEntry)),
     )
+    return sector.homeLane[homeStep] ?? sector.homeLane[sector.homeLane.length - 1]
   }
-  return point(
-    layout.trackRadius,
-    radialCellAngle(globalCell(token, room)!, count),
-  )
+  const cell = globalCell(token, room)
+  if (cell === null) return geometry.center
+  // Animate smoothly along the pentagon edge between integer cells.
+  const progress = token.progress
+  if (!Number.isInteger(progress) && progress >= 0) {
+    const from = polygonTrackPoint(geometry, Math.floor(cell))
+    const to = polygonTrackPoint(geometry, Math.ceil(cell) % geometry.trackCells.length)
+    // globalCell already wraps; for partial steps lerp using fractional progress on relative path.
+    const frac = progress - Math.floor(progress)
+    return {
+      x: from.point.x + (to.point.x - from.point.x) * frac,
+      y: from.point.y + (to.point.y - from.point.y) * frac,
+    }
+  }
+  return polygonTrackPoint(geometry, cell).point
 }
 
 function squareTokenPoint(token: Token, room: Room): Point {
@@ -258,6 +172,7 @@ function tokenDisplayRadius(
   groupLength: number,
   isFinished: boolean,
   inYard: boolean,
+  geometry?: BoardGeometry,
 ) {
   if (isSquare) {
     if (!stacked) return isFinished ? 8 : 14
@@ -266,16 +181,30 @@ function tokenDisplayRadius(
     return 4
   }
 
-  const layout = radialBoardLayout(boardCount)
+  const yardTokenRadius = geometry?.yardTokenRadius ?? (boardCount >= 7 ? 12 : 13)
+  const cellSize = geometry?.cellSize ?? (boardCount >= 7 ? 13 : 16)
+
   if (inYard) {
-    const yardFit = layout.yardTokenRadius * 0.66
+    const yardFit = yardTokenRadius * 0.66
     if (!stacked) return yardFit
     if (groupLength <= 4) return yardFit * 0.82
     return yardFit * 0.65
   }
 
-  const cellFit = layout.cellSize * 0.44
-  if (!stacked) return isFinished ? Math.min(7, cellFit) : cellFit
+  const cellFit = cellSize * 0.44
+  if (isFinished) {
+    // Keep home tokens small enough to stay inside their center color wedge.
+    const finishFit = Math.min(11, (geometry?.finishPolygon[0]
+      ? Math.hypot(
+          geometry.finishPolygon[0].x - geometry.center.x,
+          geometry.finishPolygon[0].y - geometry.center.y,
+        ) * 0.11
+      : 10))
+    if (!stacked) return finishFit
+    if (groupLength <= 4) return finishFit * 0.85
+    return finishFit * 0.7
+  }
+  if (!stacked) return cellFit
   if (groupLength <= 4) return cellFit * 0.8
   if (groupLength <= 9) return cellFit * 0.62
   return cellFit * 0.5
@@ -471,15 +400,11 @@ function SquareBoard({ room }: { room: Room }) {
   )
 }
 
-function RadialBoard({ room }: { room: Room }) {
-  const count = boardSeatCount(room)
+function PolygonBoard({ room, geometry }: { room: Room; geometry: BoardGeometry }) {
+  const count = geometry.playerCount
   const boardPlayers = allSeatPlayers(room)
   const isFive = count === 5
   const isSix = count === 6
-  const layout = radialBoardLayout(count)
-  const sector = (Math.PI * 2) / count
-  const total = count * CELLS_PER_PLAYER
-  const lanes = homeLengthForBoard(boardSeatCount(room))
   const safe = safeCells(room)
   const boardClass = isSix ? 'six-board-bg' : isFive ? 'five-board-bg' : ''
   const sectorClass = isSix ? 'six-sector' : isFive ? 'five-sector' : ''
@@ -490,81 +415,50 @@ function RadialBoard({ room }: { room: Room }) {
   const starClass = isSix ? 'six-star' : isFive ? 'five-star' : ''
   const labelClass = isSix ? 'six-player-label' : isFive ? 'five-player-label' : ''
   const finishClass = isSix ? 'six-finish-sector' : 'five-finish-sector'
+  const cell = geometry.cellSize
 
   return (
     <>
       <polygon
-        points={pointList(Array.from({ length: count }, (_, index) =>
-          point(layout.outerRadius, boardStartAngle(count) + index * sector),
-        ))}
+        points={pointList(geometry.outerPolygon)}
         className={`radial-board-bg ${boardClass}`}
       />
-      {layout.polygonBoard && (
-        <polygon
-          points={pointList(Array.from({ length: count }, (_, index) =>
-            point(layout.trackFieldRadius, boardStartAngle(count) + index * sector),
-          ))}
-          className={isSix ? 'six-track-field' : 'five-track-field'}
-        />
-      )}
-      {boardPlayers.map((player) => {
-        const angle = radialCellAngle(player.seat * CELLS_PER_PLAYER, count)
+      <polygon
+        points={pointList(geometry.trackFieldPolygon)}
+        className={isSix ? 'six-track-field' : isFive ? 'five-track-field' : 'radial-track-field'}
+      />
+
+      {geometry.sectors.map((sector) => {
+        const player = boardPlayers.find((candidate) => candidate.seat === sector.seat)
+        if (!player) return null
         const departed = (room.departedPlayers ?? []).some(
           (candidate) => candidate.id === player.id,
         )
         const place = room.game
           ? room.game.winnerIds.indexOf(player.id) + 1
           : 0
-        const outerLeft = point(layout.outerRadius - 3, angle - sector * layout.sectorOuterSpan)
-        const outerRight = point(layout.outerRadius - 3, angle + sector * layout.sectorOuterSpan)
-        const centerLeft = point(
-          layout.trackFieldRadius,
-          angle - sector * layout.sectorInnerSpan,
-        )
-        const centerRight = point(
-          layout.trackFieldRadius,
-          angle + sector * layout.sectorInnerSpan,
-        )
-        const yardLeft = point(layout.yardRadius, angle - sector * layout.yardSpan)
-        const yardRight = point(layout.yardRadius, angle + sector * layout.yardSpan)
-        const yardInnerLeft = point(
-          layout.yardInnerRadius,
-          angle - sector * layout.yardInnerSpan,
-        )
-        const yardInnerRight = point(
-          layout.yardInnerRadius,
-          angle + sector * layout.yardInnerSpan,
-        )
-        const yardTip = point(layout.yardInnerRadius - 43, angle)
-        const label = point(layout.labelRadius, angle)
-        const rankPoint = point(layout.rankRadius, angle)
-
         return (
           <g key={player.id}>
             <polygon
-              points={pointList([outerLeft, outerRight, centerRight, centerLeft])}
+              points={pointList(sector.homePolygon)}
               fill={resolveColorHex(player.color)}
               className={`radial-sector ${sectorClass}`}
             />
             <polygon
-              points={pointList(
-                layout.quadYard
-                  ? [yardLeft, yardRight, yardInnerRight, yardInnerLeft]
-                  : [yardLeft, yardRight, yardTip],
-              )}
+              points={pointList(sector.yardPolygon)}
               className={`radial-yard ${yardClass}`}
             />
             {place > 0 && (
               <g className="home-rank-badge radial-rank-badge">
                 <circle
-                  cx={rankPoint.x}
-                  cy={rankPoint.y}
+                  cx={sector.rankPoint.x}
+                  cy={sector.rankPoint.y}
                   r={count >= 7 ? 14 : 18}
                   fill={resolveColorHex(player.color)}
                 />
                 <text
-                  x={rankPoint.x}
-                  y={rankPoint.y + 6}
+                  x={sector.rankPoint.x}
+                  y={sector.rankPoint.y + 6}
                   textAnchor="middle"
                   className="home-rank radial-home-rank"
                 >
@@ -572,83 +466,74 @@ function RadialBoard({ room }: { room: Room }) {
                 </text>
               </g>
             )}
-            {Array.from({ length: 4 }, (_, tokenId) => {
-              const slot = radialYardPoint(player.seat, tokenId, count)
-              return (
-                <circle
-                  key={tokenId}
-                  cx={slot.x}
-                  cy={slot.y}
-                  r={layout.yardTokenRadius}
-                  fill="#fff"
-                  stroke={resolveColorHex(player.color)}
-                  className={`yard-slot ${yardSlotClass}`}
-                />
-              )
-            })}
+            {sector.yardSlots.map((slot, tokenId) => (
+              <circle
+                key={tokenId}
+                cx={slot.x}
+                cy={slot.y}
+                r={geometry.yardTokenRadius}
+                fill="#fff"
+                stroke={resolveColorHex(player.color)}
+                className={`yard-slot ${yardSlotClass}`}
+              />
+            ))}
             <text
-              x={label.x}
-              y={label.y + 4}
+              x={sector.labelPoint.x}
+              y={sector.labelPoint.y + 4}
               textAnchor="middle"
               className={`player-label ${labelClass} ${departed ? 'departed-label' : ''}`}
             >
               {departed ? `${player.name} (left)` : player.name}
             </text>
-            {Array.from({ length: lanes }, (_, index) => {
-              const lane = point(
-                layout.homeLaneStart - index * layout.homeLaneStep,
-                angle,
-              )
-              return (
-                <rect
-                  key={index}
-                  x={lane.x - layout.cellSize / 2}
-                  y={lane.y - layout.cellSize / 2}
-                  width={layout.cellSize}
-                  height={layout.cellSize}
-                  fill={resolveColorHex(player.color)}
-                  className={`radial-cell ${homeCellClass}`}
-                  transform={`rotate(${angle * 180 / Math.PI + 90} ${lane.x} ${lane.y})`}
-                />
-              )
-            })}
+            {sector.homeLane.map((lane, index) => (
+              <rect
+                key={`home-${index}`}
+                x={lane.x - cell / 2}
+                y={lane.y - cell / 2}
+                width={cell}
+                height={cell}
+                fill={resolveColorHex(player.color)}
+                className={`radial-cell ${homeCellClass}`}
+                transform={`rotate(${(sector.angle * 180) / Math.PI + 90} ${lane.x} ${lane.y})`}
+              />
+            ))}
           </g>
         )
       })}
 
-      {Array.from({ length: total }, (_, index) => {
-        const angle = radialCellAngle(index, count)
-        const cell = point(layout.trackRadius, angle)
+      {geometry.trackCells.map((trackCell) => {
         const owner = boardPlayers.find(
-          (player) => player.seat * CELLS_PER_PLAYER === index,
+          (player) => player.seat * CELLS_PER_PLAYER === trackCell.index,
         )
+        const rotation = (trackCell.tangent * 180) / Math.PI
+        const { point: cellPoint } = trackCell
         return (
-          <g key={index}>
-            {safe.has(index) && !owner && (
+          <g key={trackCell.index}>
+            {safe.has(trackCell.index) && !owner && (
               <rect
-                x={cell.x - layout.cellSize / 2 - 1}
-                y={cell.y - layout.cellSize / 2 - 1}
-                width={layout.cellSize + 2}
-                height={layout.cellSize + 2}
+                x={cellPoint.x - cell / 2 - 1}
+                y={cellPoint.y - cell / 2 - 1}
+                width={cell + 2}
+                height={cell + 2}
                 rx="2"
                 className="safe-cell-aura"
-                transform={`rotate(${angle * 180 / Math.PI + 90} ${cell.x} ${cell.y})`}
+                transform={`rotate(${rotation} ${cellPoint.x} ${cellPoint.y})`}
               />
             )}
             <rect
-              x={cell.x - layout.cellSize / 2}
-              y={cell.y - layout.cellSize / 2}
-              width={layout.cellSize}
-              height={layout.cellSize}
-              rx="1"
+              x={cellPoint.x - cell / 2}
+              y={cellPoint.y - cell / 2}
+              width={cell}
+              height={cell}
+              rx="3"
               fill={owner ? resolveColorHex(owner.color) : '#fff'}
-              className={`radial-cell ${trackCellClass} ${safe.has(index) && !owner ? 'safe-cell' : ''}`}
-              transform={`rotate(${angle * 180 / Math.PI + 90} ${cell.x} ${cell.y})`}
+              className={`radial-cell ${trackCellClass} ${safe.has(trackCell.index) && !owner ? 'safe-cell' : ''}`}
+              transform={`rotate(${rotation} ${cellPoint.x} ${cellPoint.y})`}
             />
-            {safe.has(index) && !owner && (
+            {safe.has(trackCell.index) && !owner && (
               <text
-                x={cell.x}
-                y={cell.y + 4}
+                x={cellPoint.x}
+                y={cellPoint.y + 4}
                 textAnchor="middle"
                 className={`radial-star ${starClass}`}
               >
@@ -659,32 +544,23 @@ function RadialBoard({ room }: { room: Room }) {
         )
       })}
 
-      {layout.polygonBoard
-        ? boardPlayers.map((player) => {
-          const angle = radialCellAngle(player.seat * CELLS_PER_PLAYER, count)
-          return (
-            <polygon
-              key={`finish-${player.id}`}
-              points={pointList([
-                { x: CENTER, y: CENTER },
-                point(layout.finishRadius, angle - sector / 2),
-                point(layout.finishRadius, angle + sector / 2),
-              ])}
-              fill={resolveColorHex(player.color)}
-              className={finishClass}
-            />
-          )
-        })
-        : (
+      {geometry.sectors.map((sector) => {
+        const player = boardPlayers.find((candidate) => candidate.seat === sector.seat)
+        return (
           <polygon
-            points={pointList(Array.from({ length: count }, (_, index) =>
-              point(layout.finishRadius, boardStartAngle(count) + index * sector),
-            ))}
-            className="radial-finish"
+            key={`finish-${sector.seat}`}
+            points={pointList(sector.finishSector)}
+            fill={resolveColorHex(player?.color ?? 'red')}
+            className={finishClass}
           />
-        )}
-      <circle cx={CENTER} cy={CENTER} r="16" className="finish-center" />
-      <text x={CENTER} y={CENTER + 6} textAnchor="middle" className="crown">★</text>
+        )
+      })}
+      <polygon
+        points={pointList(geometry.finishPolygon)}
+        className="pentagon-finish-ring"
+      />
+      <circle cx={geometry.center.x} cy={geometry.center.y} r="10" className="finish-center" />
+      <text x={geometry.center.x} y={geometry.center.y + 4} textAnchor="middle" className="crown">★</text>
     </>
   )
 }
@@ -706,6 +582,13 @@ export function LudoBoard({
   const isSquare = boardCount === 4
   const isFive = boardCount === 5
   const isSix = boardCount === 6
+  const geometry = useMemo(
+    () =>
+      isSquare
+        ? null
+        : getPolygonBoardGeometry(boardCount, homeLengthForBoard(boardCount)),
+    [boardCount, isSquare],
+  )
   const [animatedProgress, setAnimatedProgress] = useState<number | null>(null)
   const moveAnimationKey = movingToken
     ? `${movingToken.playerId}:${movingToken.id}:${movingToken.fromProgress}:${movingToken.dice}:${movingToken.startedAt ?? ''}`
@@ -761,9 +644,9 @@ export function LudoBoard({
         progress: animatedProgress ?? movingToken.fromProgress,
       }
       : originalToken
-    const position = isSquare
+    const position = isSquare || !geometry
       ? squareTokenPoint(token, room)
-      : radialTokenPoint(token, room)
+      : polygonTokenPoint(token, room, geometry)
     const canSelect =
       movingToken === null &&
       originalToken.playerId === userId &&
@@ -793,7 +676,7 @@ export function LudoBoard({
     <div className={`board-wrap ${isSquare ? 'square' : 'radial'} ${isFive ? 'five-player-board' : ''} ${isSix ? 'six-player-board' : ''}`}>
       <svg
         className="ludo-board"
-        viewBox={`0 0 ${SIZE} ${SIZE}`}
+        viewBox={`0 0 ${geometry?.size ?? SIZE} ${geometry?.size ?? SIZE}`}
         role="img"
         aria-label={`${boardCount} player Ludo board`}
       >
@@ -815,12 +698,12 @@ export function LudoBoard({
             </feMerge>
           </filter>
         </defs>
-        {isSquare ? (
+        {isSquare || !geometry ? (
           <SquareBoard room={room} />
         ) : (
-          <RadialBoard room={room} />
+          <PolygonBoard room={room} geometry={geometry} />
         )}
-        <PowerUpLayer room={room} />
+        <PowerUpLayer room={room} geometry={geometry} />
 
         {displayedTokens.map(
           ({
@@ -838,7 +721,9 @@ export function LudoBoard({
                 candidate.originalToken.playerId === originalToken.playerId &&
                 candidate.originalToken.id === originalToken.id,
             )
-            const stacked = group.length > 1
+            // Finished tokens already have per-token slots inside their color wedge —
+            // never fan them out or they'll spill onto neighboring sectors.
+            const stacked = !isFinished && group.length > 1
             const inYard = originalToken.progress === -1
             const tokenRadius = tokenDisplayRadius(
               boardCount,
@@ -847,6 +732,7 @@ export function LudoBoard({
               group.length,
               isFinished,
               inYard,
+              geometry ?? undefined,
             )
             const angle =
               group.length === 2

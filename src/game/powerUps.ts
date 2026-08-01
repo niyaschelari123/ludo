@@ -136,6 +136,37 @@ function spacedSeats(playerCount: number, count: number, startSeat: number): num
   return Array.from({ length: count }, (_, index) => (startSeat + index * step) % playerCount)
 }
 
+/** Start squares and the per-seat star safes — keep power icons off these. */
+function isPowerBlockedCell(cell: number): boolean {
+  const offset = ((cell % CELLS_PER_PLAYER) + CELLS_PER_PLAYER) % CELLS_PER_PLAYER
+  return offset === 0 || offset === 8
+}
+
+/** Move any powers that landed on entry/safe cells to the next free track cell. */
+export function sanitizePowerTiles(
+  tiles: Record<number, PowerUpType>,
+  playerCount: number,
+): void {
+  const length = playerCount * CELLS_PER_PLAYER
+  const displaced: Array<{ from: number; type: PowerUpType }> = []
+
+  for (const [cellKey, type] of Object.entries(tiles)) {
+    const cell = Number(cellKey)
+    if (!isPowerBlockedCell(cell)) continue
+    displaced.push({ from: cell, type })
+    delete tiles[cell]
+  }
+
+  for (const { from, type } of displaced) {
+    for (let offset = 1; offset < length; offset += 1) {
+      const cell = (from + offset) % length
+      if (tiles[cell] || isPowerBlockedCell(cell)) continue
+      tiles[cell] = type
+      break
+    }
+  }
+}
+
 function placeSpacedPower(
   tiles: Record<number, PowerUpType>,
   length: number,
@@ -151,7 +182,7 @@ function placeSpacedPower(
     const preferred = (start + index * step) % length
     for (let offset = 0; offset < length; offset += 1) {
       const cell = (preferred + offset) % length
-      if (tiles[cell]) continue
+      if (tiles[cell] || isPowerBlockedCell(cell)) continue
       tiles[cell] = type
       placed += 1
       break
@@ -210,12 +241,14 @@ function placeCommonAndRare(
       const preferred = (seat * CELLS_PER_PLAYER + SUPER_OFFSET) % length
       for (let offset = 0; offset < length; offset += 1) {
         const cell = (preferred + offset) % length
-        if (tiles[cell]) continue
+        if (tiles[cell] || isPowerBlockedCell(cell)) continue
         tiles[cell] = 'super'
         break
       }
     }
   }
+
+  sanitizePowerTiles(tiles, playerCount)
 }
 
 export function generatePowerTiles(playerCount: number): Record<number, PowerUpType> {

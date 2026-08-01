@@ -1,19 +1,12 @@
-import { CELLS_PER_PLAYER, getBoardPlayerCount } from '../game/engine'
-import { POWER_UP_ICONS, powerTilesList } from '../game/powerUps'
+import { getBoardPlayerCount } from '../game/engine'
+import {
+  getPolygonBoardGeometry,
+  polygonTrackPoint,
+  type BoardGeometry,
+  type Point,
+} from '../game/boardGeometry'
+import { POWER_UP_ICONS, powerTilesList, sanitizePowerTiles } from '../game/powerUps'
 import { hasPowerBoard, type PowerUpType, type Room } from '../game/types'
-
-const SIZE = 600
-const CENTER = SIZE / 2
-
-interface Point {
-  x: number
-  y: number
-}
-
-const point = (radius: number, angle: number): Point => ({
-  x: CENTER + Math.cos(angle) * radius,
-  y: CENTER + Math.sin(angle) * radius,
-})
 
 const GRID_SIZE = 32
 const GRID_OFFSET = 60
@@ -37,33 +30,18 @@ function boardSeatCount(room: Room) {
   return getBoardPlayerCount(room)
 }
 
-function boardStartAngle(count: number) {
-  return count === 4 ? (-Math.PI * 3) / 4 : -Math.PI / 2
-}
-
-function radialCellAngle(cell: number, count: number) {
-  return boardStartAngle(count) + (cell / (count * CELLS_PER_PLAYER)) * Math.PI * 2
-}
-
-function squarePoint(cell: number) {
-  return FOUR_TRACK[cell]
-}
-
-function radialPoint(cell: number, count: number) {
-  const trackRadius = count === 6 ? 198 : count === 5 ? 196 : 194
-  return point(trackRadius, radialCellAngle(cell, count))
-}
-
 function PowerMarker({
   x,
   y,
   type,
   rotation = 0,
+  cellSize = 32,
 }: {
   x: number
   y: number
   type: PowerUpType
   rotation?: number
+  cellSize?: number
 }) {
   const label = POWER_UP_ICONS[type]
   const isText =
@@ -77,25 +55,32 @@ function PowerMarker({
     type === 'back5' ||
     type === 'yard'
 
+  // Fill most of the track cell so icons match the containing box.
+  const radius = Math.max(11, cellSize * 0.42)
+  const box = radius * 2.15
+  const textSize = isText ? radius * 0.72 : radius * 0.95
+  const textDy = isText ? radius * 0.36 : radius * 0.4
+
   return (
     <g className={`power-marker power-${type}`}>
       {type === 'shield' && (
         <rect
-          x={x - 13}
-          y={y - 13}
-          width="26"
-          height="26"
-          rx="3"
+          x={x - box / 2}
+          y={y - box / 2}
+          width={box}
+          height={box}
+          rx={Math.max(3, cellSize * 0.08)}
           className="shield-box-glow"
           transform={`rotate(${rotation} ${x} ${y})`}
         />
       )}
-      <circle cx={x} cy={y} r="11" className="power-marker-bg" />
+      <circle cx={x} cy={y} r={radius} className="power-marker-bg" />
       <text
         x={x}
-        y={y + (isText ? 4 : 5)}
+        y={y + textDy}
         textAnchor="middle"
         className={`power-marker-label ${isText ? 'text' : 'emoji'}`}
+        style={{ fontSize: `${textSize}px` }}
       >
         {label}
       </text>
@@ -103,30 +88,50 @@ function PowerMarker({
   )
 }
 
-export function PowerUpLayer({ room }: { room: Room }) {
+export function PowerUpLayer({
+  room,
+  geometry,
+}: {
+  room: Room
+  geometry?: BoardGeometry | null
+}) {
   if (!hasPowerBoard(room.gameMode) || !room.game?.powerTiles) return null
 
+  sanitizePowerTiles(room.game.powerTiles, getBoardPlayerCount(room))
+
   const count = boardSeatCount(room)
-  const isSquare = room.players.length === 4 && count === 4
+  const isSquare = count === 4
   const tiles = powerTilesList(room.game.powerTiles)
+  const polygonGeometry =
+    geometry ?? (isSquare ? null : getPolygonBoardGeometry(count))
 
   return (
     <g className="power-layer" aria-hidden="true">
       {tiles.map(({ cell, type }) => {
-        const position = isSquare
-          ? squarePoint(cell)
-          : radialPoint(cell, count)
-        if (!position) return null
-        const rotation = isSquare
-          ? 0
-          : radialCellAngle(cell, count) * 180 / Math.PI + 90
+        if (isSquare) {
+          const position = FOUR_TRACK[cell]
+          if (!position) return null
+          return (
+            <PowerMarker
+              key={`${cell}-${type}`}
+              x={position.x}
+              y={position.y}
+              type={type}
+              cellSize={GRID_SIZE}
+            />
+          )
+        }
+        if (!polygonGeometry) return null
+        const trackCell = polygonTrackPoint(polygonGeometry, cell)
+        const rotation = (trackCell.tangent * 180) / Math.PI
         return (
           <PowerMarker
             key={`${cell}-${type}`}
-            x={position.x}
-            y={position.y}
+            x={trackCell.point.x}
+            y={trackCell.point.y}
             type={type}
             rotation={rotation}
+            cellSize={polygonGeometry.cellSize}
           />
         )
       })}

@@ -9,11 +9,13 @@ import {
   applyRollMisses,
   applyRollTimeout,
   createGame,
+  getBoardPlayerCount,
   grantExtraTurnChances as applyGrantExtraTurnChances,
   pickBestMovableToken,
   resolveDiceValue,
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
+import { sanitizePowerTiles } from '../../src/game/powerUps.js'
 import { PLAYER_COLORS, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, type Room } from '../../src/game/types.js'
 import { finalizeBlitzGame } from '../../src/game/matchAwards.js'
 import { normalizeColorKey } from '../../src/game/colors.js'
@@ -157,6 +159,10 @@ function allocateRejoinCode(room: Room) {
 
 /** Strip seat rejoin codes unless the viewer is the current host. */
 export function roomViewFor(room: Room, viewerId: string | null | undefined): Room {
+  // Relocate shields (etc.) that were generated on player entry / safe cells.
+  if (room.game?.powerTiles && Object.keys(room.game.powerTiles).length > 0) {
+    sanitizePowerTiles(room.game.powerTiles, getBoardPlayerCount(room))
+  }
   const view = structuredClone(room) as Room
   if (viewerId && viewerId === room.hostId) return view
   for (const player of view.players) {

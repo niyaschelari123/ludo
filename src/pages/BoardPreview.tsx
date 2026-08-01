@@ -34,8 +34,9 @@ export function BoardPreview({ playerCount }: BoardPreviewProps) {
 
       <section className="preview-layout">
         <p className="preview-note">
-          Edit <code>LudoBoard.tsx</code> or <code>App.css</code> — changes show
-          here instantly. No match or server required.
+          Edit <code>boardGeometry.ts</code>, <code>LudoBoard.tsx</code>, or{' '}
+          <code>App.css</code> — changes show here instantly. No match or server
+          required.
         </p>
         <div className="game-center preview-board-center">
           <LudoBoard

@@ -1224,24 +1224,39 @@ select:focus {
   width: min(80vh, 100%);
 }
 
-.five-board-bg {
-  fill: #f8fafc;
-  stroke: #07152d;
-  stroke-width: 7;
+.pentagon-finish-ring {
+  fill: none;
+  stroke: rgba(15, 23, 42, 0.35);
+  stroke-width: 1.5;
   stroke-linejoin: round;
+  pointer-events: none;
 }
 
 .five-track-field {
-  fill: #fff;
+  fill: #fff8f0;
   stroke: #334155;
-  stroke-width: 2;
+  stroke-width: 2.25;
+  stroke-linejoin: round;
 }
 
 .five-sector {
   stroke: #fff;
-  stroke-width: 4;
+  stroke-width: 3.5;
   stroke-linejoin: round;
-  filter: saturate(1.08);
+  filter: saturate(1.1);
+}
+
+.five-board-bg {
+  fill: #f1f5f9;
+  stroke: #07152d;
+  stroke-width: 8;
+  stroke-linejoin: round;
+}
+
+.radial-track-field {
+  fill: #fff;
+  stroke: #334155;
+  stroke-width: 2;
 }
 
 .five-yard {
@@ -1257,8 +1272,9 @@ select:focus {
 }
 
 .five-track-cell {
-  stroke: #475569;
-  stroke-width: 1.15;
+  stroke: #334155;
+  stroke-width: 1.85;
+  filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.2));
 }
 
 .five-home-cell {
@@ -2896,7 +2912,7 @@ select:focus {
 .power-marker-bg {
   fill: rgba(255, 255, 255, 0.92);
   stroke: rgba(15, 23, 42, 0.18);
-  stroke-width: 1.5;
+  stroke-width: 1.8;
 }
 
 .power-marker-label {
@@ -2987,10 +3003,6 @@ select:focus {
   fill: #fbbf24;
 }
 
-.power-super .power-marker-label.emoji {
-  font-size: 11px;
-}
-
 .power-star .power-marker-bg {
   fill: #fef08a;
 }
@@ -3003,7 +3015,7 @@ select:focus {
 }
 
 .board-wrap.five-player-board {
-  width: min(80vh, 100%);
+  width: min(92vh, 100%);
 }
 
 .board-preview-screen .preview-layout {
