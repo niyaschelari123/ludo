@@ -15,6 +15,7 @@ import {
   createRoom,
   getRoom,
   handleMoveTimeout,
+  handlePowerTimeout,
   handleRollTimeout,
   joinRoom,
   leaveRoom,
@@ -27,13 +28,16 @@ import {
   rollDice,
   setSlotBot,
   skipMoveTimer,
+  skipPowerTimer,
   skipRollTimer,
   startRoom,
   storeRollHint,
   grantExtraTurnChances,
+  setPlayerAutoPlay,
 } from './roomManager.js'
 import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.js'
 import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
+import { schedulePowerTimer, stopPowerTimer } from './powerTimer.js'
 import type { ActiveMove, Room } from '../../src/game/types.js'
 import { tokenMoveDurationMs } from '../../src/game/types.js'
 
@@ -73,7 +77,43 @@ function broadcastState(room: Room) {
   } else {
     stopTurnTimer(room.id)
   }
+
+  if (
+    room.status === 'playing' &&
+    room.game?.phase === 'power' &&
+    room.game.pendingPower
+  ) {
+    schedulePowerTimer(room.id, handlePowerTimeoutBroadcast)
+  } else {
+    stopPowerTimer(room.id)
+  }
+
   scheduleBotTurn(room.id, handleBotAction)
+}
+
+function publishResolvedPower(
+  roomId: string,
+  previewRoom: Room,
+  room: Room,
+) {
+  stopPowerTimer(roomId)
+  if (previewRoom.game?.activeMove) {
+    emitAnimatedMove(roomId, previewRoom, room)
+  } else {
+    io.to(roomId).emit('stateUpdate', room)
+    scheduleBotTurn(roomId, handleBotAction, 'afterMove')
+    scheduleTurnTimer(roomId, handleTurnTimeout)
+  }
+}
+
+function handlePowerTimeoutBroadcast(roomId: string) {
+  try {
+    const result = handlePowerTimeout(roomId)
+    if (!result) return
+    publishResolvedPower(roomId, result.previewRoom, result.room)
+  } catch (error) {
+    console.error(`Power timeout failed in room ${roomId}:`, error)
+  }
 }
 
 function handleTurnTimeout(roomId: string) {
@@ -121,12 +161,30 @@ function emitAnimatedMove(roomId: string, previewRoom: Room, finalRoom: Room) {
     io.to(roomId).emit('stateUpdate', finalRoom)
     scheduleBotTurn(roomId, handleBotAction, 'afterMove')
     scheduleTurnTimer(roomId, handleTurnTimeout)
+    if (
+      finalRoom.status === 'playing' &&
+      finalRoom.game?.phase === 'power' &&
+      finalRoom.game.pendingPower
+    ) {
+      schedulePowerTimer(roomId, handlePowerTimeoutBroadcast)
+    } else {
+      stopPowerTimer(roomId)
+    }
     return
   }
 
   emitMoveStart(roomId, activeMove)
   io.to(roomId).emit('stateUpdate', finalRoom)
   scheduleTurnTimer(roomId, handleTurnTimeout)
+  if (
+    finalRoom.status === 'playing' &&
+    finalRoom.game?.phase === 'power' &&
+    finalRoom.game.pendingPower
+  ) {
+    schedulePowerTimer(roomId, handlePowerTimeoutBroadcast)
+  } else {
+    stopPowerTimer(roomId)
+  }
   const animMs = tokenMoveDurationMs(activeMove)
   setTimeout(() => {
     scheduleBotTurn(roomId, handleBotAction, 'afterMove')
@@ -371,20 +429,14 @@ io.on('connection', (socket) => {
     ) => {
       try {
         const startedAt = payload.startedAt ?? Date.now()
+        stopPowerTimer(payload.roomId)
         const { previewRoom, room } = resolvePendingPower(
           payload.roomId,
           payload.userId,
           startedAt,
         )
 
-        if (previewRoom.game?.activeMove) {
-          emitAnimatedMove(payload.roomId, previewRoom, room)
-        } else {
-          io.to(payload.roomId).emit('stateUpdate', room)
-          scheduleBotTurn(payload.roomId, handleBotAction, 'afterMove')
-          scheduleTurnTimer(payload.roomId, handleTurnTimeout)
-        }
-
+        publishResolvedPower(payload.roomId, previewRoom, room)
         callback?.({ ok: true, data: { room } })
       } catch (error) {
         ackError(callback, error)
@@ -405,6 +457,7 @@ io.on('connection', (socket) => {
         socket.leave(payload.roomId)
         stopBotTurn(payload.roomId)
         stopTurnTimer(payload.roomId)
+        stopPowerTimer(payload.roomId)
         callback?.({ ok: true, data: { room } })
         if (room) broadcastState(room)
       } catch (error) {
@@ -460,6 +513,33 @@ io.on('connection', (socket) => {
   )
 
   socket.on(
+    'setPlayerAutoPlay',
+    (
+      payload: {
+        roomId: string
+        userId: string
+        targetUserId: string
+        enabled: boolean
+      },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        stopBotTurn(payload.roomId)
+        const room = setPlayerAutoPlay(
+          payload.roomId,
+          payload.userId,
+          payload.targetUserId,
+          payload.enabled,
+        )
+        callback?.({ ok: true, data: { room } })
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
     'skipRollTimer',
     (
       payload: { roomId: string; userId: string },
@@ -496,6 +576,26 @@ io.on('connection', (socket) => {
         } else {
           broadcastState(result.room)
         }
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'skipPowerTimer',
+    (
+      payload: { roomId: string; userId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        stopPowerTimer(payload.roomId)
+        const result = skipPowerTimer(payload.roomId, payload.userId)
+        if (!result) {
+          throw new Error('No power timer to skip.')
+        }
+        callback?.({ ok: true, data: { room: result.room } })
+        publishResolvedPower(payload.roomId, result.previewRoom, result.room)
       } catch (error) {
         ackError(callback, error)
       }

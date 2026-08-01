@@ -14,7 +14,7 @@ import {
   resolveDiceValue,
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
-import { PLAYER_COLORS, type Room } from '../../src/game/types.js'
+import { PLAYER_COLORS, isAutoControlled, type Room } from '../../src/game/types.js'
 import { normalizeColorKey } from '../../src/game/colors.js'
 
 const rooms = new Map<string, Room>()
@@ -448,17 +448,20 @@ export function resolvePendingPower(
   userId: string,
   startedAt: number,
 ) {
-  const room = structuredClone(getRoom(roomId)) as Room
-  if (room.players[room.game?.turnIndex ?? -1]?.id !== userId) {
+  const current = getRoom(roomId)
+  const game = current.game
+  if (!game) throw new Error('Room has no active game.')
+
+  // Late / raced clients: power already applied — return current state.
+  if (game.phase !== 'power' || !game.pendingPower) {
+    return { previewRoom: current, room: current }
+  }
+
+  if (current.players[game.turnIndex]?.id !== userId) {
     throw new Error('It is not your turn.')
   }
 
-  const game = room.game!
-  if (game.phase !== 'power' || !game.pendingPower) {
-    throw new Error('No power to resolve.')
-  }
-
-  const finalRoom = structuredClone(room) as Room
+  const finalRoom = structuredClone(current) as Room
   applyPendingPower(finalRoom, startedAt)
   finalRoom.updatedAt = Date.now()
 
@@ -485,6 +488,42 @@ export function resolvePendingPower(
 
   rooms.set(roomId, finalRoom)
   return { previewRoom: finalRoom, room: finalRoom }
+}
+
+/** Server/host force-resolve when the lander's client stalls. */
+export function handlePowerTimeout(roomId: string) {
+  const room = getRoom(roomId)
+  if (
+    room.status !== 'playing' ||
+    !room.game ||
+    room.game.phase !== 'power' ||
+    !room.game.pendingPower
+  ) {
+    return null
+  }
+
+  const player =
+    room.players.find((candidate) => candidate.id === room.game!.pendingPower!.playerId) ??
+    room.players[room.game.turnIndex]
+  if (!player) return null
+
+  return resolvePendingPower(roomId, player.id, Date.now())
+}
+
+export function skipPowerTimer(roomId: string, hostId: string) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can skip the power timer.')
+  }
+  if (
+    room.status !== 'playing' ||
+    !room.game ||
+    room.game.phase !== 'power' ||
+    !room.game.pendingPower
+  ) {
+    throw new Error('No power timer to skip.')
+  }
+  return handlePowerTimeout(roomId)
 }
 
 function transferHost(room: Room, previousHostId: string) {
@@ -610,6 +649,36 @@ export function grantExtraTurnChances(
   return room
 }
 
+export function setPlayerAutoPlay(
+  roomId: string,
+  hostId: string,
+  targetUserId: string,
+  enabled: boolean,
+) {
+  const room = structuredClone(getRoom(roomId)) as Room
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can change autoplay.')
+  }
+  if (room.status !== 'playing' || !room.game) {
+    throw new Error('Autoplay can only be changed during a game.')
+  }
+  if (targetUserId === hostId) {
+    throw new Error('Host cannot put themselves on autoplay.')
+  }
+
+  const player = room.players.find((candidate) => candidate.id === targetUserId)
+  if (!player) throw new Error('Player not found.')
+  if (player.isBot) throw new Error('Bots are already automatic.')
+
+  player.autoPlay = enabled || undefined
+  room.game.lastAction = enabled
+    ? `${player.name} is on autoplay`
+    : `${player.name}'s autoplay cancelled`
+  room.updatedAt = Date.now()
+  rooms.set(roomId, room)
+  return room
+}
+
 export function removePlayer(
   roomId: string,
   hostId: string,
@@ -650,7 +719,7 @@ export function handleRollTimeout(roomId: string) {
   }
 
   const player = room.players[room.game.turnIndex]
-  if (!player || player.isBot) return room
+  if (!player || isAutoControlled(player)) return room
 
   const { shouldRemove, playerId } = applyRollTimeout(room)
   room.updatedAt = Date.now()
@@ -688,7 +757,7 @@ export function skipRollTimer(roomId: string, hostId: string) {
     throw new Error('No roll timer to skip.')
   }
   const player = room.players[room.game.turnIndex]
-  if (!player || player.isBot) {
+  if (!player || isAutoControlled(player)) {
     throw new Error('No player roll timer to skip.')
   }
   return handleRollTimeout(roomId)
@@ -701,7 +770,7 @@ export function handleMoveTimeout(roomId: string) {
   }
 
   const player = room.players[room.game.turnIndex]
-  if (!player || player.isBot) return null
+  if (!player || isAutoControlled(player)) return null
 
   const token = pickBestMovableToken(room)
   if (!token) return null
@@ -721,7 +790,7 @@ export function skipMoveTimer(roomId: string, hostId: string) {
     throw new Error('No move timer to skip.')
   }
   const player = room.players[room.game.turnIndex]
-  if (!player || player.isBot) {
+  if (!player || isAutoControlled(player)) {
     throw new Error('No player move timer to skip.')
   }
   return handleMoveTimeout(roomId)

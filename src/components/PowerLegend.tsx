@@ -1,7 +1,8 @@
-import { POWER_UP_ICONS, POWER_UP_INFO } from '../game/powerUps'
+import { powerInfoForMode, POWER_UP_ICONS } from '../game/powerUps'
 import type { WinOddsEntry } from '../game/matchAwards'
 import { isNamedPlayerColor, resolveColorHex } from '../game/colors'
 import type { CSSProperties } from 'react'
+import type { GameMode } from '../game/types'
 
 function playerColorClass(color: string) {
   return isNamedPlayerColor(color) ? color : 'custom-color'
@@ -15,18 +16,22 @@ function playerColorStyle(color: string): CSSProperties | undefined {
 
 export function PowerLegend({
   showPowers = true,
+  gameMode = 'power',
   winOdds = [],
 }: {
   showPowers?: boolean
+  gameMode?: GameMode | null
   winOdds?: WinOddsEntry[]
 }) {
+  const powerInfo = powerInfoForMode(gameMode)
+
   return (
     <div className="power-legend">
       {showPowers ? (
         <>
           <h3 className="power-legend-title">Power tiles</h3>
           <ul className="power-legend-list">
-            {POWER_UP_INFO.map(({ type, label, description }) => (
+            {powerInfo.map(({ type, label, description }) => (
               <li key={type} className="power-legend-item">
                 <span className={`power-legend-icon power-icon--${type}`} aria-hidden="true">
                   {POWER_UP_ICONS[type]}
@@ -59,7 +64,9 @@ export function PowerLegend({
       {winOdds.length > 0 ? (
         <div className={`win-odds ${showPowers ? 'win-odds--after-powers' : ''}`}>
           <h3 className="power-legend-title">Win probability</h3>
-          <p className="win-odds-note">Live estimate from board progress — highest first.</p>
+          <p className="win-odds-note">
+            Live race estimate from token progress — leaders pull ahead as they advance.
+          </p>
           <ol className="win-odds-list">
             {winOdds.map((entry, index) => (
               <li

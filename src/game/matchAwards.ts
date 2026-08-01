@@ -146,8 +146,11 @@ export function computeWorstPlayer(
 }
 
 /**
- * Live win odds from remaining board distance.
- * Players who already finished 1st are locked at 100%.
+ * Live win odds from race position — display only, does not affect gameplay.
+ *
+ * Uses weighted progress of each player's best tokens (home tokens count fully,
+ * yard tokens count as 0) plus small capture/six bonuses, then softmax so
+ * leaders pull ahead clearly instead of staying near-equal.
  */
 export function computeWinOdds(room: Room): WinOddsEntry[] {
   const game = room.game
@@ -166,18 +169,41 @@ export function computeWinOdds(room: Room): WinOddsEntry[] {
       .sort((first, second) => second.percent - first.percent)
   }
 
-  const strengths = room.players.map((player) => {
+  const TOKEN_WEIGHTS = [5, 3, 2, 1]
+
+  const scored = room.players.map((player) => {
     const tokens = game.tokens.filter((token) => token.playerId === player.id)
-    const remaining = tokens.reduce((sum, token) => {
-      if (token.progress >= finish) return sum
-      if (token.progress < 0) return sum + finish + 1
-      return sum + (finish - token.progress)
-    }, 0)
+    const progresses = tokens
+      .map((token) => {
+        if (token.progress >= finish) return finish
+        if (token.progress < 0) return 0
+        return token.progress
+      })
+      .sort((first, second) => second - first)
+
+    // Small base so players still in yard keep a floor of odds.
+    let score = finish * 0.2
+    progresses.forEach((progress, index) => {
+      score += progress * (TOKEN_WEIGHTS[index] ?? 1)
+    })
+
+    const homeCount = progresses.filter((progress) => progress >= finish).length
+    score += homeCount * finish * 0.5
+
     const stats = readPlayerStats(room, player.id)
-    // Slight boost for captures so aggressive players show some edge.
-    const strength = 1 / (1 + remaining) + stats.captures * 0.01
-    return { player, strength }
+    score += stats.captures * 3
+    score += stats.sixes * 0.5
+
+    return { player, score }
   })
+
+  // Higher temperature keeps mid-game odds readable (not 100% / 0%).
+  const temperature = Math.max(60, finish * 1.15)
+  const maxScore = Math.max(...scored.map((entry) => entry.score))
+  const strengths = scored.map((entry) => ({
+    player: entry.player,
+    strength: Math.exp((entry.score - maxScore) / temperature),
+  }))
 
   const total = strengths.reduce((sum, entry) => sum + entry.strength, 0)
   if (total <= 0) {
@@ -192,15 +218,18 @@ export function computeWinOdds(room: Room): WinOddsEntry[] {
     percent: (entry.strength / total) * 100,
   }))
 
-  // Round to 1 decimal and fix drift so totals stay ~100.
   const rounded = raw.map((entry) => ({
     ...entry,
     percent: Math.round(entry.percent * 10) / 10,
   }))
+  rounded.sort((first, second) => second.percent - first.percent)
+
   const drift =
     Math.round((100 - rounded.reduce((sum, entry) => sum + entry.percent, 0)) * 10) /
     10
-  if (rounded[0]) rounded[0].percent = Math.round((rounded[0].percent + drift) * 10) / 10
+  if (rounded[0]) {
+    rounded[0].percent = Math.round((rounded[0].percent + drift) * 10) / 10
+  }
 
-  return rounded.sort((first, second) => second.percent - first.percent)
+  return rounded
 }

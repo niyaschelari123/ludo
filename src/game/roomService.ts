@@ -253,6 +253,21 @@ export async function grantExtraTurnChances(
   return room
 }
 
+export async function setPlayerAutoPlay(
+  roomId: string,
+  userId: string,
+  targetUserId: string,
+  enabled: boolean,
+) {
+  const { room } = await emitAck<{ room: Room }>('setPlayerAutoPlay', {
+    roomId,
+    userId,
+    targetUserId,
+    enabled,
+  })
+  return room
+}
+
 export async function skipMoveTimer(roomId: string, userId: string) {
   const { room } = await emitAck<{ room: Room }>('skipMoveTimer', {
     roomId,
@@ -263,6 +278,14 @@ export async function skipMoveTimer(roomId: string, userId: string) {
 
 export async function skipRollTimer(roomId: string, userId: string) {
   const { room } = await emitAck<{ room: Room }>('skipRollTimer', {
+    roomId,
+    userId,
+  })
+  return room
+}
+
+export async function skipPowerTimer(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room }>('skipPowerTimer', {
     roomId,
     userId,
   })

@@ -815,6 +815,7 @@ select:focus {
   margin-left: auto;
 }
 
+.player-row .player-autoplay,
 .player-row .player-boost {
   margin-left: auto;
   min-width: 40px;
@@ -823,7 +824,19 @@ select:focus {
   font-weight: 700;
 }
 
-.player-row .player-boost+.player-remove {
+.player-row .player-autoplay {
+  min-width: 72px;
+}
+
+.player-row .player-autoplay.active {
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #ecfeff;
+}
+
+.player-row .player-autoplay + .player-boost,
+.player-row .player-autoplay + .player-remove,
+.player-row .player-boost + .player-remove {
   margin-left: 0;
 }
 
@@ -1537,6 +1550,11 @@ select:focus {
 .power-legend-icon.power-icon--portal {
   background: #ede9fe;
   color: #6d28d9;
+}
+
+.power-legend-icon.power-icon--super {
+  background: linear-gradient(145deg, #fbbf24, #ea580c);
+  color: #fff7ed;
 }
 
 .power-legend-icon.power-icon--back2,
@@ -2437,9 +2455,15 @@ select:focus {
 
 .mode-picker {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-top: 8px;
+}
+
+@media (max-width: 600px) {
+  .mode-picker {
+    grid-template-columns: 1fr;
+  }
 }
 
 .mode-option {
@@ -2573,6 +2597,14 @@ select:focus {
 
 .power-portal .power-marker-bg {
   fill: #f5d0fe;
+}
+
+.power-super .power-marker-bg {
+  fill: #fbbf24;
+}
+
+.power-super .power-marker-label.emoji {
+  font-size: 11px;
 }
 
 .power-star .power-marker-bg {

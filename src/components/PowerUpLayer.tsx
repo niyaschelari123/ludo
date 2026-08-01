@@ -1,6 +1,6 @@
 import { CELLS_PER_PLAYER, getBoardPlayerCount } from '../game/engine'
 import { POWER_UP_ICONS, powerTilesList } from '../game/powerUps'
-import type { PowerUpType, Room } from '../game/types'
+import { hasPowerBoard, type PowerUpType, type Room } from '../game/types'
 
 const SIZE = 600
 const CENTER = SIZE / 2
@@ -104,7 +104,7 @@ function PowerMarker({
 }
 
 export function PowerUpLayer({ room }: { room: Room }) {
-  if ((room.gameMode ?? 'classic') !== 'power' || !room.game?.powerTiles) return null
+  if (!hasPowerBoard(room.gameMode) || !room.game?.powerTiles) return null
 
   const count = boardSeatCount(room)
   const isSquare = room.players.length === 4 && count === 4

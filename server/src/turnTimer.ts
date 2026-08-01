@@ -2,7 +2,7 @@ import {
   TURN_MOVE_TIMEOUT_MS,
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
-import type { Room } from '../../src/game/types.js'
+import { isAutoControlled, type Room } from '../../src/game/types.js'
 import { getRoom } from './roomManager.js'
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -33,7 +33,7 @@ export function scheduleTurnTimer(
   if (phase !== 'roll' && phase !== 'move') return
 
   const player = room.players[room.game.turnIndex]
-  if (!player || player.isBot) return
+  if (!player || isAutoControlled(player)) return
 
   const fallback =
     phase === 'move' ? TURN_MOVE_TIMEOUT_MS : TURN_ROLL_TIMEOUT_MS

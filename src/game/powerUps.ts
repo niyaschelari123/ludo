@@ -1,5 +1,6 @@
 import {
   CELLS_PER_PLAYER,
+  eliminatedProgress,
   finishedProgress,
   globalCell,
   homeEntryProgress,
@@ -9,7 +10,7 @@ import {
   safeCells,
   trackLength,
 } from './engine'
-import type { GameState, Player, PowerTile, PowerUpType, Room, Token } from './types'
+import type { GameMode, GameState, Player, PowerTile, PowerUpType, Room, Token } from './types'
 
 export const ACTIVE_POWER_TYPES: PowerUpType[] = [
   'rocket',
@@ -23,6 +24,7 @@ export const ACTIVE_POWER_TYPES: PowerUpType[] = [
   'plus10',
   'tnt',
   'ice',
+  'super',
 ]
 
 export const POWER_UP_ICONS: Record<PowerUpType, string> = {
@@ -38,6 +40,7 @@ export const POWER_UP_ICONS: Record<PowerUpType, string> = {
   star: '★',
   ice: '❄',
   portal: '◎',
+  super: '⚡',
   back2: '←2',
   back3: '←3',
   back5: '-5',
@@ -59,12 +62,26 @@ export const POWER_UP_INFO: {
   { type: 'back5', label: '-5', description: 'Slides your token 5 steps backward' },
   { type: 'plus10', label: '+10', description: 'Surges your token 10 steps forward' },
   {
+    type: 'super',
+    label: 'Super',
+    description: 'Leaps halfway around the board and lands on the next safe star',
+  },
+  {
     type: 'tnt',
     label: 'TNT',
     description: 'Eliminates unprotected tokens on this cell and sends them to the yard',
   },
   { type: 'ice', label: 'Ice', description: 'Pushes rivals on this cell back 3 steps' },
 ]
+
+export function powerInfoForMode(mode: GameMode | null | undefined) {
+  if (mode === 'quick') {
+    return POWER_UP_INFO.filter(
+      (entry) => entry.type !== 'tnt' && entry.type !== 'back5',
+    )
+  }
+  return POWER_UP_INFO.filter((entry) => entry.type !== 'super')
+}
 
 export function powerUpLabel(type: PowerUpType) {
   if (type === 'half') return '+10'
@@ -79,7 +96,9 @@ export function powerUpDescription(type: PowerUpType) {
 const SLOT_OFFSETS = [4, 10]
 const PLUS10_OFFSET = 3
 const TNT_OFFSET = 9
+const SUPER_OFFSET = 7
 const RARE_POWER_COUNT = 2
+const SUPER_COUNT = 2
 const SHIELD_COUNT = 3
 const EXTRA_ROCKET_COUNT = 2
 const BACK5_COUNT = 1
@@ -124,9 +143,12 @@ function placeSpacedPower(
   return placed
 }
 
-export function generatePowerTiles(playerCount: number): Record<number, PowerUpType> {
+function placeCommonAndRare(
+  tiles: Record<number, PowerUpType>,
+  playerCount: number,
+  options: { includeTnt: boolean; includeBack5: boolean; includeSuper: boolean },
+) {
   const length = playerCount * CELLS_PER_PLAYER
-  const tiles: Record<number, PowerUpType> = {}
 
   for (let seat = 0; seat < playerCount; seat += 1) {
     for (let slot = 0; slot < SLOT_OFFSETS.length; slot += 1) {
@@ -140,18 +162,64 @@ export function generatePowerTiles(playerCount: number): Record<number, PowerUpT
     RARE_POWER_COUNT,
     Math.max(1, Math.floor(playerCount / 4)),
   )
-  const tntSeat = Math.floor(playerCount / 2) % playerCount
+  const tntSeat = options.includeTnt
+    ? Math.floor(playerCount / 2) % playerCount
+    : -1
 
   for (const seat of plus10Seats) {
     if (seat === tntSeat) continue
     tiles[(seat * CELLS_PER_PLAYER + PLUS10_OFFSET) % length] = 'plus10'
   }
 
-  tiles[(tntSeat * CELLS_PER_PLAYER + TNT_OFFSET) % length] = 'tnt'
+  if (options.includeTnt) {
+    tiles[(tntSeat * CELLS_PER_PLAYER + TNT_OFFSET) % length] = 'tnt'
+  }
+
   placeSpacedPower(tiles, length, SHIELD_COUNT, 'shield')
   placeSpacedPower(tiles, length, EXTRA_ROCKET_COUNT, 'rocket', 3)
-  placeSpacedPower(tiles, length, BACK5_COUNT, 'back5', 5)
 
+  if (options.includeBack5) {
+    placeSpacedPower(tiles, length, BACK5_COUNT, 'back5', 5)
+  }
+
+  if (options.includeSuper) {
+    const superSeats = spacedSeats(
+      playerCount,
+      SUPER_COUNT,
+      Math.max(0, Math.floor(playerCount / 3)),
+    )
+    for (const seat of superSeats) {
+      const preferred = (seat * CELLS_PER_PLAYER + SUPER_OFFSET) % length
+      for (let offset = 0; offset < length; offset += 1) {
+        const cell = (preferred + offset) % length
+        if (tiles[cell]) continue
+        tiles[cell] = 'super'
+        break
+      }
+    }
+  }
+}
+
+export function generatePowerTiles(playerCount: number): Record<number, PowerUpType> {
+  const tiles: Record<number, PowerUpType> = {}
+  placeCommonAndRare(tiles, playerCount, {
+    includeTnt: true,
+    includeBack5: true,
+    includeSuper: false,
+  })
+  return tiles
+}
+
+/** Power board without TNT / −5, plus two Super warp tiles. */
+export function generateQuickPowerTiles(
+  playerCount: number,
+): Record<number, PowerUpType> {
+  const tiles: Record<number, PowerUpType> = {}
+  placeCommonAndRare(tiles, playerCount, {
+    includeTnt: false,
+    includeBack5: false,
+    includeSuper: true,
+  })
   return tiles
 }
 
@@ -184,9 +252,36 @@ function advanceToken(token: Token, steps: number, room: Room) {
   }
 }
 
-function retreatToken(token: Token, steps: number) {
+function retreatFloor(room: Room) {
+  return eliminatedProgress(room)
+}
+
+function retreatToken(token: Token, steps: number, room: Room) {
   if (token.progress < 0) return
-  token.progress = Math.max(-1, token.progress - steps)
+  token.progress = Math.max(retreatFloor(room), token.progress - steps)
+}
+
+/** Half-board leap, then snap forward onto the next safe star/start. */
+function applySuperLeap(token: Token, player: Player, room: Room): string {
+  const length = trackLength(room)
+  const jump = Math.floor(length / 2)
+  const maxTrack = homeEntryProgress(room) - 1
+  if (token.progress < 0) return `${player.name} missed a super leap`
+  const ideal = Math.min(token.progress + jump, maxTrack)
+  const safes = safeCells(room)
+  const startCell = player.seat * CELLS_PER_PLAYER
+
+  for (let progress = ideal; progress <= maxTrack; progress += 1) {
+    const cell = (startCell + progress) % length
+    if (!safes.has(cell)) continue
+    // Prefer star cells (not the player's own start at progress 0) when possible.
+    if (progress === 0 && ideal > 0) continue
+    token.progress = progress
+    return `${player.name} leapt halfway to a star`
+  }
+
+  token.progress = ideal
+  return `${player.name} leapt halfway around the board`
 }
 
 function opponentsOnCell(
@@ -219,7 +314,7 @@ function eliminateTokenFromTnt(
   }
   if (isSoleTokenProtected(game, playerId, room)) return false
 
-  token.progress = -1
+  token.progress = eliminatedProgress(room)
   recordEliminated(game, playerId)
   return true
 }
@@ -243,7 +338,7 @@ export function applyPowerUp(
           game.shieldBuff[opponent.playerId] = false
           continue
         }
-        opponent.progress = -1
+        opponent.progress = eliminatedProgress(room)
         recordCapture(game, player.id, opponent.playerId)
         blasted += 1
       }
@@ -296,9 +391,10 @@ export function applyPowerUp(
       return `${player.name} landed on a power star`
     case 'ice': {
       let frozen = 0
+      const floor = retreatFloor(room)
       for (const opponent of opponentsOnCell(game, player.id, landingCell, room)) {
-        if (opponent.progress > 0) {
-          opponent.progress = Math.max(0, opponent.progress - 3)
+        if (opponent.progress > floor) {
+          opponent.progress = Math.max(floor, opponent.progress - 3)
           frozen += 1
         }
       }
@@ -306,6 +402,8 @@ export function applyPowerUp(
         ? `${player.name} froze ${frozen} rival token(s)`
         : `${player.name} slid over ice`
     }
+    case 'super':
+      return applySuperLeap(token, player, room)
     case 'portal': {
       const length = trackLength(room)
       const jump = Math.floor(length / 2)
@@ -320,13 +418,13 @@ export function applyPowerUp(
       return `${player.name} warped through a portal`
     }
     case 'back2':
-      retreatToken(token, 2)
+      retreatToken(token, 2, room)
       return `${player.name} slid back 2 steps`
     case 'back3':
-      retreatToken(token, 3)
+      retreatToken(token, 3, room)
       return `${player.name} slid back 3 steps`
     case 'back5':
-      retreatToken(token, 5)
+      retreatToken(token, 5, room)
       return `${player.name} slid back 5 steps`
     case 'yard':
       // Legacy tile — no longer generated; treat as a harmless pass.

@@ -28,7 +28,9 @@ import {
   resolvePendingPower,
   rollDice,
   setSlotBot,
+  setPlayerAutoPlay,
   skipMoveTimer,
+  skipPowerTimer,
   skipRollTimer,
   startRoom,
   watchColorClaims,
@@ -54,7 +56,7 @@ import {
   TURN_ROLL_TIMEOUT_MS,
 } from './game/engine'
 import { computeMotm, computeWorstPlayer, computeWinOdds, readPlayerStats, type MotmCandidate } from './game/matchAwards'
-import { PLAYER_COLORS, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room } from './game/types'
+import { PLAYER_COLORS, gameModeLabel, hasPowerBoard, isAutoControlled, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room } from './game/types'
 import {
   moveBaseSignature,
   movingTokenTarget,
@@ -446,7 +448,7 @@ function App() {
     if (!action.includes(' rolled ')) return
 
     const roller = room.players.find((player) => action.startsWith(player.name))
-    if (!roller?.isBot || lastBotRollRef.current === action) return
+    if (!isAutoControlled(roller) || lastBotRollRef.current === action) return
     lastBotRollRef.current = action
 
     setRolling(true)
@@ -989,6 +991,14 @@ function App() {
                   <strong>Power</strong>
                   <span>+10 surge, rockets, springs & more</span>
                 </button>
+                <button
+                  type="button"
+                  className={`mode-option ${gameMode === 'quick' ? 'active' : ''}`}
+                  onClick={() => setGameMode('quick')}
+                >
+                  <strong>Quick</strong>
+                  <span>3 tokens, capture to start, Super leaps</span>
+                </button>
               </div>
             </label>
             <label>
@@ -1057,7 +1067,8 @@ function App() {
   }
 
   const viewRoom: Room = optimisticRoom ?? room
-  const isPowerMode = (viewRoom.gameMode ?? 'classic') === 'power'
+  const isPowerMode = hasPowerBoard(viewRoom.gameMode)
+  const isQuickMode = (viewRoom.gameMode ?? 'classic') === 'quick'
 
   const currentPlayer = viewRoom.game ? viewRoom.players[viewRoom.game.turnIndex] : null
   const isMyTurn = currentPlayer?.id === userId
@@ -1188,7 +1199,7 @@ function App() {
             <h1>Waiting for players</h1>
             <p>Share this code with friends anywhere.</p>
             <p className="lobby-mode">
-              Mode: <strong>{(room.gameMode ?? 'classic') === 'power' ? 'Power' : 'Classic'}</strong>
+              Mode: <strong>{gameModeLabel(room.gameMode)}</strong>
             </p>
             <button className="code-display" onClick={copyCode}>{room.code} <span>⧉</span></button>
             <div className="players-grid">
@@ -1303,15 +1314,46 @@ function App() {
                   <small>
                     {viewRoom.game?.winnerIds.includes(player.id)
                       ? `Finished #${viewRoom.game.winnerIds.indexOf(player.id) + 1}`
-                      : player.id === userId
-                        ? 'You'
-                        : player.isBot
-                          ? 'Bot'
-                          : 'Online'}
+                      : player.isBot
+                        ? 'Bot'
+                        : [
+                            player.id === userId ? 'You' : null,
+                            player.autoPlay ? 'Autoplay' : player.id === userId ? null : 'Online',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ') || 'Online'}
                     {hasShield ? ' · Shield' : ''}
                     {misses > 0 ? ` · ${misses}/${missLimit} misses` : ''}
                   </small>
                 </div>
+                {isHost &&
+                !player.isBot &&
+                player.id !== userId &&
+                viewRoom.status === 'playing' ? (
+                  <button
+                    type="button"
+                    className={`slot-action player-autoplay ${player.autoPlay ? 'active' : ''}`}
+                    disabled={busy}
+                    title={
+                      player.autoPlay
+                        ? 'Cancel autoplay — they play manually again'
+                        : 'Autoplay for them while they are away'
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void perform(async () => {
+                        await setPlayerAutoPlay(
+                          room.id,
+                          userId,
+                          player.id,
+                          !player.autoPlay,
+                        )
+                      })
+                    }}
+                  >
+                    {player.autoPlay ? 'Cancel auto' : 'Autoplay'}
+                  </button>
+                ) : null}
                 {isHost && !player.isBot && viewRoom.status === 'playing' ? (
                   <button
                     type="button"
@@ -1362,7 +1404,8 @@ function App() {
               <strong>{isMyTurn ? 'Your turn' : `${currentPlayer?.name}'s turn`}</strong>
               <span>{bannerAction}</span>
               {turnSecondsLeft !== null &&
-              (viewRoom.game?.phase === 'roll' || viewRoom.game?.phase === 'move') ? (
+              (viewRoom.game?.phase === 'roll' || viewRoom.game?.phase === 'move') &&
+              !isAutoControlled(currentPlayer) ? (
                 <span className={`turn-timer ${turnSecondsLeft <= 5 ? 'urgent' : ''}`}>
                   {viewRoom.game?.phase === 'roll' ? 'Roll' : 'Move'} within {turnSecondsLeft}s
                 </span>
@@ -1392,15 +1435,29 @@ function App() {
                 Roll dice
               </button>
             ) : viewRoom.game?.phase === 'power' ? (
-              <p className="action-hint">Power tile activating…</p>
+              <p className="action-hint">
+                {viewRoom.game.pendingPower
+                  ? `Waiting for ${
+                      viewRoom.players.find(
+                        (player) => player.id === viewRoom.game!.pendingPower!.playerId,
+                      )?.name ?? currentPlayer?.name ?? 'player'
+                    }'s power…`
+                  : 'Power tile activating…'}
+              </p>
             ) : isMyTurn ? (
               <p className="action-hint">Choose a glowing token.</p>
-            ) : <p className="action-hint">Waiting for {currentPlayer?.name}…</p>}
+            ) : (
+              <p className="action-hint">
+                {currentPlayer?.autoPlay
+                  ? `${currentPlayer.name} is on autoplay…`
+                  : `Waiting for ${currentPlayer?.name}…`}
+              </p>
+            )}
             {room.hostId === userId &&
             viewRoom.status === 'playing' &&
             viewRoom.game?.phase === 'roll' &&
             currentPlayer &&
-            !currentPlayer.isBot ? (
+            !isAutoControlled(currentPlayer) ? (
               <button
                 type="button"
                 className="secondary-button skip-move-timer"
@@ -1418,7 +1475,7 @@ function App() {
             viewRoom.status === 'playing' &&
             viewRoom.game?.phase === 'move' &&
             currentPlayer &&
-            !currentPlayer.isBot ? (
+            !isAutoControlled(currentPlayer) ? (
               <button
                 type="button"
                 className="secondary-button skip-move-timer"
@@ -1432,21 +1489,64 @@ function App() {
                 Skip wait · auto-move
               </button>
             ) : null}
+            {room.hostId === userId &&
+            viewRoom.status === 'playing' &&
+            viewRoom.game?.phase === 'power' &&
+            viewRoom.game.pendingPower ? (
+              <button
+                type="button"
+                className="secondary-button skip-move-timer"
+                disabled={busy}
+                onClick={() =>
+                  void perform(async () => {
+                    await skipPowerTimer(room.id, userId)
+                  })
+                }
+              >
+                Skip wait · apply power
+              </button>
+            ) : null}
             <div className="rules">
               <h3>Quick rules</h3>
-              <p>Roll 6 to leave the yard.</p>
-              <p>Capture and roll 6 for an extra turn.</p>
-              <p>A sole active token is protected until one token finishes.</p>
-              <p>Ignoring a yard token after rolling 6 forfeits that protection.</p>
-              <p>No active tokens: the sixth failed entry attempt guarantees a 6.</p>
-              <p>Last token 1–3 steps away: the eighth attempt guarantees the exact roll.</p>
-              <p>Three consecutive 6s lose the turn.</p>
-              <p>
-                Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or an auto-roll is made. Move within{' '}
-                {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Default{' '}
-                {MAX_TURN_MISSES} roll misses removes you; host can grant +5 and skip either wait.
-              </p>
-              <p>Reach home with an exact roll.</p>
+              {isQuickMode ? (
+                <>
+                  <p className="power-rules-title">
+                    <strong>Quick mode:</strong> a faster Power board with a few rule changes.
+                  </p>
+                  <p>Each player has 3 tokens (not 4).</p>
+                  <p>Roll 6 to leave the yard.</p>
+                  <p>
+                    When a token is eliminated, it returns to its colored start square — not the yard —
+                    so it can move again without another 6.
+                  </p>
+                  <p>No TNT or −5 tiles. Two Super (⚡) tiles leap halfway around the board onto a safe star.</p>
+                  <p>Capture and roll 6 for an extra turn.</p>
+                  <p>A sole active token is protected until one token finishes.</p>
+                  <p>Three consecutive 6s lose the turn.</p>
+                  <p>
+                    Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or an auto-roll is made. Move within{' '}
+                    {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Default{' '}
+                    {MAX_TURN_MISSES} roll misses removes you; host can grant +5 and skip either wait.
+                  </p>
+                  <p>Reach home with an exact roll.</p>
+                </>
+              ) : (
+                <>
+                  <p>Roll 6 to leave the yard.</p>
+                  <p>Capture and roll 6 for an extra turn.</p>
+                  <p>A sole active token is protected until one token finishes.</p>
+                  <p>Ignoring a yard token after rolling 6 forfeits that protection.</p>
+                  <p>No active tokens: the sixth failed entry attempt guarantees a 6.</p>
+                  <p>Last token 1–3 steps away: the eighth attempt guarantees the exact roll.</p>
+                  <p>Three consecutive 6s lose the turn.</p>
+                  <p>
+                    Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or an auto-roll is made. Move within{' '}
+                    {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Default{' '}
+                    {MAX_TURN_MISSES} roll misses removes you; host can grant +5 and skip either wait.
+                  </p>
+                  <p>Reach home with an exact roll.</p>
+                </>
+              )}
               <p className="power-rules-title">
                 <strong>Man of the Match:</strong> scored from eliminations, finish place,
                 tokens home, sixes, and times eliminated. Highest score wins (not always the champion).
@@ -1456,7 +1556,11 @@ function App() {
           </aside>
           {(isPowerMode || room.status === 'playing') && (
             <div className="power-legend-bar">
-              <PowerLegend showPowers={isPowerMode} winOdds={winOdds} />
+              <PowerLegend
+                showPowers={isPowerMode}
+                gameMode={viewRoom.gameMode}
+                winOdds={winOdds}
+              />
             </div>
           )}
         </section>

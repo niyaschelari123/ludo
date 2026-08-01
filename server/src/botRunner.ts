@@ -1,5 +1,5 @@
 import { pickBestMovableToken } from '../../src/game/engine.js'
-import { type Room } from '../../src/game/types.js'
+import { isAutoControlled, type Room } from '../../src/game/types.js'
 import {
   getRoom,
   movePawn,
@@ -55,7 +55,7 @@ export function runBotStep(roomId: string): BotActionResult {
   if (room.status !== 'playing' || !room.game) return { kind: 'none' }
 
   const player = room.players[room.game.turnIndex]
-  if (!player?.isBot) return { kind: 'none' }
+  if (!isAutoControlled(player)) return { kind: 'none' }
 
   const game = room.game
 
@@ -109,7 +109,7 @@ export function scheduleBotTurn(
 
   if (room.status !== 'playing' || !room.game) return
   const player = room.players[room.game.turnIndex]
-  if (!player?.isBot) return
+  if (!isAutoControlled(player)) return
 
   const delay = botDelay(room, pause)
   botTimers.set(

@@ -8,7 +8,13 @@ import type {
   Room,
   Token,
 } from './types'
-import { applyPowerUp, generatePowerTiles, powerUpAtCell } from './powerUps'
+import { hasPowerBoard } from './types'
+import {
+  applyPowerUp,
+  generatePowerTiles,
+  generateQuickPowerTiles,
+  powerUpAtCell,
+} from './powerUps'
 
 // A classic four-player board has 52 outer cells: 13 per player.
 // The same sector length extends cleanly to the 5–8 player polygon boards.
@@ -18,9 +24,19 @@ export const HOME_LENGTH = 5
 // Colored outer-track start cell counts as the first home-entry step.
 export const OUTER_HOME_ENTRY_TILES = 1
 export const TOKENS_PER_PLAYER = 4
+export const QUICK_TOKENS_PER_PLAYER = 3
 export const TURN_ROLL_TIMEOUT_MS = 20_000
 export const TURN_MOVE_TIMEOUT_MS = 20_000
 export const MAX_TURN_MISSES = 5
+
+export function tokensPerPlayer(gameMode: GameMode | null | undefined) {
+  return gameMode === 'quick' ? QUICK_TOKENS_PER_PLAYER : TOKENS_PER_PLAYER
+}
+
+/** Captured tokens go to the yard (−1), except Quick mode (back to start at 0). */
+export function eliminatedProgress(room: Room) {
+  return room.gameMode === 'quick' ? 0 : -1
+}
 
 /** Five-player pentagon boards use one extra home cell before the center. */
 export const homeLengthForBoard = (boardPlayerCount: number) =>
@@ -112,7 +128,7 @@ export function createGame(players: Player[], gameMode: GameMode = 'classic'): G
     ),
     winnerIds: [],
     tokens: players.flatMap((player) =>
-      Array.from({ length: TOKENS_PER_PLAYER }, (_, id) => ({
+      Array.from({ length: tokensPerPlayer(gameMode) }, (_, id) => ({
         id,
         playerId: player.id,
         // Start with one token already on the start square so games open faster.
@@ -123,7 +139,11 @@ export function createGame(players: Player[], gameMode: GameMode = 'classic'): G
     stats: Object.fromEntries(players.map((player) => [player.id, emptyPlayerStats()])),
     activeMove: null,
     powerTiles:
-      gameMode === 'power' ? generatePowerTiles(boardPlayerCount) : {},
+      gameMode === 'quick'
+        ? generateQuickPowerTiles(boardPlayerCount)
+        : gameMode === 'power'
+          ? generatePowerTiles(boardPlayerCount)
+          : {},
     shieldBuff: {},
     pendingExtraTurn: null,
     pendingPower: null,
@@ -199,7 +219,7 @@ export function resolveLandingCapture(
         game.shieldBuff[opponent.playerId] = false
         sharedProtectedCell = true
       } else {
-        opponent.progress = -1
+        opponent.progress = eliminatedProgress(room)
         recordCapture(game, playerId, opponent.playerId)
         captured = true
       }
@@ -667,7 +687,7 @@ export function applyMove(room: Room, tokenId: number) {
   const landingCell = globalCell(token, room)
 
   if (
-    (room.gameMode ?? 'classic') === 'power' &&
+    hasPowerBoard(room.gameMode) &&
     landingCell !== null &&
     token.progress > 0 &&
     token.progress < homeEntryProgress(room)

@@ -14,7 +14,18 @@ export const PLAYER_COLORS = [
 export type PlayerColor = (typeof PLAYER_COLORS)[number]
 export type RoomStatus = 'lobby' | 'playing' | 'finished'
 export type TurnPhase = 'roll' | 'move' | 'power'
-export type GameMode = 'classic' | 'power'
+export type GameMode = 'classic' | 'power' | 'quick'
+
+/** Power and Quick place tiles on the track. */
+export function hasPowerBoard(mode: GameMode | null | undefined): boolean {
+  return mode === 'power' || mode === 'quick'
+}
+
+export function gameModeLabel(mode: GameMode | null | undefined): string {
+  if (mode === 'power') return 'Power'
+  if (mode === 'quick') return 'Quick'
+  return 'Classic'
+}
 export type PowerUpType =
   | 'plus10'
   | 'half' // legacy; treated as plus10 if present in old rooms
@@ -27,6 +38,7 @@ export type PowerUpType =
   | 'star'
   | 'ice'
   | 'portal'
+  | 'super'
   | 'back2'
   | 'back3'
   | 'back5'
@@ -46,9 +58,16 @@ export interface Player {
   seat: number
   connected: boolean
   isBot?: boolean
+  /** Host-enabled: server plays this human seat until cancelled. */
+  autoPlay?: boolean
   /** Locked profile color — preserved across seat shuffle. */
   colorLocked?: boolean
   joinedAt: number
+}
+
+/** Bots and host-autoplay humans are driven by the server. */
+export function isAutoControlled(player: Player | null | undefined): boolean {
+  return Boolean(player?.isBot || player?.autoPlay)
 }
 
 export interface DepartedPlayer extends Player {
