@@ -25,7 +25,6 @@ export const TOKENS_PER_PLAYER = 4
 export const QUICK_TOKENS_PER_PLAYER = 3
 export const TURN_ROLL_TIMEOUT_MS = 20_000
 export const TURN_MOVE_TIMEOUT_MS = 20_000
-export const MAX_TURN_MISSES = 5
 
 export function tokensPerPlayer(gameMode: GameMode | null | undefined) {
   return gameMode === 'quick' ? QUICK_TOKENS_PER_PLAYER : TOKENS_PER_PLAYER
@@ -124,10 +123,6 @@ export function createGame(
     consecutiveSixes: 0,
     boardPlayerCount,
     turnDeadline: Date.now() + TURN_ROLL_TIMEOUT_MS,
-    turnMisses: Object.fromEntries(players.map((player) => [player.id, 0])),
-    turnMissLimits: Object.fromEntries(
-      players.map((player) => [player.id, MAX_TURN_MISSES]),
-    ),
     entryMisses: Object.fromEntries(players.map((player) => [player.id, 0])),
     finishMisses: Object.fromEntries(players.map((player) => [player.id, 0])),
     protectionForfeited: Object.fromEntries(
@@ -396,56 +391,6 @@ function passTurn(room: Room, game: GameState) {
   beginRollPhase(game)
 }
 
-export function playerTurnMissLimit(game: GameState, playerId: string) {
-  game.turnMissLimits ??= {}
-  return game.turnMissLimits[playerId] ?? MAX_TURN_MISSES
-}
-
-export function grantExtraTurnChances(
-  room: Room,
-  playerId: string,
-  amount = 5,
-) {
-  const game = room.game
-  if (!game) throw new Error('Game has not started.')
-  if (!Number.isInteger(amount) || amount < 1) {
-    throw new Error('Invalid chance amount.')
-  }
-  const player = room.players.find((candidate) => candidate.id === playerId)
-  if (!player) throw new Error('Player not found.')
-  if (player.isBot) throw new Error('Bots do not use turn misses.')
-
-  game.turnMissLimits ??= {}
-  const current = playerTurnMissLimit(game, playerId)
-  game.turnMissLimits[playerId] = current + amount
-  const misses = game.turnMisses?.[playerId] ?? 0
-  game.lastAction = `${player.name} was given +${amount} roll chances (${misses}/${game.turnMissLimits[playerId]})`
-}
-
-export function applyRollTimeout(room: Room): {
-  shouldRemove: boolean
-  playerId: string
-} {
-  const game = room.game
-  if (!game || game.phase !== 'roll') {
-    throw new Error('Dice cannot time out now.')
-  }
-  const player = room.players[game.turnIndex]
-  if (!player) throw new Error('Current player is missing.')
-
-  game.turnMisses ??= {}
-  const misses = (game.turnMisses[player.id] ?? 0) + 1
-  game.turnMisses[player.id] = misses
-  const limit = playerTurnMissLimit(game, player.id)
-
-  if (misses >= limit) {
-    return { shouldRemove: true, playerId: player.id }
-  }
-
-  game.lastAction = `${player.name} ran out of roll time (${misses}/${limit})`
-  return { shouldRemove: false, playerId: player.id }
-}
-
 export function applyRoll(room: Room, value: number) {
   const game = room.game
   if (!game || game.phase !== 'roll') throw new Error('Dice cannot be rolled now.')
@@ -619,6 +564,7 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
       dice: token.progress - progressBeforePower,
       startedAt,
       targetProgress: token.progress,
+      willCapture: captured,
     }
   } else {
     game.activeMove = null
@@ -788,6 +734,7 @@ export function detectMovedToken(prev: Room, next: Room): MovingToken | null {
           fromProgress: oldToken.progress,
           dice,
           targetProgress: token.progress,
+          willCapture: action.includes('captured'),
         }
       }
     }
@@ -804,5 +751,6 @@ export function activeMoveToMovingToken(active: ActiveMove): MovingToken {
     dice: active.dice,
     startedAt: active.startedAt,
     targetProgress: active.targetProgress,
+    willCapture: active.willCapture,
   }
 }

@@ -1,13 +1,14 @@
 /**
  * Programmatic N-player polygonal Ludo board geometry.
  *
- * For N = 5 this produces a Ludo-King-style regular pentagon board:
- * large triangular home bases at the vertices, a continuous track that
- * follows the pentagon edges (not a circle), home lanes into a compact
- * central pentagon divided into N equal finish sectors.
+ * For N = 5 this produces a Ludo-King-style regular pentagon board;
+ * for N = 6 a matching hexagonal board. Both use large triangular home
+ * bases at the vertices, a continuous track along the polygon edges
+ * (not a circle), home lanes into a compact central N-gon divided into
+ * N equal finish sectors.
  *
  * Cell indices match the rules engine: seat S starts at S * CELLS_PER_PLAYER,
- * which lands on vertex S of the track pentagon.
+ * which lands on vertex S of the track polygon.
  */
 import { CELLS_PER_PLAYER, homeLengthForBoard } from './engine'
 
@@ -17,7 +18,7 @@ export const BOARD_CENTER = BOARD_SIZE / 2
 /** Larger canvas for N-gon boards so path cells can sit without overlap. */
 export function boardCanvasSize(playerCount: number) {
   if (playerCount === 5) return 1200
-  if (playerCount === 6) return 780
+  if (playerCount === 6) return 1280
   return BOARD_SIZE
 }
 
@@ -209,27 +210,30 @@ type ProportionSet = {
 }
 
 function proportionsFor(playerCount: number, size: number): ProportionSet {
-  // Ludo-King 5-player: large path boxes + edge meanders (soft turns).
-  if (playerCount === 5) {
-    const cellSize = 42
+  // Ludo-King style: large path boxes + edge meanders (soft turns).
+  if (playerCount === 5 || playerCount === 6) {
+    const n = playerCount
+    const cellSize = playerCount === 5 ? 42 : 40
     // Base spacing a bit under cell size; meander adds the rest of the gap.
     const baseSpacing = cellSize * 0.82
     const trackRadius = Math.ceil(
-      (baseSpacing * (5 * CELLS_PER_PLAYER)) / (10 * Math.sin(Math.PI / 5)) + 10,
+      (baseSpacing * (n * CELLS_PER_PLAYER)) /
+        (2 * n * Math.sin(Math.PI / n)) +
+        10,
     )
     const trackMeander = cellSize * 0.38
     const trackFieldRadius = trackRadius + cellSize * 0.85 + trackMeander
     const homeInnerRadius = trackFieldRadius
     const outerRadius = size / 2 - 12
-    const finishRadius = 88
+    const finishRadius = playerCount === 5 ? 88 : 96
     return {
       outerRadius,
       homeInnerRadius,
       trackRadius,
       trackFieldRadius,
       yardRadius: (outerRadius + homeInnerRadius) / 2 + 8,
-      yardRadialSpan: 26,
-      yardTangentSpan: 30,
+      yardRadialSpan: playerCount === 5 ? 26 : 28,
+      yardTangentSpan: playerCount === 5 ? 30 : 32,
       homeLaneStart: trackRadius - trackMeander - cellSize * 0.55,
       homeLaneStep: cellSize * 0.88,
       finishRadius,
@@ -237,29 +241,8 @@ function proportionsFor(playerCount: number, size: number): ProportionSet {
       rankRadius: homeInnerRadius + (outerRadius - homeInnerRadius) * 0.42,
       cellSize,
       yardTokenRadius: 14,
-      homeEdgeSpan: 0.22,
+      homeEdgeSpan: playerCount === 5 ? 0.22 : 0.24,
       trackMeander,
-    }
-  }
-  if (playerCount === 6) {
-    const cellSize = 18
-    return {
-      outerRadius: size / 2 - 10,
-      homeInnerRadius: 200,
-      trackRadius: 188,
-      trackFieldRadius: 206,
-      yardRadius: 268,
-      yardRadialSpan: 24,
-      yardTangentSpan: 28,
-      homeLaneStart: 158,
-      homeLaneStep: 16,
-      finishRadius: 52,
-      labelRadius: size / 2 - 18,
-      rankRadius: 236,
-      cellSize,
-      yardTokenRadius: 11,
-      homeEdgeSpan: 0.3,
-      trackMeander: 0,
     }
   }
   // Generic N ≥ 7 fallback (still true N-gon edge track).
@@ -460,7 +443,7 @@ export function generatePolygonBoardGeometry(
 const geometryCache = new Map<string, BoardGeometry>()
 
 /** Bump when proportions change so HMR does not reuse stale layouts. */
-const GEOMETRY_REVISION = 6
+const GEOMETRY_REVISION = 7
 
 export function getPolygonBoardGeometry(
   playerCount: number,

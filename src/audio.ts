@@ -4,11 +4,43 @@ const savedVolume = Number(localStorage.getItem('ludo-volume') ?? 0.8)
 let masterVolume = Number.isFinite(savedVolume) ? savedVolume : 0.8
 const OUTPUT_BOOST = 2.8
 
+const SFX = {
+  eliminate: '/eliminate.mp3',
+  yourTurn: '/your-turn.mp3',
+} as const
+
+const sampleCache = new Map<string, HTMLAudioElement>()
+
+function warmSample(src: string) {
+  if (sampleCache.has(src)) return
+  const audio = new Audio(src)
+  audio.preload = 'auto'
+  audio.load()
+  sampleCache.set(src, audio)
+}
+
+warmSample(SFX.eliminate)
+warmSample(SFX.yourTurn)
+
 function audioContext() {
   if (!enabled) return null
   context ??= new AudioContext()
   if (context.state === 'suspended') void context.resume()
   return context
+}
+
+function playSample(src: string, volumeScale = 1) {
+  if (!enabled) return
+  void audioContext()
+  warmSample(src)
+  const cached = sampleCache.get(src)
+  // Clone so overlapping plays work and start is instant from cache.
+  const audio = cached ? (cached.cloneNode(true) as HTMLAudioElement) : new Audio(src)
+  audio.volume = Math.max(0, Math.min(1, masterVolume * volumeScale))
+  audio.currentTime = 0
+  void audio.play().catch(() => {
+    // Autoplay may be blocked until a user gesture unlocks audio.
+  })
 }
 
 function tone(
@@ -94,24 +126,7 @@ export function playEnter() {
 }
 
 export function playCapture() {
-  // Dramatic descending "faaaa" effect for an eliminated token.
-  tone(760, 0.9, {
-    volume: 0.085,
-    type: 'sawtooth',
-    endFrequency: 115,
-  })
-  tone(1080, 0.82, {
-    delay: 0.025,
-    volume: 0.045,
-    type: 'triangle',
-    endFrequency: 170,
-  })
-  tone(380, 0.95, {
-    delay: 0.04,
-    volume: 0.055,
-    type: 'sine',
-    endFrequency: 80,
-  })
+  playSample(SFX.eliminate, 0.55)
 }
 
 export function playHome() {
@@ -134,4 +149,9 @@ export function playWin() {
       type: 'triangle',
     }),
   )
+}
+
+/** Desk bell — only the player whose turn just started should hear this. */
+export function playYourTurn() {
+  playSample(SFX.yourTurn, 0.85)
 }

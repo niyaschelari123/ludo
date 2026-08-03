@@ -38,6 +38,14 @@ export async function setBlitzDuration(
   return room
 }
 
+export async function extendBlitzTime(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room }>('extendBlitzTime', {
+    roomId,
+    userId,
+  })
+  return room
+}
+
 export async function joinRoom(
   userId: string,
   name: string,
@@ -266,21 +274,6 @@ export async function removePlayer(
     roomId,
     userId,
     targetUserId,
-  })
-  return room
-}
-
-export async function grantExtraTurnChances(
-  roomId: string,
-  userId: string,
-  targetUserId: string,
-  amount = 5,
-) {
-  const { room } = await emitAck<{ room: Room }>('grantExtraTurnChances', {
-    roomId,
-    userId,
-    targetUserId,
-    amount,
   })
   return room
 }

@@ -31,6 +31,8 @@ export const BLITZ_DURATION_OPTIONS = [
 export type BlitzDurationMinutes = (typeof BLITZ_DURATION_OPTIONS)[number]['minutes']
 
 export const DEFAULT_BLITZ_DURATION_MS = 45 * 60 * 1000
+/** Host can add this much time mid-match (unlimited times). */
+export const BLITZ_EXTEND_MS = 5 * 60 * 1000
 /** @deprecated Prefer DEFAULT_BLITZ_DURATION_MS / room.blitzDurationMs */
 export const BLITZ_DURATION_MS = DEFAULT_BLITZ_DURATION_MS
 
@@ -142,8 +144,6 @@ export interface DepartedPlayer extends Player {
   savedEntryMisses?: number
   savedFinishMisses?: number
   savedProtectionForfeited?: boolean
-  savedTurnMisses?: number
-  savedTurnMissLimit?: number
   savedShieldBuff?: boolean
   /** Index in winnerIds when they left, if they had finished. */
   savedWinnerPlace?: number
@@ -162,6 +162,8 @@ export interface MovingToken {
   dice: number
   startedAt?: number
   targetProgress?: number
+  /** True when this hop will capture — used to time the eliminate SFX. */
+  willCapture?: boolean
 }
 
 export interface ActiveMove {
@@ -171,6 +173,7 @@ export interface ActiveMove {
   dice: number
   startedAt: number
   targetProgress?: number
+  willCapture?: boolean
 }
 
 export const TOKEN_MOVE_STEP_MS = 135
@@ -273,9 +276,6 @@ export interface GameState {
   consecutiveSixes: number
   boardPlayerCount: number
   turnDeadline: number | null
-  turnMisses: Record<string, number>
-  /** Per-player miss allowance before removal. Defaults to MAX_TURN_MISSES. */
-  turnMissLimits?: Record<string, number>
   entryMisses: Record<string, number>
   finishMisses: Record<string, number>
   protectionForfeited: Record<string, boolean>

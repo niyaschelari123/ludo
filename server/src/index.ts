@@ -34,10 +34,10 @@ import {
   skipRollTimer,
   startRoom,
   storeRollHint,
-  grantExtraTurnChances,
   setPlayerAutoPlay,
   endBlitzRoom,
   setBlitzDuration,
+  extendBlitzTime,
 } from './roomManager.js'
 import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.js'
 import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
@@ -370,6 +370,22 @@ io.on('connection', (socket) => {
     },
   )
 
+  socket.on(
+    'extendBlitzTime',
+    (
+      payload: { roomId: string; userId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = extendBlitzTime(payload.roomId, payload.userId)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
   // --- joinRoom: enter an existing lobby by six-character code ---
   socket.on(
     'joinRoom',
@@ -595,32 +611,6 @@ io.on('connection', (socket) => {
           payload.roomId,
           payload.userId,
           payload.targetUserId,
-        )
-        ackRoom(callback, room, payload.userId)
-        broadcastState(room)
-      } catch (error) {
-        ackError(callback, error)
-      }
-    },
-  )
-
-  socket.on(
-    'grantExtraTurnChances',
-    (
-      payload: {
-        roomId: string
-        userId: string
-        targetUserId: string
-        amount?: number
-      },
-      callback?: Ack<{ room: Room }>,
-    ) => {
-      try {
-        const room = grantExtraTurnChances(
-          payload.roomId,
-          payload.userId,
-          payload.targetUserId,
-          payload.amount ?? 5,
         )
         ackRoom(callback, room, payload.userId)
         broadcastState(room)

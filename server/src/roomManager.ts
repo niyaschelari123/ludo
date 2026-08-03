@@ -7,16 +7,14 @@ import {
   applyPendingPower,
   applyRoll,
   applyRollMisses,
-  applyRollTimeout,
   createGame,
   getBoardPlayerCount,
-  grantExtraTurnChances as applyGrantExtraTurnChances,
   pickBestMovableToken,
   resolveDiceValue,
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
 import { sanitizePowerTiles } from '../../src/game/powerUps.js'
-import { PLAYER_COLORS, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, type Room } from '../../src/game/types.js'
+import { PLAYER_COLORS, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, BLITZ_EXTEND_MS, type Room } from '../../src/game/types.js'
 import { finalizeBlitzGame } from '../../src/game/matchAwards.js'
 import { normalizeColorKey } from '../../src/game/colors.js'
 
@@ -417,6 +415,29 @@ export function setBlitzDuration(
   return room
 }
 
+/** Host adds +5 minutes to the live Blitz clock (repeatable). */
+export function extendBlitzTime(roomId: string, hostId: string) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can add Blitz time.')
+  }
+  if (!isBlitzMode(room.gameMode)) {
+    throw new Error('Extra time only applies to Blitz mode.')
+  }
+  if (room.status !== 'playing' || !room.game) {
+    throw new Error('Blitz time can only be added during a match.')
+  }
+  if (typeof room.game.endsAt !== 'number') {
+    throw new Error('This Blitz match has no clock.')
+  }
+
+  const host = room.players.find((player) => player.id === hostId)
+  room.game.endsAt = Math.max(room.game.endsAt, Date.now()) + BLITZ_EXTEND_MS
+  room.game.lastAction = `${host?.name ?? 'Host'} added +5 min`
+  room.updatedAt = Date.now()
+  return room
+}
+
 /** Force-end a Blitz room when the clock hits zero. */
 export function endBlitzRoom(roomId: string) {
   const room = rooms.get(roomId)
@@ -521,6 +542,12 @@ export function movePawn(
 
   const finalRoom = structuredClone(room) as Room
   applyMove(finalRoom, tokenId)
+  const willCapture =
+    Boolean(finalRoom.game?.lastAction?.includes('captured')) ||
+    Boolean(finalRoom.game?.pendingPower?.captured)
+  if (room.game?.activeMove) {
+    room.game.activeMove.willCapture = willCapture
+  }
   finalRoom.updatedAt = Date.now()
   rooms.set(roomId, finalRoom)
   return { previewRoom: room, room: finalRoom }
@@ -641,8 +668,6 @@ function snapshotForReclaim(room: Room, player: Room['players'][number]) {
     savedEntryMisses: game.entryMisses?.[player.id],
     savedFinishMisses: game.finishMisses?.[player.id],
     savedProtectionForfeited: game.protectionForfeited?.[player.id],
-    savedTurnMisses: game.turnMisses?.[player.id],
-    savedTurnMissLimit: game.turnMissLimits?.[player.id],
     savedShieldBuff: game.shieldBuff?.[player.id],
     savedWinnerPlace: winnerPlace >= 0 ? winnerPlace : undefined,
   }
@@ -726,14 +751,6 @@ export function claimSeat(
   }
   if (departed.savedProtectionForfeited !== undefined) {
     game.protectionForfeited[userId] = departed.savedProtectionForfeited
-  }
-  if (departed.savedTurnMisses !== undefined) {
-    game.turnMisses ??= {}
-    game.turnMisses[userId] = departed.savedTurnMisses
-  }
-  if (departed.savedTurnMissLimit !== undefined) {
-    game.turnMissLimits ??= {}
-    game.turnMissLimits[userId] = departed.savedTurnMissLimit
   }
   if (departed.savedShieldBuff) {
     game.shieldBuff ??= {}
@@ -846,8 +863,6 @@ export function removePlayerFromRoom(
     delete game.entryMisses?.[userId]
     delete game.finishMisses?.[userId]
     delete game.protectionForfeited?.[userId]
-    delete game.turnMisses?.[userId]
-    delete game.turnMissLimits?.[userId]
     delete game.stats?.[userId]
     delete game.shieldBuff?.[userId]
     if (game.pendingExtraTurn === userId) game.pendingExtraTurn = null
@@ -865,25 +880,6 @@ export function removePlayerFromRoom(
   return room
 }
 
-export function grantExtraTurnChances(
-  roomId: string,
-  hostId: string,
-  targetUserId: string,
-  amount = 5,
-) {
-  const room = structuredClone(getRoom(roomId)) as Room
-  if (room.hostId !== hostId) {
-    throw new Error('Only the host can grant extra chances.')
-  }
-  if (room.status !== 'playing' || !room.game) {
-    throw new Error('Chances can only be granted during a game.')
-  }
-  applyGrantExtraTurnChances(room, targetUserId, amount)
-  room.updatedAt = Date.now()
-  rooms.set(roomId, room)
-  return room
-}
-
 export function setPlayerAutoPlay(
   roomId: string,
   hostId: string,
@@ -896,9 +892,6 @@ export function setPlayerAutoPlay(
   }
   if (room.status !== 'playing' || !room.game) {
     throw new Error('Autoplay can only be changed during a game.')
-  }
-  if (targetUserId === hostId) {
-    throw new Error('Host cannot put themselves on autoplay.')
   }
 
   const player = room.players.find((candidate) => candidate.id === targetUserId)
@@ -956,28 +949,6 @@ export function handleRollTimeout(roomId: string) {
 
   const player = room.players[room.game.turnIndex]
   if (!player || isAutoControlled(player)) return room
-
-  const { shouldRemove, playerId } = applyRollTimeout(room)
-  room.updatedAt = Date.now()
-
-  if (shouldRemove) {
-    const removed = room.players.find((candidate) => candidate.id === playerId)
-    const name = removed?.name ?? 'Player'
-    const next = removePlayerFromRoom(
-      room,
-      playerId,
-      `${name} was removed for inactivity`,
-      { reclaimable: !removed?.isBot },
-    )
-    if (!next) {
-      rooms.delete(roomId)
-      codeIndex.delete(room.code)
-      clearRollHints(roomId)
-      return null
-    }
-    rooms.set(roomId, next)
-    return next
-  }
 
   const hinted = consumeRollHint(roomId, player.id)
   const dice = hinted ?? resolveDiceValue(room.game, player.id, room)

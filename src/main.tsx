@@ -10,6 +10,7 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <Routes>
         <Route path="/5-players" element={<BoardPreview playerCount={5} />} />
+        <Route path="/6-players" element={<BoardPreview playerCount={6} />} />
         <Route path="/*" element={<App />} />
       </Routes>
     </BrowserRouter>

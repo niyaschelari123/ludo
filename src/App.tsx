@@ -9,6 +9,7 @@ import {
   playDiceTick,
   playHome,
   playWin,
+  playYourTurn,
   setSoundEnabled,
   setSoundVolume,
 } from './audio'
@@ -20,7 +21,6 @@ import {
   claimColor,
   createRoom,
   claimSeat,
-  grantExtraTurnChances,
   joinRoom,
   leaveRoom,
   moveTokenWithRetry,
@@ -31,6 +31,7 @@ import {
   setSlotBot,
   setPlayerAutoPlay,
   setBlitzDuration,
+  extendBlitzTime,
   skipMoveTimer,
   skipPowerTimer,
   skipRollTimer,
@@ -57,11 +58,9 @@ import {
 import { PLAYER_COLOR_HEX, isNamedPlayerColor, normalizeColorKey, resolveColorHex } from './game/colors'
 import {
   activeMoveToMovingToken,
-  MAX_TURN_MISSES,
   movableTokens,
   performLocalMove,
   performLocalResolvePower,
-  playerTurnMissLimit,
   TURN_MOVE_TIMEOUT_MS,
   TURN_ROLL_TIMEOUT_MS,
 } from './game/engine'
@@ -240,6 +239,8 @@ function App() {
   const [soundOn, setSoundOn] = useState(isSoundEnabled)
   const [soundVolume, setSoundVolumeState] = useState(getSoundVolume)
   const lastSoundAction = useRef<string | null>(null)
+  const lastYourTurnCue = useRef<string | null>(null)
+  const prevTurnPlayerIdForCue = useRef<string | null>(null)
   const lastBotRollRef = useRef<string | null>(null)
   const extraCtrl = useMemo(() => {
     try {
@@ -563,10 +564,56 @@ function App() {
       return
     }
     lastSoundAction.current = action
-    if (action.includes('captured')) playCapture()
-    else if (action.includes('brought a token home')) playHome()
+    if (action.includes('brought a token home')) playHome()
     else if (action.includes('finished in place')) playWin()
   }, [displayRoom?.game?.lastAction])
+
+  // Faa SFX: start as soon as the capturing token begins hopping (preloaded = no lag).
+  useEffect(() => {
+    if (!movingToken?.startedAt || !movingToken.willCapture) return
+    playCapture()
+  }, [movingToken])
+
+  // Local-only: desk bell only when turn passes from someone else → you (not extra rolls).
+  useEffect(() => {
+    const game = displayRoom?.game
+    if (!displayRoom || displayRoom.status !== 'playing' || !game) {
+      lastYourTurnCue.current = null
+      prevTurnPlayerIdForCue.current = null
+      return
+    }
+
+    const turnPlayer = displayRoom.players[game.turnIndex]
+    if (!turnPlayer) return
+
+    const previousHolder = prevTurnPlayerIdForCue.current
+    const isMyRoll =
+      turnPlayer.id === userId &&
+      game.phase === 'roll' &&
+      !isAutoControlled(turnPlayer)
+
+    if (isMyRoll) {
+      const cueKey = `${game.turnIndex}:${game.turnDeadline ?? 0}`
+      if (lastYourTurnCue.current !== cueKey) {
+        lastYourTurnCue.current = cueKey
+        // Only after another player held the turn — skip match-open + own extra turns.
+        if (previousHolder !== null && previousHolder !== userId) {
+          playYourTurn()
+        }
+      }
+    }
+
+    if (prevTurnPlayerIdForCue.current !== turnPlayer.id) {
+      prevTurnPlayerIdForCue.current = turnPlayer.id
+    }
+  }, [
+    displayRoom?.status,
+    displayRoom?.game?.phase,
+    displayRoom?.game?.turnIndex,
+    displayRoom?.game?.turnDeadline,
+    displayRoom?.players,
+    userId,
+  ])
 
   useEffect(() => {
     const game = displayRoom?.game
@@ -818,6 +865,9 @@ function App() {
       dice,
       startedAt,
       targetProgress: movedToken.progress,
+      willCapture:
+        Boolean(nextRoom.game?.lastAction?.includes('captured')) ||
+        Boolean(nextRoom.game?.pendingPower?.captured),
     }
 
     setOptimisticRoom(nextRoom)
@@ -1367,6 +1417,28 @@ function App() {
                 {Math.floor(blitzSecondsLeft / 60)}:
                 {String(blitzSecondsLeft % 60).padStart(2, '0')}
               </strong>
+              {room.hostId === userId ? (
+                <button
+                  type="button"
+                  className="blitz-extend-button"
+                  disabled={busy}
+                  title="Add 5 minutes to the match clock"
+                  onClick={() => {
+                    void (async () => {
+                      setBusy(true)
+                      try {
+                        await extendBlitzTime(room.id, userId)
+                      } catch (error) {
+                        setError(error instanceof Error ? error.message : 'Could not add time.')
+                      } finally {
+                        setBusy(false)
+                      }
+                    })()
+                  }}
+                >
+                  +5 min
+                </button>
+              ) : null}
             </div>
           ) : null}
           {room.status === 'playing' && isBlitz ? (
@@ -1560,10 +1632,6 @@ function App() {
           <aside className="players-panel">
             <h2>Players</h2>
             {viewRoom.players.map((player, index) => {
-              const misses = viewRoom.game?.turnMisses?.[player.id] ?? 0
-              const missLimit = viewRoom.game
-                ? playerTurnMissLimit(viewRoom.game, player.id)
-                : MAX_TURN_MISSES
               const isHost = room.hostId === userId
               const hasShield = Boolean(viewRoom.game?.shieldBuff?.[player.id])
               return (
@@ -1598,12 +1666,10 @@ function App() {
                             .join(' · ') || 'Online'}
                     {isHost && player.rejoinCode ? ` · Seat ${player.rejoinCode}` : ''}
                     {hasShield ? ' · Shield' : ''}
-                    {misses > 0 ? ` · ${misses}/${missLimit} misses` : ''}
                   </small>
                 </div>
                 {isHost &&
                 !player.isBot &&
-                player.id !== userId &&
                 viewRoom.status === 'playing' ? (
                   <button
                     type="button"
@@ -1611,8 +1677,12 @@ function App() {
                     disabled={busy}
                     title={
                       player.autoPlay
-                        ? 'Cancel autoplay — they play manually again'
-                        : 'Autoplay for them while they are away'
+                        ? player.id === userId
+                          ? 'Cancel your autoplay — you play manually again'
+                          : 'Cancel autoplay — they play manually again'
+                        : player.id === userId
+                          ? 'Put yourself on autoplay'
+                          : 'Autoplay for them while they are away'
                     }
                     onClick={(event) => {
                       event.stopPropagation()
@@ -1627,22 +1697,6 @@ function App() {
                     }}
                   >
                     {player.autoPlay ? 'Cancel auto' : 'Autoplay'}
-                  </button>
-                ) : null}
-                {isHost && !player.isBot && viewRoom.status === 'playing' ? (
-                  <button
-                    type="button"
-                    className="slot-action player-boost"
-                    disabled={busy}
-                    title="Give +5 roll chances"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      void perform(async () => {
-                        await grantExtraTurnChances(room.id, userId, player.id, 5)
-                      })
-                    }}
-                  >
-                    +5
                   </button>
                 ) : null}
                 {isHost && player.id !== userId ? (
@@ -1828,6 +1882,7 @@ function App() {
                   <p className="power-rules-title">
                     <strong>Blitz mode:</strong> Quick-style board with a hard{' '}
                     {blitzDurationLabel(viewRoom.blitzDurationMs)} clock.
+                    Host can tap <strong>+5 min</strong> any time during the match.
                     When time hits zero the match ends instantly — highest score wins (not necessarily
                     who finished the most tokens first).
                   </p>
@@ -1873,8 +1928,7 @@ function App() {
                   <p>Three consecutive 6s lose the turn.</p>
                   <p>
                     Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or an auto-roll is made. Move within{' '}
-                    {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Default{' '}
-                    {MAX_TURN_MISSES} roll misses removes you; host can grant +5 and skip either wait.
+                    {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Host can skip either wait.
                   </p>
                   <p>First to get all tokens home wins. Reach home with an exact roll.</p>
                 </>
@@ -1895,8 +1949,7 @@ function App() {
                   <p>Three consecutive 6s lose the turn.</p>
                   <p>
                     Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or an auto-roll is made. Move within{' '}
-                    {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Default{' '}
-                    {MAX_TURN_MISSES} roll misses removes you; host can grant +5 and skip either wait.
+                    {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Host can skip either wait.
                   </p>
                   <p>Reach home with an exact roll.</p>
                 </>
@@ -1911,8 +1964,7 @@ function App() {
                   <p>Three consecutive 6s lose the turn.</p>
                   <p>
                     Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or an auto-roll is made. Move within{' '}
-                    {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Default{' '}
-                    {MAX_TURN_MISSES} roll misses removes you; host can grant +5 and skip either wait.
+                    {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Host can skip either wait.
                   </p>
                   <p>Reach home with an exact roll.</p>
                 </>
