@@ -185,10 +185,10 @@ function tokenDisplayRadius(
   const cellSize = geometry?.cellSize ?? (boardCount >= 7 ? 13 : 16)
 
   if (inYard) {
-    const yardFit = yardTokenRadius * 0.66
+    const yardFit = yardTokenRadius * 0.9
     if (!stacked) return yardFit
-    if (groupLength <= 4) return yardFit * 0.82
-    return yardFit * 0.65
+    if (groupLength <= 4) return yardFit * 0.88
+    return yardFit * 0.72
   }
 
   const cellFit = cellSize * 0.44
@@ -196,9 +196,9 @@ function tokenDisplayRadius(
     // Keep home tokens small enough to stay inside their center color wedge.
     const finishFit = Math.min(11, (geometry?.finishPolygon[0]
       ? Math.hypot(
-          geometry.finishPolygon[0].x - geometry.center.x,
-          geometry.finishPolygon[0].y - geometry.center.y,
-        ) * 0.11
+        geometry.finishPolygon[0].x - geometry.center.x,
+        geometry.finishPolygon[0].y - geometry.center.y,
+      ) * 0.11
       : 10))
     if (!stacked) return finishFit
     if (groupLength <= 4) return finishFit * 0.85
@@ -400,21 +400,53 @@ function SquareBoard({ room }: { room: Room }) {
   )
 }
 
+function PolygonPlayerLabels({
+  room,
+  geometry,
+}: {
+  room: Room
+  geometry: BoardGeometry
+}) {
+  const boardPlayers = allSeatPlayers(room)
+  const largeNgon = geometry.playerCount >= 5 && geometry.playerCount <= 7
+
+  return (
+    <g className="polygon-player-labels" pointerEvents="none">
+      {geometry.sectors.map((sector) => {
+        const player = boardPlayers.find((candidate) => candidate.seat === sector.seat)
+        if (!player) return null
+        const departed = (room.departedPlayers ?? []).some(
+          (candidate) => candidate.id === player.id,
+        )
+        return (
+          <text
+            key={player.id}
+            x={sector.labelPoint.x}
+            y={sector.labelPoint.y + 4}
+            textAnchor="middle"
+            className={`player-label ${largeNgon ? 'large-ngon-label' : ''} ${departed ? 'departed-label' : ''}`}
+          >
+            {departed ? `${player.name} (left)` : player.name}
+          </text>
+        )
+      })}
+    </g>
+  )
+}
+
 function PolygonBoard({ room, geometry }: { room: Room; geometry: BoardGeometry }) {
   const count = geometry.playerCount
   const boardPlayers = allSeatPlayers(room)
-  const isFive = count === 5
-  const isSix = count === 6
+  const largeNgon = count >= 5 && count <= 7
   const safe = safeCells(room)
-  const boardClass = isSix ? 'six-board-bg' : isFive ? 'five-board-bg' : ''
-  const sectorClass = isSix ? 'six-sector' : isFive ? 'five-sector' : ''
-  const yardClass = isSix ? 'six-yard' : isFive ? 'five-yard' : ''
-  const yardSlotClass = isSix ? 'six-yard-slot' : isFive ? 'five-yard-slot' : ''
-  const trackCellClass = isSix ? 'six-track-cell' : isFive ? 'five-track-cell' : ''
-  const homeCellClass = isSix ? 'six-home-cell' : isFive ? 'five-home-cell' : ''
-  const starClass = isSix ? 'six-star' : isFive ? 'five-star' : ''
-  const labelClass = isSix ? 'six-player-label' : isFive ? 'five-player-label' : ''
-  const finishClass = isSix ? 'six-finish-sector' : 'five-finish-sector'
+  const boardClass = largeNgon ? 'large-ngon-bg' : ''
+  const sectorClass = largeNgon ? 'large-ngon-sector' : ''
+  const yardClass = largeNgon ? 'large-ngon-yard' : ''
+  const yardSlotClass = largeNgon ? 'large-ngon-yard-slot' : ''
+  const trackCellClass = largeNgon ? 'large-ngon-track-cell' : ''
+  const homeCellClass = largeNgon ? 'large-ngon-home-cell' : ''
+  const starClass = largeNgon ? 'large-ngon-star' : ''
+  const finishClass = largeNgon ? 'large-ngon-finish-sector' : 'five-finish-sector'
   const cell = geometry.cellSize
 
   return (
@@ -425,15 +457,12 @@ function PolygonBoard({ room, geometry }: { room: Room; geometry: BoardGeometry 
       />
       <polygon
         points={pointList(geometry.trackFieldPolygon)}
-        className={isSix ? 'six-track-field' : isFive ? 'five-track-field' : 'radial-track-field'}
+        className={largeNgon ? 'large-ngon-track-field' : 'radial-track-field'}
       />
 
       {geometry.sectors.map((sector) => {
         const player = boardPlayers.find((candidate) => candidate.seat === sector.seat)
         if (!player) return null
-        const departed = (room.departedPlayers ?? []).some(
-          (candidate) => candidate.id === player.id,
-        )
         const place = room.game
           ? room.game.winnerIds.indexOf(player.id) + 1
           : 0
@@ -453,7 +482,7 @@ function PolygonBoard({ room, geometry }: { room: Room; geometry: BoardGeometry 
                 <circle
                   cx={sector.rankPoint.x}
                   cy={sector.rankPoint.y}
-                  r={count >= 7 ? 14 : 18}
+                  r={largeNgon ? 18 : 14}
                   fill={resolveColorHex(player.color)}
                 />
                 <text
@@ -477,14 +506,6 @@ function PolygonBoard({ room, geometry }: { room: Room; geometry: BoardGeometry 
                 className={`yard-slot ${yardSlotClass}`}
               />
             ))}
-            <text
-              x={sector.labelPoint.x}
-              y={sector.labelPoint.y + 4}
-              textAnchor="middle"
-              className={`player-label ${labelClass} ${departed ? 'departed-label' : ''}`}
-            >
-              {departed ? `${player.name} (left)` : player.name}
-            </text>
             {sector.homeLane.map((lane, index) => (
               <rect
                 key={`home-${index}`}
@@ -580,8 +601,7 @@ export function LudoBoard({
 }: Props) {
   const boardCount = boardSeatCount(room)
   const isSquare = boardCount === 4
-  const isFive = boardCount === 5
-  const isSix = boardCount === 6
+  const largeNgon = boardCount >= 5 && boardCount <= 7
   const geometry = useMemo(
     () =>
       isSquare
@@ -673,7 +693,7 @@ export function LudoBoard({
   })
 
   return (
-    <div className={`board-wrap ${isSquare ? 'square' : 'radial'} ${isFive ? 'five-player-board' : ''} ${isSix ? 'six-player-board' : ''}`}>
+    <div className={`board-wrap ${isSquare ? 'square' : 'radial'} ${largeNgon ? 'large-ngon-board' : ''}`}>
       <svg
         className="ludo-board"
         viewBox={`0 0 ${geometry?.size ?? SIZE} ${geometry?.size ?? SIZE}`}
@@ -774,6 +794,9 @@ export function LudoBoard({
               </g>
             )
           })}
+        {!isSquare && geometry ? (
+          <PolygonPlayerLabels room={room} geometry={geometry} />
+        ) : null}
       </svg>
     </div>
   )

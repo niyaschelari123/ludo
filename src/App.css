@@ -355,7 +355,7 @@ select:focus {
   color: #94a3b8;
 }
 
-.reclaim-panel > p {
+.reclaim-panel>p {
   margin: 0 0 10px;
   font-size: 11px;
   color: #7c8aa5;
@@ -1110,9 +1110,9 @@ select:focus {
   color: #ecfeff;
 }
 
-.player-row .player-autoplay + .player-boost,
-.player-row .player-autoplay + .player-remove,
-.player-row .player-boost + .player-remove {
+.player-row .player-autoplay+.player-boost,
+.player-row .player-autoplay+.player-remove,
+.player-row .player-boost+.player-remove {
   margin-left: 0;
 }
 
@@ -1231,12 +1231,8 @@ select:focus {
   stroke-width: 3;
 }
 
-.six-player-board {
-  width: min(92vh, 100%);
-}
-
-.five-player-board {
-  width: min(92vh, 100%);
+.large-ngon-board {
+  width: min(96vh, 100%);
 }
 
 .pentagon-finish-ring {
@@ -1247,24 +1243,21 @@ select:focus {
   pointer-events: none;
 }
 
-.five-track-field,
-.six-track-field {
+.large-ngon-track-field {
   fill: #fff8f0;
   stroke: #334155;
   stroke-width: 2.25;
   stroke-linejoin: round;
 }
 
-.five-sector,
-.six-sector {
+.large-ngon-sector {
   stroke: #fff;
   stroke-width: 3.5;
   stroke-linejoin: round;
   filter: saturate(1.1);
 }
 
-.five-board-bg,
-.six-board-bg {
+.large-ngon-bg {
   fill: #f1f5f9;
   stroke: #07152d;
   stroke-width: 8;
@@ -1277,50 +1270,43 @@ select:focus {
   stroke-width: 2;
 }
 
-.five-yard,
-.six-yard {
+.large-ngon-yard {
   stroke: rgba(15, 23, 42, .42);
   stroke-width: 2.5;
   stroke-linejoin: round;
   filter: drop-shadow(0 3px 2px rgba(15, 23, 42, .18));
 }
 
-.five-yard-slot,
-.six-yard-slot {
+.large-ngon-yard-slot {
   stroke-width: 4;
   filter: drop-shadow(0 2px 2px rgba(15, 23, 42, .25));
 }
 
-.five-track-cell,
-.six-track-cell {
+.large-ngon-track-cell {
   stroke: #334155;
   stroke-width: 1.85;
   filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.2));
 }
 
-.five-home-cell,
-.six-home-cell {
+.large-ngon-home-cell {
   stroke: #fff;
   stroke-width: 1.5;
   filter: drop-shadow(0 1px 1px rgba(15, 23, 42, .2));
 }
 
-.five-star,
-.six-star {
+.large-ngon-star {
   fill: #334155;
   font-size: 10px;
   stroke-width: 1.5px;
 }
 
-.five-finish-sector,
-.six-finish-sector {
+.large-ngon-finish-sector {
   stroke: #fff;
   stroke-width: 2;
   stroke-linejoin: round;
 }
 
-.five-player-label,
-.six-player-label {
+.large-ngon-label {
   font-size: 11px;
   stroke-width: 3px;
 }
@@ -1733,11 +1719,9 @@ select:focus {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--player) 70%, #fbbf24),
-    var(--player, #fbbf24)
-  );
+  background: linear-gradient(90deg,
+      color-mix(in srgb, var(--player) 70%, #fbbf24),
+      var(--player, #fbbf24));
 }
 
 .win-odds-pct {
@@ -2744,8 +2728,15 @@ select:focus {
 }
 
 @keyframes blitz-pulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.04); }
+
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.04);
+  }
 }
 
 .blitz-score-rules {
@@ -3081,16 +3072,18 @@ select:focus {
   stroke: #38bdf8;
   stroke-width: 2;
   filter:
-    drop-shadow(0 0 2px rgba(56, 189, 248, .95))
-    drop-shadow(0 0 3px rgba(37, 99, 235, .65));
+    drop-shadow(0 0 2px rgba(56, 189, 248, .95)) drop-shadow(0 0 3px rgba(37, 99, 235, .65));
   pointer-events: none;
   animation: shield-small-glow 1.4s ease-in-out infinite;
 }
 
 @keyframes shield-small-glow {
-  0%, 100% {
+
+  0%,
+  100% {
     opacity: .65;
   }
+
   50% {
     opacity: 1;
     stroke: #7dd3fc;
@@ -3129,9 +3122,8 @@ select:focus {
   fill: #fecaca;
 }
 
-.board-wrap.five-player-board,
-.board-wrap.six-player-board {
-  width: min(92vh, 100%);
+.board-wrap.large-ngon-board {
+  width: min(96vh, 100%);
 }
 
 .board-preview-screen .preview-layout {
@@ -3162,13 +3154,11 @@ select:focus {
 }
 
 @media (max-width: 768px) {
-  .board-wrap.five-player-board,
-  .board-wrap.six-player-board {
+  .board-wrap.large-ngon-board {
     width: min(100vw - 8px, calc(100vh - 140px));
   }
 
-  .board-preview-screen .board-wrap.five-player-board,
-  .board-preview-screen .board-wrap.six-player-board {
+  .board-preview-screen .board-wrap.large-ngon-board {
     width: min(100vw - 4px, calc(100vh - 108px));
   }
 
@@ -3176,8 +3166,7 @@ select:focus {
     display: none;
   }
 
-  .game-center:has(.five-player-board),
-  .game-center:has(.six-player-board) {
+  .game-center:has(.large-ngon-board) {
     padding: 8px 2px;
   }
 }
@@ -3217,7 +3206,6 @@ select:focus {
   width: min(100%, 720px);
 }
 
-.board-wrap.five-player-board .ludo-board,
-.board-wrap.six-player-board .ludo-board {
+.board-wrap.large-ngon-board .ludo-board {
   filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.35));
 }

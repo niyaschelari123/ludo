@@ -136,7 +136,7 @@ function queueRollHint(roomId: string, playerId: string, dice: number) {
 
 const roomCode = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(6)))
-    .map((value) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[value % 32])
+    .map((value) => '0123456789'[value % 10])
     .join('')
 
 const seatCode = () =>

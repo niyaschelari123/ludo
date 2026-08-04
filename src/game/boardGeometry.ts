@@ -1,11 +1,9 @@
 /**
  * Programmatic N-player polygonal Ludo board geometry.
  *
- * For N = 5 this produces a Ludo-King-style regular pentagon board;
- * for N = 6 a matching hexagonal board. Both use large triangular home
- * bases at the vertices, a continuous track along the polygon edges
- * (not a circle), home lanes into a compact central N-gon divided into
- * N equal finish sectors.
+ * For N = 5–7 this produces large-box polygonal boards (pentagon / hexagon /
+ * heptagon) in the same visual language: big path cells, edge meanders, and
+ * triangular homes at the vertices with a compact central finish N-gon.
  *
  * Cell indices match the rules engine: seat S starts at S * CELLS_PER_PLAYER,
  * which lands on vertex S of the track polygon.
@@ -17,8 +15,10 @@ export const BOARD_CENTER = BOARD_SIZE / 2
 
 /** Larger canvas for N-gon boards so path cells can sit without overlap. */
 export function boardCanvasSize(playerCount: number) {
-  if (playerCount === 5) return 1200
-  if (playerCount === 6) return 1280
+  if (playerCount === 5) return 1480
+  // Extra room so 6p track boxes can grow without crushing corner homes.
+  if (playerCount === 6) return 1620
+  if (playerCount === 7) return 1900
   return BOARD_SIZE
 }
 
@@ -210,57 +210,64 @@ type ProportionSet = {
 }
 
 function proportionsFor(playerCount: number, size: number): ProportionSet {
-  // Ludo-King style: large path boxes + edge meanders (soft turns).
-  if (playerCount === 5 || playerCount === 6) {
+  // 5 / 6 / 7: same large path-box language (big cells, edge meander, tip labels).
+  if (playerCount === 5 || playerCount === 6 || playerCount === 7) {
     const n = playerCount
-    const cellSize = playerCount === 5 ? 42 : 40
-    // Base spacing a bit under cell size; meander adds the rest of the gap.
-    const baseSpacing = cellSize * 0.82
+    const cellSize = 52
+    // Center-to-center along the edge stays ≥ cell size so rects never overlap.
+    const baseSpacing = cellSize * 0.96
     const trackRadius = Math.ceil(
       (baseSpacing * (n * CELLS_PER_PLAYER)) /
         (2 * n * Math.sin(Math.PI / n)) +
-        10,
+        14,
     )
-    const trackMeander = cellSize * 0.38
-    const trackFieldRadius = trackRadius + cellSize * 0.85 + trackMeander
+    const trackMeander = cellSize * 0.3
+    const trackFieldRadius = trackRadius + cellSize * 0.78 + trackMeander
     const homeInnerRadius = trackFieldRadius
-    const outerRadius = size / 2 - 12
-    const finishRadius = playerCount === 5 ? 88 : 96
+    const outerRadius = size / 2 - 14
+    // Large center finish hub (same visual weight across 5 / 6 / 7).
+    const finishRadius = n === 5 ? 180 : n === 6 ? 190 : 200
+    // Keep a tip band outside the yard so player names stay on the colored home.
+    const yardRadialSpan = 26
+    const tipBand = 30
+    const yardRadius = outerRadius - tipBand - yardRadialSpan
     return {
       outerRadius,
       homeInnerRadius,
       trackRadius,
       trackFieldRadius,
-      yardRadius: (outerRadius + homeInnerRadius) / 2 + 8,
-      yardRadialSpan: playerCount === 5 ? 26 : 28,
-      yardTangentSpan: playerCount === 5 ? 30 : 32,
-      homeLaneStart: trackRadius - trackMeander - cellSize * 0.55,
-      homeLaneStep: cellSize * 0.88,
+      yardRadius,
+      yardRadialSpan,
+      yardTangentSpan: 96,
+      // Keep first home cell fully inside the track ring (no overlap with entry).
+      homeLaneStart: trackRadius - cellSize * 1.15,
+      homeLaneStep: cellSize * 0.9,
       finishRadius,
-      labelRadius: outerRadius - 14,
-      rankRadius: homeInnerRadius + (outerRadius - homeInnerRadius) * 0.42,
+      labelRadius: outerRadius - tipBand / 2,
+      rankRadius: homeInnerRadius + (outerRadius - homeInnerRadius) * 0.4,
       cellSize,
-      yardTokenRadius: 14,
-      homeEdgeSpan: playerCount === 5 ? 0.22 : 0.24,
+      yardTokenRadius: 22,
+      homeEdgeSpan: 0.23,
       trackMeander,
     }
   }
-  // Generic N ≥ 7 fallback (still true N-gon edge track).
+
+  // Generic N ≥ 8 fallback (still true N-gon edge track).
   return {
     outerRadius: size / 2 - 10,
     homeInnerRadius: 170,
     trackRadius: 168,
     trackFieldRadius: 188,
     yardRadius: 250,
-    yardRadialSpan: 22,
-    yardTangentSpan: 26,
+    yardRadialSpan: 20,
+    yardTangentSpan: 70,
     homeLaneStart: 140,
     homeLaneStep: 14,
     finishRadius: 46,
     labelRadius: size / 2 - 22,
     rankRadius: 210,
-    cellSize: playerCount >= 7 ? 12 : 15,
-    yardTokenRadius: playerCount >= 7 ? 11 : 13,
+    cellSize: 12,
+    yardTokenRadius: 14,
     homeEdgeSpan: 0.32,
     trackMeander: 0,
   }
@@ -269,22 +276,19 @@ function proportionsFor(playerCount: number, size: number): ProportionSet {
 function yardSlotsForSector(
   angle: number,
   yardRadius: number,
-  radialSpan: number,
+  _radialSpan: number,
   tangentSpan: number,
   center: Point,
 ): Point[] {
   const origin = polar(yardRadius, angle, center)
-  const cos = Math.cos(angle)
-  const sin = Math.sin(angle)
-  const offsets: Array<[number, number]> = [
-    [-tangentSpan * 0.5, -radialSpan * 0.45],
-    [tangentSpan * 0.5, -radialSpan * 0.45],
-    [-tangentSpan * 0.5, radialSpan * 0.45],
-    [tangentSpan * 0.5, radialSpan * 0.45],
-  ]
-  return offsets.map(([tangent, radial]) => ({
-    x: origin.x + cos * radial - sin * tangent,
-    y: origin.y + sin * radial + cos * tangent,
+  // Single row across the home (tangent). Keep outer slots inside the nest
+  // so token radius can grow without clipping the yard polygon.
+  const halfRow = tangentSpan * 0.72
+  const spacing = (2 * halfRow) / 3
+  const offsets = [-1.5, -0.5, 0.5, 1.5].map((k) => k * spacing)
+  return offsets.map((t) => ({
+    x: origin.x - Math.sin(angle) * t,
+    y: origin.y + Math.cos(angle) * t,
   }))
 }
 
@@ -443,7 +447,7 @@ export function generatePolygonBoardGeometry(
 const geometryCache = new Map<string, BoardGeometry>()
 
 /** Bump when proportions change so HMR does not reuse stale layouts. */
-const GEOMETRY_REVISION = 7
+const GEOMETRY_REVISION = 15
 
 export function getPolygonBoardGeometry(
   playerCount: number,

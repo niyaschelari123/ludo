@@ -365,7 +365,7 @@ function App() {
     if (!profile?.color) return
     void claimColor(profile.accountId, profile.color)
       .then(setColorClaims)
-      .catch(() => {})
+      .catch(() => { })
   }, [profile?.accountId, profile?.color])
 
   movingTokenRef.current = movingToken
@@ -1351,13 +1351,13 @@ function App() {
   }
   const activeRanking = viewRoom.game
     ? [...viewRoom.players].sort((first, second) => {
-        const firstPlace = viewRoom.game!.winnerIds.indexOf(first.id)
-        const secondPlace = viewRoom.game!.winnerIds.indexOf(second.id)
-        return (
-          (firstPlace === -1 ? Number.MAX_SAFE_INTEGER : firstPlace) -
-          (secondPlace === -1 ? Number.MAX_SAFE_INTEGER : secondPlace)
-        )
-      }).map((player) => ({ ...player, leftEarly: false as const }))
+      const firstPlace = viewRoom.game!.winnerIds.indexOf(first.id)
+      const secondPlace = viewRoom.game!.winnerIds.indexOf(second.id)
+      return (
+        (firstPlace === -1 ? Number.MAX_SAFE_INTEGER : firstPlace) -
+        (secondPlace === -1 ? Number.MAX_SAFE_INTEGER : secondPlace)
+      )
+    }).map((player) => ({ ...player, leftEarly: false as const }))
     : []
   const departedRanking = [...(viewRoom.departedPlayers ?? [])]
     .sort((first, second) => second.leftAt - first.leftAt)
@@ -1408,8 +1408,8 @@ function App() {
   const showWorst =
     Boolean(
       worstPlayer &&
-        motm &&
-        worstPlayer.player.id !== motm.player.id,
+      motm &&
+      worstPlayer.player.id !== motm.player.id,
     )
 
   const bannerAction =
@@ -1698,100 +1698,101 @@ function App() {
               const isHost = room.hostId === userId
               const hasShield = Boolean(viewRoom.game?.shieldBuff?.[player.id])
               return (
-              <div
-                key={player.id}
-                className={`player-row ${playerColorClass(player.color)} ${viewRoom.game?.turnIndex === index ? 'active' : ''} ${hasShield ? 'has-shield' : ''}`}
-                style={playerColorStyle(player.color)}
-              >
-                <div className="player-row-main">
-                <span className="avatar">{player.name[0].toUpperCase()}</span>
-                <div>
-                  <strong>
-                    {player.name}
-                    {hasShield ? (
-                      <span className="shield-badge" title="Shield active — next capture blocked">
-                        🛡
-                      </span>
+                <div
+                  key={player.id}
+                  className={`player-row ${playerColorClass(player.color)} ${viewRoom.game?.turnIndex === index ? 'active' : ''} ${hasShield ? 'has-shield' : ''}`}
+                  style={playerColorStyle(player.color)}
+                >
+                  <div className="player-row-main">
+                    <span className="avatar">{player.name[0].toUpperCase()}</span>
+                    <div>
+                      <strong>
+                        {player.name}
+                        {hasShield ? (
+                          <span className="shield-badge" title="Shield active — next capture blocked">
+                            🛡
+                          </span>
+                        ) : null}
+                      </strong>
+                      <small>
+                        {isBlitz
+                          ? `${blitzScores.find((entry) => entry.player.id === player.id)?.breakdown.total ?? 0} pts`
+                          : viewRoom.game?.winnerIds.includes(player.id)
+                            ? `Finished #${viewRoom.game.winnerIds.indexOf(player.id) + 1}`
+                            : player.isBot
+                              ? 'Bot'
+                              : [
+                                player.id === userId ? 'You' : null,
+                                player.autoPlay ? 'Autoplay' : player.id === userId ? null : 'Online',
+                              ]
+                                .filter(Boolean)
+                                .join(' · ') || 'Online'}
+                        {isHost && player.rejoinCode ? ` · Seat ${player.rejoinCode}` : ''}
+                        {hasShield ? ' · Shield' : ''}
+                      </small>
+                    </div>
+                    {isHost &&
+                      !player.isBot &&
+                      viewRoom.status === 'playing' ? (
+                      <button
+                        type="button"
+                        className={`slot-action player-autoplay ${player.autoPlay ? 'active' : ''}`}
+                        disabled={busy}
+                        title={
+                          player.autoPlay
+                            ? player.id === userId
+                              ? 'Cancel your autoplay — you play manually again'
+                              : 'Cancel autoplay — they play manually again'
+                            : player.id === userId
+                              ? 'Put yourself on autoplay'
+                              : 'Autoplay for them while they are away'
+                        }
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void perform(async () => {
+                            await setPlayerAutoPlay(
+                              room.id,
+                              userId,
+                              player.id,
+                              !player.autoPlay,
+                            )
+                          })
+                        }}
+                      >
+                        {player.autoPlay ? 'Cancel auto' : 'Autoplay'}
+                      </button>
                     ) : null}
-                  </strong>
-                  <small>
-                    {isBlitz
-                      ? `${blitzScores.find((entry) => entry.player.id === player.id)?.breakdown.total ?? 0} pts`
-                      : viewRoom.game?.winnerIds.includes(player.id)
-                      ? `Finished #${viewRoom.game.winnerIds.indexOf(player.id) + 1}`
-                      : player.isBot
-                        ? 'Bot'
-                        : [
-                            player.id === userId ? 'You' : null,
-                            player.autoPlay ? 'Autoplay' : player.id === userId ? null : 'Online',
-                          ]
-                            .filter(Boolean)
-                            .join(' · ') || 'Online'}
-                    {isHost && player.rejoinCode ? ` · Seat ${player.rejoinCode}` : ''}
-                    {hasShield ? ' · Shield' : ''}
-                  </small>
+                    {isHost && player.id !== userId ? (
+                      <button
+                        type="button"
+                        className="slot-action player-remove"
+                        disabled={busy}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setRemoveConfirm({
+                            id: player.id,
+                            name: player.name,
+                            kind: 'player',
+                          })
+                        }}
+                      >
+                        Remove
+                      </button>
+                    ) : null}
+                  </div>
+                  {canPickRollFor(player.id) ? (
+                    <FaceStrip
+                      compact
+                      selected={rollPicks[player.id]}
+                      onPick={(value) => void pickForPlayer(player.id, value)}
+                    />
+                  ) : null}
                 </div>
-                {isHost &&
-                !player.isBot &&
-                viewRoom.status === 'playing' ? (
-                  <button
-                    type="button"
-                    className={`slot-action player-autoplay ${player.autoPlay ? 'active' : ''}`}
-                    disabled={busy}
-                    title={
-                      player.autoPlay
-                        ? player.id === userId
-                          ? 'Cancel your autoplay — you play manually again'
-                          : 'Cancel autoplay — they play manually again'
-                        : player.id === userId
-                          ? 'Put yourself on autoplay'
-                          : 'Autoplay for them while they are away'
-                    }
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      void perform(async () => {
-                        await setPlayerAutoPlay(
-                          room.id,
-                          userId,
-                          player.id,
-                          !player.autoPlay,
-                        )
-                      })
-                    }}
-                  >
-                    {player.autoPlay ? 'Cancel auto' : 'Autoplay'}
-                  </button>
-                ) : null}
-                {isHost && player.id !== userId ? (
-                  <button
-                    type="button"
-                    className="slot-action player-remove"
-                    disabled={busy}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      setRemoveConfirm({
-                        id: player.id,
-                        name: player.name,
-                        kind: 'player',
-                      })
-                    }}
-                  >
-                    Remove
-                  </button>
-                ) : null}
-                </div>
-                {canPickRollFor(player.id) ? (
-                  <FaceStrip
-                    compact
-                    selected={rollPicks[player.id]}
-                    onPick={(value) => void pickForPlayer(player.id, value)}
-                  />
-                ) : null}
-              </div>
-            )})}
+              )
+            })}
             {room.hostId === userId &&
-            viewRoom.status === 'playing' &&
-            (viewRoom.departedPlayers ?? []).some((player) => player.reclaimable) ? (
+              viewRoom.status === 'playing' &&
+              (viewRoom.departedPlayers ?? []).some((player) => player.reclaimable) ? (
               <div className="reclaim-panel">
                 <h3>Left seats</h3>
                 <p>Share room + seat code to reclaim at the same spot.</p>
@@ -1836,8 +1837,8 @@ function App() {
               <strong>{isMyTurn ? 'Your turn' : `${currentPlayer?.name}'s turn`}</strong>
               <span>{bannerAction}</span>
               {turnSecondsLeft !== null &&
-              (viewRoom.game?.phase === 'roll' || viewRoom.game?.phase === 'move') &&
-              !isAutoControlled(currentPlayer) ? (
+                (viewRoom.game?.phase === 'roll' || viewRoom.game?.phase === 'move') &&
+                !isAutoControlled(currentPlayer) ? (
                 <span className={`turn-timer ${turnSecondsLeft <= 5 ? 'urgent' : ''}`}>
                   {viewRoom.game?.phase === 'roll' ? 'Roll' : 'Move'} within {turnSecondsLeft}s
                 </span>
@@ -1869,11 +1870,10 @@ function App() {
             ) : viewRoom.game?.phase === 'power' ? (
               <p className="action-hint">
                 {viewRoom.game.pendingPower
-                  ? `Waiting for ${
-                      viewRoom.players.find(
-                        (player) => player.id === viewRoom.game!.pendingPower!.playerId,
-                      )?.name ?? currentPlayer?.name ?? 'player'
-                    }'s power…`
+                  ? `Waiting for ${viewRoom.players.find(
+                    (player) => player.id === viewRoom.game!.pendingPower!.playerId,
+                  )?.name ?? currentPlayer?.name ?? 'player'
+                  }'s power…`
                   : 'Power tile activating…'}
               </p>
             ) : isMyTurn ? (
@@ -1886,10 +1886,10 @@ function App() {
               </p>
             )}
             {room.hostId === userId &&
-            viewRoom.status === 'playing' &&
-            viewRoom.game?.phase === 'roll' &&
-            currentPlayer &&
-            !isAutoControlled(currentPlayer) ? (
+              viewRoom.status === 'playing' &&
+              viewRoom.game?.phase === 'roll' &&
+              currentPlayer &&
+              !isAutoControlled(currentPlayer) ? (
               <button
                 type="button"
                 className="secondary-button skip-move-timer"
@@ -1904,10 +1904,10 @@ function App() {
               </button>
             ) : null}
             {room.hostId === userId &&
-            viewRoom.status === 'playing' &&
-            viewRoom.game?.phase === 'move' &&
-            currentPlayer &&
-            !isAutoControlled(currentPlayer) ? (
+              viewRoom.status === 'playing' &&
+              viewRoom.game?.phase === 'move' &&
+              currentPlayer &&
+              !isAutoControlled(currentPlayer) ? (
               <button
                 type="button"
                 className="secondary-button skip-move-timer"
@@ -1922,9 +1922,9 @@ function App() {
               </button>
             ) : null}
             {room.hostId === userId &&
-            viewRoom.status === 'playing' &&
-            viewRoom.game?.phase === 'power' &&
-            viewRoom.game.pendingPower ? (
+              viewRoom.status === 'playing' &&
+              viewRoom.game?.phase === 'power' &&
+              viewRoom.game.pendingPower ? (
               <button
                 type="button"
                 className="secondary-button skip-move-timer"
@@ -1981,8 +1981,8 @@ function App() {
                         onClick={() => {
                           setBlitzBreakdownTabId(
                             blitzScores.find((entry) => entry.player.id === userId)?.player.id
-                              ?? blitzScores[0]?.player.id
-                              ?? null,
+                            ?? blitzScores[0]?.player.id
+                            ?? null,
                           )
                           setBlitzBreakdownOpen(true)
                         }}
@@ -2112,9 +2112,8 @@ function App() {
                   type="button"
                   role="tab"
                   aria-selected={blitzBreakdownTabId === entry.player.id}
-                  className={`blitz-breakdown-tab ${playerColorClass(entry.player.color)} ${
-                    blitzBreakdownTabId === entry.player.id ? 'active' : ''
-                  }`}
+                  className={`blitz-breakdown-tab ${playerColorClass(entry.player.color)} ${blitzBreakdownTabId === entry.player.id ? 'active' : ''
+                    }`}
                   style={playerColorStyle(entry.player.color)}
                   onClick={() => setBlitzBreakdownTabId(entry.player.id)}
                 >
@@ -2134,43 +2133,43 @@ function App() {
                 points: number
                 negative?: boolean
               }> = [
-                {
-                  label: 'Tokens home',
-                  detail: `${stats.tokensHome} × +15`,
-                  points: breakdown.tokensHome,
-                },
-                {
-                  label: 'Eliminations',
-                  detail: `${stats.captures} × +5`,
-                  points: breakdown.eliminations,
-                },
-                {
-                  label: 'Times eliminated',
-                  detail: `${stats.eliminated} × −3`,
-                  points: -breakdown.eliminatedPenalty,
-                  negative: true,
-                },
-                {
-                  label: 'Sixes rolled',
-                  detail: `${stats.sixes} × +1`,
-                  points: breakdown.sixes,
-                },
-                {
-                  label: 'Board progress',
-                  detail: 'Unfinished tokens (+0–8 each)',
-                  points: breakdown.boardProgress,
-                },
-                {
-                  label: 'All home bonus',
-                  detail: 'All 4 tokens finished',
-                  points: breakdown.allHomeBonus,
-                },
-                {
-                  label: 'Lead token bonus',
-                  detail: 'Farthest token on board',
-                  points: breakdown.leadTokenBonus,
-                },
-              ]
+                  {
+                    label: 'Tokens home',
+                    detail: `${stats.tokensHome} × +15`,
+                    points: breakdown.tokensHome,
+                  },
+                  {
+                    label: 'Eliminations',
+                    detail: `${stats.captures} × +5`,
+                    points: breakdown.eliminations,
+                  },
+                  {
+                    label: 'Times eliminated',
+                    detail: `${stats.eliminated} × −3`,
+                    points: -breakdown.eliminatedPenalty,
+                    negative: true,
+                  },
+                  {
+                    label: 'Sixes rolled',
+                    detail: `${stats.sixes} × +1`,
+                    points: breakdown.sixes,
+                  },
+                  {
+                    label: 'Board progress',
+                    detail: 'Unfinished tokens (+0–8 each)',
+                    points: breakdown.boardProgress,
+                  },
+                  {
+                    label: 'All home bonus',
+                    detail: 'All 4 tokens finished',
+                    points: breakdown.allHomeBonus,
+                  },
+                  {
+                    label: 'Lead token bonus',
+                    detail: 'Farthest token on board',
+                    points: breakdown.leadTokenBonus,
+                  },
+                ]
               return (
                 <div className="blitz-breakdown-body">
                   <p className="blitz-breakdown-player">
