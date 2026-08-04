@@ -29,6 +29,21 @@ export const INITIAL_ACCOUNT_WINS: Record<string, number> = {
   'acct:vivek': 0,
 }
 
+/**
+ * Starting MotM career counts (seeded when `motm` is absent).
+ * Anfah / Amal (Amaljith) / Niyas start at 1.
+ */
+export const INITIAL_ACCOUNT_MOTM: Record<string, number> = {
+  'acct:niyas': 1,
+  'acct:amaljith': 1,
+  'acct:anfah': 1,
+  'acct:anjal': 0,
+  'acct:joji': 0,
+  'acct:suhail': 0,
+  'acct:vishnu': 0,
+  'acct:vivek': 0,
+}
+
 export type LoginPin = keyof typeof LOGIN_ACCOUNTS
 
 export type UserProfile = {

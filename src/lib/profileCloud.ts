@@ -13,13 +13,20 @@ import {
 import { signInAnonymously } from 'firebase/auth'
 import { auth, db, isFirebaseConfigured } from '../firebase'
 import type { UserProfile } from './profile'
-import { INITIAL_ACCOUNT_WINS, LOGIN_ACCOUNTS, isLoginAccountId } from './profile'
+import {
+  INITIAL_ACCOUNT_MOTM,
+  INITIAL_ACCOUNT_WINS,
+  LOGIN_ACCOUNTS,
+  isLoginAccountId,
+} from './profile'
+import type { Room } from '../game/types'
 
 export type CareerBoardEntry = {
   accountId: string
   name: string
   color: string
   wins: number
+  motm: number
 }
 
 async function ensureAnonymousAuth() {
@@ -38,6 +45,7 @@ export type CloudProfile = {
   name: string
   color: string
   wins: number
+  motm: number
 }
 
 function readWins(data: Partial<CloudProfile> | undefined, accountId: string) {
@@ -47,7 +55,30 @@ function readWins(data: Partial<CloudProfile> | undefined, accountId: string) {
   return INITIAL_ACCOUNT_WINS[accountId] ?? 0
 }
 
-/** Load name/color/wins for an account from Firestore (never stores PIN). */
+function readMotm(data: Partial<CloudProfile> | undefined, accountId: string) {
+  if (typeof data?.motm === 'number' && Number.isFinite(data.motm) && data.motm >= 0) {
+    return Math.floor(data.motm)
+  }
+  return INITIAL_ACCOUNT_MOTM[accountId] ?? 0
+}
+
+/** How many distinct logged-in humans played in this room (incl. departed). */
+export function countLoginPlayersInMatch(room: Room): number {
+  const ids = new Set<string>()
+  for (const player of [...room.players, ...(room.departedPlayers ?? [])]) {
+    if (player.isBot) continue
+    if (!isLoginAccountId(player.id)) continue
+    ids.add(player.id)
+  }
+  return ids.size
+}
+
+/** Career win/MotM only count when ≥3 login accounts were in the match. */
+export function isCareerEligibleMatch(room: Room): boolean {
+  return countLoginPlayersInMatch(room) >= 3
+}
+
+/** Load name/color/wins/motm for an account from Firestore (never stores PIN). */
 export async function fetchCloudProfile(
   accountId: string,
 ): Promise<CloudProfile | null> {
@@ -58,7 +89,7 @@ export async function fetchCloudProfile(
     const snap = await getDoc(ref)
     if (!snap.exists()) {
       const wins = INITIAL_ACCOUNT_WINS[accountId] ?? 0
-      // Seed wins so lobby counts are ready before first save.
+      const motm = INITIAL_ACCOUNT_MOTM[accountId] ?? 0
       await setDoc(
         ref,
         {
@@ -66,22 +97,28 @@ export async function fetchCloudProfile(
           name: '',
           color: '',
           wins,
+          motm,
           updatedAt: serverTimestamp(),
         },
         { merge: true },
       )
-      return { accountId, name: '', color: '', wins }
+      return { accountId, name: '', color: '', wins, motm }
     }
     const data = snap.data() as Partial<CloudProfile>
     const wins = readWins(data, accountId)
-    if (typeof data.wins !== 'number') {
-      await setDoc(ref, { wins, accountId }, { merge: true })
+    const motm = readMotm(data, accountId)
+    const patch: Record<string, unknown> = { accountId }
+    if (typeof data.wins !== 'number') patch.wins = wins
+    if (typeof data.motm !== 'number') patch.motm = motm
+    if (Object.keys(patch).length > 1) {
+      await setDoc(ref, patch, { merge: true })
     }
     return {
       accountId,
       name: typeof data.name === 'string' ? data.name.trim().slice(0, 18) : '',
       color: typeof data.color === 'string' ? data.color : '',
       wins,
+      motm,
     }
   } catch (error) {
     console.warn('Failed to load cloud profile', error)
@@ -89,7 +126,7 @@ export async function fetchCloudProfile(
   }
 }
 
-/** Persist name/color only — PIN stays local. Preserves wins via merge. */
+/** Persist name/color only — PIN stays local. Preserves wins/motm via merge. */
 export async function pushCloudProfile(
   profile: UserProfile,
   options?: { throwOnError?: boolean },
@@ -132,7 +169,7 @@ export async function fetchAccountWins(
 
 /**
  * Career standings for login accounts (all of them by default).
- * Uses Firestore name/color/wins when present; falls back to defaults.
+ * Uses Firestore name/color/wins/motm when present; falls back to defaults.
  */
 export async function fetchCareerBoard(
   accountIds?: string[],
@@ -150,6 +187,7 @@ export async function fetchCareerBoard(
         name: account.defaultName,
         color: '',
         wins: INITIAL_ACCOUNT_WINS[account.accountId] ?? 0,
+        motm: INITIAL_ACCOUNT_MOTM[account.accountId] ?? 0,
       } satisfies CareerBoardEntry,
     ]),
   )
@@ -162,6 +200,7 @@ export async function fetchCareerBoard(
         name: id.replace(/^acct:/, ''),
         color: '',
         wins: INITIAL_ACCOUNT_WINS[id] ?? 0,
+        motm: INITIAL_ACCOUNT_MOTM[id] ?? 0,
       })
     }
   }
@@ -201,6 +240,7 @@ export async function fetchCareerBoard(
             ? data.color
             : (prev?.color ?? ''),
         wins: readWins(data, accountId),
+        motm: readMotm(data, accountId),
       })
     })
     await Promise.all(
@@ -214,8 +254,26 @@ export async function fetchCareerBoard(
               accountId,
               name: entry.name,
               wins: entry.wins,
+              motm: entry.motm,
               updatedAt: serverTimestamp(),
             },
+            { merge: true },
+          ).catch(() => {})
+        }),
+    )
+    // Backfill motm on docs that exist but lack the field.
+    await Promise.all(
+      ids
+        .filter((id) => found.has(id))
+        .map(async (accountId) => {
+          const ref = doc(db, 'profiles', profileDocId(accountId))
+          const snap = await getDoc(ref)
+          if (!snap.exists()) return
+          const data = snap.data() as Partial<CloudProfile>
+          if (typeof data.motm === 'number') return
+          await setDoc(
+            ref,
+            { motm: readMotm(data, accountId), accountId },
             { merge: true },
           ).catch(() => {})
         }),
@@ -227,6 +285,13 @@ export async function fetchCareerBoard(
   return ids
     .map((id) => byId.get(id)!)
     .sort((a, b) => b.wins - a.wins || a.name.localeCompare(b.name))
+}
+
+/** MotM standings sorted by MotM count (then name). */
+export function sortMotmBoard(board: CareerBoardEntry[]): CareerBoardEntry[] {
+  return [...board].sort(
+    (a, b) => b.motm - a.motm || a.name.localeCompare(b.name),
+  )
 }
 
 /**
@@ -272,6 +337,53 @@ export async function recordMatchWin(roomId: string, winnerAccountId: string) {
     return true
   } catch (error) {
     console.warn('Failed to record match win', error)
+    return false
+  }
+}
+
+/**
+ * Atomically record one MotM for a finished room (logged-in MotM only).
+ * Safe if multiple clients call it for the same room.
+ */
+export async function recordMatchMotm(roomId: string, motmAccountId: string) {
+  if (!isFirebaseConfigured || !db) return false
+  if (!isLoginAccountId(motmAccountId) || !roomId) return false
+
+  try {
+    await ensureAnonymousAuth()
+    const eventRef = doc(db, 'motmEvents', roomId)
+    const profileRef = doc(db, 'profiles', profileDocId(motmAccountId))
+
+    await runTransaction(db, async (tx) => {
+      const eventSnap = await tx.get(eventRef)
+      if (eventSnap.exists()) return
+
+      const profileSnap = await tx.get(profileRef)
+      const current = readMotm(
+        profileSnap.exists()
+          ? (profileSnap.data() as Partial<CloudProfile>)
+          : undefined,
+        motmAccountId,
+      )
+
+      tx.set(eventRef, {
+        roomId,
+        motmId: motmAccountId,
+        recordedAt: serverTimestamp(),
+      })
+      tx.set(
+        profileRef,
+        {
+          accountId: motmAccountId,
+          motm: current + 1,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      )
+    })
+    return true
+  } catch (error) {
+    console.warn('Failed to record match MotM', error)
     return false
   }
 }

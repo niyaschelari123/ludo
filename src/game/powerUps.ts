@@ -65,7 +65,8 @@ export const POWER_UP_INFO: {
   {
     type: 'super',
     label: 'Super',
-    description: 'Leaps halfway around the board and lands on the next safe star',
+    description:
+      'Leaps halfway around the board onto a safe star; if home is closer, enters the home path',
   },
   {
     type: 'tnt',
@@ -312,12 +313,22 @@ function retreatToken(token: Token, steps: number, room: Room) {
   token.progress = Math.max(retreatFloor(room), token.progress - steps)
 }
 
-/** Half-board leap, then snap forward onto the next safe star/start. */
+/** Half-board leap, then snap forward onto the next safe star/start.
+ *  If the leap would reach or pass home entry, land on the home-lane entry instead.
+ */
 function applySuperLeap(token: Token, player: Player, room: Room): string {
   const length = trackLength(room)
   const jump = Math.floor(length / 2)
-  const maxTrack = homeEntryProgress(room) - 1
+  const homeEntry = homeEntryProgress(room)
+  const maxTrack = homeEntry - 1
   if (token.progress < 0) return `${player.name} missed a super leap`
+
+  const remainingToHome = homeEntry - token.progress
+  if (jump >= remainingToHome) {
+    token.progress = homeEntry
+    return `${player.name} leapt onto the home path`
+  }
+
   const ideal = Math.min(token.progress + jump, maxTrack)
   const safes = safeCells(room)
   const startCell = player.seat * CELLS_PER_PLAYER

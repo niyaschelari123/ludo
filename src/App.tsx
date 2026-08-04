@@ -52,7 +52,10 @@ import {
 } from './lib/profile'
 import {
   fetchCareerBoard,
+  isCareerEligibleMatch,
+  recordMatchMotm,
   recordMatchWin,
+  sortMotmBoard,
   type CareerBoardEntry,
 } from './lib/profileCloud'
 import { PLAYER_COLOR_HEX, isNamedPlayerColor, normalizeColorKey, resolveColorHex } from './game/colors'
@@ -229,6 +232,8 @@ function App() {
   const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmTarget | null>(null)
   const [turnSecondsLeft, setTurnSecondsLeft] = useState<number | null>(null)
   const [blitzSecondsLeft, setBlitzSecondsLeft] = useState<number | null>(null)
+  const [blitzBreakdownOpen, setBlitzBreakdownOpen] = useState(false)
+  const [blitzBreakdownTabId, setBlitzBreakdownTabId] = useState<string | null>(null)
   const rollSyncRef = useRef<Promise<unknown> | null>(null)
   const moveInFlightRef = useRef(false)
   const powerResolveInFlightRef = useRef(false)
@@ -316,21 +321,44 @@ function App() {
 
   useEffect(() => {
     if (!room || room.status !== 'finished' || !room.game) return
+    if (!isCareerEligibleMatch(room)) return
+
     const winnerId = room.game.winnerIds[0]
-    if (!isLoginAccountId(winnerId)) return
-    void recordMatchWin(room.id, winnerId).then((recorded) => {
-      if (!recorded) return
-      setCareerBoard((prev) => {
-        if (!prev) return prev
-        return [...prev]
-          .map((entry) =>
-            entry.accountId === winnerId
-              ? { ...entry, wins: entry.wins + 1 }
+    const motmPlayer = computeMotm(room, [
+      ...room.players,
+      ...(room.departedPlayers ?? []),
+    ])?.player
+    const motmId = motmPlayer?.id
+
+    if (isLoginAccountId(winnerId)) {
+      void recordMatchWin(room.id, winnerId).then((recorded) => {
+        if (!recorded) return
+        setCareerBoard((prev) => {
+          if (!prev) return prev
+          return [...prev]
+            .map((entry) =>
+              entry.accountId === winnerId
+                ? { ...entry, wins: entry.wins + 1 }
+                : entry,
+            )
+            .sort((a, b) => b.wins - a.wins || a.name.localeCompare(b.name))
+        })
+      })
+    }
+
+    if (motmId && isLoginAccountId(motmId)) {
+      void recordMatchMotm(room.id, motmId).then((recorded) => {
+        if (!recorded) return
+        setCareerBoard((prev) => {
+          if (!prev) return prev
+          return [...prev].map((entry) =>
+            entry.accountId === motmId
+              ? { ...entry, motm: entry.motm + 1 }
               : entry,
           )
-          .sort((a, b) => b.wins - a.wins || a.name.localeCompare(b.name))
+        })
       })
-    })
+    }
   }, [room?.id, room?.status, room?.game?.winnerIds])
 
   useEffect(() => {
@@ -1471,6 +1499,41 @@ function App() {
 
       {room.status === 'lobby' ? (
         <section className={`lobby ${profile ? 'lobby--with-wins' : ''}`}>
+          {profile ? (
+            <aside className="lobby-wins-board lobby-motm-board">
+              <h3>Career MotM</h3>
+              {careerBoard === null ? (
+                <p className="lobby-wins-loading">Loading…</p>
+              ) : (
+                <ol className="lobby-wins-list">
+                  {sortMotmBoard(careerBoard).map((entry, index) => {
+                    const inRoom = room.players.some(
+                      (player) => player.id === entry.accountId,
+                    )
+                    return (
+                      <li
+                        key={`motm-${entry.accountId}`}
+                        className={`lobby-wins-row ${playerColorClass(entry.color)} ${inRoom ? 'in-room' : 'away'}`}
+                        style={playerColorStyle(entry.color)}
+                      >
+                        <span className="lobby-wins-rank">#{index + 1}</span>
+                        <span className="lobby-wins-avatar">
+                          {entry.name[0]?.toUpperCase() ?? '?'}
+                        </span>
+                        <div className="lobby-wins-meta">
+                          <strong className="lobby-wins-name">{entry.name}</strong>
+                          <small>{inRoom ? 'In room' : 'Not joined'}</small>
+                        </div>
+                        <em className="lobby-wins-count">
+                          {entry.motm} MotM
+                        </em>
+                      </li>
+                    )
+                  })}
+                </ol>
+              )}
+            </aside>
+          ) : null}
           <div className="lobby-card">
             <span className="eyebrow">PRIVATE ROOM</span>
             <h1>Waiting for players</h1>
@@ -1604,7 +1667,7 @@ function App() {
                     )
                     return (
                       <li
-                        key={entry.accountId}
+                        key={`wins-${entry.accountId}`}
                         className={`lobby-wins-row ${playerColorClass(entry.color)} ${inRoom ? 'in-room' : 'away'}`}
                         style={playerColorStyle(entry.color)}
                       >
@@ -1912,6 +1975,20 @@ function App() {
                           </li>
                         ))}
                       </ol>
+                      <button
+                        type="button"
+                        className="blitz-breakdown-open"
+                        onClick={() => {
+                          setBlitzBreakdownTabId(
+                            blitzScores.find((entry) => entry.player.id === userId)?.player.id
+                              ?? blitzScores[0]?.player.id
+                              ?? null,
+                          )
+                          setBlitzBreakdownOpen(true)
+                        }}
+                      >
+                        Point breakdown
+                      </button>
                     </>
                   ) : null}
                 </>
@@ -2005,6 +2082,124 @@ function App() {
           )}
         </section>
       )}
+
+      {blitzBreakdownOpen && isBlitz && blitzScores.length > 0 ? (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Blitz point breakdown"
+          onClick={() => setBlitzBreakdownOpen(false)}
+        >
+          <div
+            className="confirm-card blitz-breakdown-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="blitz-breakdown-header">
+              <h2>Point breakdown</h2>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setBlitzBreakdownOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="blitz-breakdown-tabs" role="tablist">
+              {blitzScores.map((entry) => (
+                <button
+                  key={entry.player.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={blitzBreakdownTabId === entry.player.id}
+                  className={`blitz-breakdown-tab ${playerColorClass(entry.player.color)} ${
+                    blitzBreakdownTabId === entry.player.id ? 'active' : ''
+                  }`}
+                  style={playerColorStyle(entry.player.color)}
+                  onClick={() => setBlitzBreakdownTabId(entry.player.id)}
+                >
+                  {entry.player.name}
+                </button>
+              ))}
+            </div>
+            {(() => {
+              const selected =
+                blitzScores.find((entry) => entry.player.id === blitzBreakdownTabId)
+                ?? blitzScores[0]
+              if (!selected) return null
+              const { breakdown, stats } = selected
+              const rows: Array<{
+                label: string
+                detail: string
+                points: number
+                negative?: boolean
+              }> = [
+                {
+                  label: 'Tokens home',
+                  detail: `${stats.tokensHome} × +15`,
+                  points: breakdown.tokensHome,
+                },
+                {
+                  label: 'Eliminations',
+                  detail: `${stats.captures} × +5`,
+                  points: breakdown.eliminations,
+                },
+                {
+                  label: 'Times eliminated',
+                  detail: `${stats.eliminated} × −3`,
+                  points: -breakdown.eliminatedPenalty,
+                  negative: true,
+                },
+                {
+                  label: 'Sixes rolled',
+                  detail: `${stats.sixes} × +1`,
+                  points: breakdown.sixes,
+                },
+                {
+                  label: 'Board progress',
+                  detail: 'Unfinished tokens (+0–8 each)',
+                  points: breakdown.boardProgress,
+                },
+                {
+                  label: 'All home bonus',
+                  detail: 'All 4 tokens finished',
+                  points: breakdown.allHomeBonus,
+                },
+                {
+                  label: 'Lead token bonus',
+                  detail: 'Farthest token on board',
+                  points: breakdown.leadTokenBonus,
+                },
+              ]
+              return (
+                <div className="blitz-breakdown-body">
+                  <p className="blitz-breakdown-player">
+                    <strong>{selected.player.name}</strong>
+                    <em>{breakdown.total} pts</em>
+                  </p>
+                  <ul className="blitz-breakdown-list">
+                    {rows.map((row) => (
+                      <li key={row.label}>
+                        <div>
+                          <strong>{row.label}</strong>
+                          <small>{row.detail}</small>
+                        </div>
+                        <em className={row.negative && row.points < 0 ? 'neg' : ''}>
+                          {row.points > 0 ? `+${row.points}` : row.points}
+                        </em>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="blitz-breakdown-total">
+                    <span>Total</span>
+                    <strong>{breakdown.total} pts</strong>
+                  </div>
+                </div>
+              )
+            })()}
+          </div>
+        </div>
+      ) : null}
 
       {removeConfirm && (
         <div
