@@ -24,6 +24,7 @@ import { resolveColorHex, tokenStyleFor } from '../game/colors'
 import {
   resolveAnimationProgress,
 } from '../game/types'
+import { isTeamMode } from '../game/teams'
 import { PowerUpLayer } from './PowerUpLayer'
 
 const SIZE = BOARD_SIZE
@@ -387,7 +388,9 @@ function SquareBoard({ room }: { room: Room }) {
             textAnchor="middle"
             className={`square-player-label ${departed ? 'departed-label' : ''}`}
           >
-            {departed ? `${player.name} (left)` : player.name}
+            {departed
+              ? `${player.name} (left)${teamTag(room, player.id)}`
+              : `${player.name}${teamTag(room, player.id)}`}
           </text>
         )
       })}
@@ -398,6 +401,12 @@ function SquareBoard({ room }: { room: Room }) {
       <polygon points="252,348 252,252 300,300" fill={resolveColorHex(boardPlayers[0]?.color ?? 'red')} className="center-triangle" />
     </>
   )
+}
+
+function teamTag(room: Room, playerId: string): string {
+  if (!isTeamMode(room.gameMode) || !room.teams?.length) return ''
+  const index = room.teams.findIndex((team) => team.memberIds.includes(playerId))
+  return index >= 0 ? ` · T${index + 1}` : ''
 }
 
 function PolygonPlayerLabels({
@@ -418,6 +427,7 @@ function PolygonPlayerLabels({
         const departed = (room.departedPlayers ?? []).some(
           (candidate) => candidate.id === player.id,
         )
+        const tag = teamTag(room, player.id)
         return (
           <text
             key={player.id}
@@ -426,7 +436,7 @@ function PolygonPlayerLabels({
             textAnchor="middle"
             className={`player-label ${largeNgon ? 'large-ngon-label' : ''} ${departed ? 'departed-label' : ''}`}
           >
-            {departed ? `${player.name} (left)` : player.name}
+            {departed ? `${player.name} (left)${tag}` : `${player.name}${tag}`}
           </text>
         )
       })}

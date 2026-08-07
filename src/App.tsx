@@ -28,6 +28,7 @@ import {
   removePlayer,
   resolvePendingPower,
   rollDice,
+  setTeams,
   setSlotBot,
   setPlayerAutoPlay,
   setBlitzDuration,
@@ -54,13 +55,14 @@ import {
   fetchCareerBoard,
   isCareerEligibleMatch,
   recordMatchMotm,
-  recordMatchWin,
+  recordMatchWins,
   sortMotmBoard,
   type CareerBoardEntry,
 } from './lib/profileCloud'
 import { PLAYER_COLOR_HEX, isNamedPlayerColor, normalizeColorKey, resolveColorHex } from './game/colors'
 import {
   activeMoveToMovingToken,
+  findCaptureVictimIds,
   movableTokens,
   performLocalMove,
   performLocalResolvePower,
@@ -68,7 +70,12 @@ import {
   TURN_ROLL_TIMEOUT_MS,
 } from './game/engine'
 import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWinOdds, rankBlitzPlayers, readPlayerStats, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
-import { PLAYER_COLORS, BLITZ_DURATION_OPTIONS, DEFAULT_BLITZ_DURATION_MS, blitzDurationLabel, gameModeLabel, hasPowerBoard, isAutoControlled, isBlitzMode, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room } from './game/types'
+import { PLAYER_COLORS, BLITZ_DURATION_OPTIONS, DEFAULT_BLITZ_DURATION_MS, blitzDurationLabel, canControlSeat, gameModeLabel, hasPowerBoard, isAutoControlled, isBlitzMode, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room, type TeamAssignMode, type TeamSize } from './game/types'
+import {
+  isTeamMode,
+  teamOfPlayer,
+  teamRoomSizes,
+} from './game/teams'
 import {
   moveBaseSignature,
   movingTokenTarget,
@@ -203,6 +210,9 @@ function App() {
   const [maxPlayers, setMaxPlayers] = useState(6)
   const [gameMode, setGameMode] = useState<GameMode>('classic')
   const [blitzDurationMs, setBlitzDurationMs] = useState(DEFAULT_BLITZ_DURATION_MS)
+  const [teamSize, setTeamSize] = useState<TeamSize>(2)
+  const [teamAssign, setTeamAssign] = useState<TeamAssignMode>('random')
+  const [manualDraft, setManualDraft] = useState<string[][]>([[], []])
   const [roomId, setRoomId] = useState<string | null>(() =>
     localStorage.getItem('ludo-room'),
   )
@@ -323,21 +333,27 @@ function App() {
     if (!room || room.status !== 'finished' || !room.game) return
     if (!isCareerEligibleMatch(room)) return
 
-    const winnerId = room.game.winnerIds[0]
+    // Team Power: no career win points — match result only.
+    const winnerIds =
+      isTeamMode(room.gameMode)
+        ? []
+        : room.game.winnerIds[0]
+          ? [room.game.winnerIds[0]]
+          : []
     const motmPlayer = computeMotm(room, [
       ...room.players,
       ...(room.departedPlayers ?? []),
     ])?.player
     const motmId = motmPlayer?.id
 
-    if (isLoginAccountId(winnerId)) {
-      void recordMatchWin(room.id, winnerId).then((recorded) => {
+    if (winnerIds.some((id) => isLoginAccountId(id))) {
+      void recordMatchWins(room.id, winnerIds).then((recorded) => {
         if (!recorded) return
         setCareerBoard((prev) => {
           if (!prev) return prev
           return [...prev]
             .map((entry) =>
-              entry.accountId === winnerId
+              winnerIds.includes(entry.accountId)
                 ? { ...entry, wins: entry.wins + 1 }
                 : entry,
             )
@@ -359,7 +375,7 @@ function App() {
         })
       })
     }
-  }, [room?.id, room?.status, room?.game?.winnerIds])
+  }, [room?.id, room?.status, room?.game?.winnerIds, room?.winningTeamId])
 
   useEffect(() => {
     if (!profile?.color) return
@@ -375,7 +391,15 @@ function App() {
     const signature = moveBaseSignature(move)
     if (remoteAnimSignatureRef.current === signature) return
     remoteAnimSignatureRef.current = signature
-    setMovingToken({ ...move, startedAt: Date.now() })
+    const victims =
+      move.willCapture && prevRoomRef.current && roomRef.current
+        ? findCaptureVictimIds(prevRoomRef.current, roomRef.current)
+        : (move.captureVictimIds ?? [])
+    setMovingToken({
+      ...move,
+      startedAt: Date.now(),
+      captureVictimIds: victims.length > 0 ? victims : move.captureVictimIds,
+    })
   }, [])
 
   const showPowerAndResolve = useCallback(async (roomId: string, baseRoom: Room) => {
@@ -593,7 +617,13 @@ function App() {
     }
     lastSoundAction.current = action
     if (action.includes('brought a token home')) playHome()
-    else if (action.includes('finished in place')) playWin()
+    else if (
+      action.includes('finished in place') ||
+      action.includes('Team wins') ||
+      action.includes('teammates home')
+    ) {
+      playWin()
+    }
   }, [displayRoom?.game?.lastAction])
 
   // Faa SFX: start as soon as the capturing token begins hopping (preloaded = no lag).
@@ -616,7 +646,7 @@ function App() {
 
     const previousHolder = prevTurnPlayerIdForCue.current
     const isMyRoll =
-      turnPlayer.id === userId &&
+      canControlSeat(turnPlayer, userId) &&
       game.phase === 'roll' &&
       !isAutoControlled(turnPlayer)
 
@@ -625,7 +655,11 @@ function App() {
       if (lastYourTurnCue.current !== cueKey) {
         lastYourTurnCue.current = cueKey
         // Only after another player held the turn — skip match-open + own extra turns.
-        if (previousHolder !== null && previousHolder !== userId) {
+        if (
+          previousHolder !== null &&
+          previousHolder !== userId &&
+          previousHolder !== turnPlayer.controlledBy
+        ) {
           playYourTurn()
         }
       }
@@ -817,7 +851,7 @@ function App() {
       setError('Dice cannot be rolled now.')
       return
     }
-    if (baseRoom.players[baseGame.turnIndex]?.id !== userId) {
+    if (!canControlSeat(baseRoom.players[baseGame.turnIndex], userId)) {
       setError('It is not your turn.')
       return
     }
@@ -856,8 +890,11 @@ function App() {
     if (moveInFlightRef.current) return
     const baseRoom = optimisticRoom ?? room
     if (!baseRoom?.game) return
+    const turnPlayer = baseRoom.players[baseRoom.game.turnIndex]
+    if (!canControlSeat(turnPlayer, userId)) return
     const token = baseRoom.game.tokens.find(
-      (candidate) => candidate.playerId === userId && candidate.id === tokenId,
+      (candidate) =>
+        candidate.playerId === turnPlayer.id && candidate.id === tokenId,
     )
     if (!token) return
     const dice = baseRoom.game.dice ?? 1
@@ -879,23 +916,28 @@ function App() {
     }
 
     const movedToken = nextRoom.game!.tokens.find(
-      (candidate) => candidate.playerId === userId && candidate.id === tokenId,
+      (candidate) =>
+        candidate.playerId === turnPlayer.id && candidate.id === tokenId,
     )
     if (!movedToken) {
       moveInFlightRef.current = false
       return
     }
 
+    const willCapture =
+      Boolean(nextRoom.game?.lastAction?.includes('captured')) ||
+      Boolean(nextRoom.game?.pendingPower?.captured)
     const moving: MovingToken = {
-      playerId: userId,
+      playerId: turnPlayer.id,
       id: tokenId,
       fromProgress,
       dice,
       startedAt,
       targetProgress: movedToken.progress,
-      willCapture:
-        Boolean(nextRoom.game?.lastAction?.includes('captured')) ||
-        Boolean(nextRoom.game?.pendingPower?.captured),
+      willCapture,
+      captureVictimIds: willCapture
+        ? findCaptureVictimIds(baseRoom, nextRoom)
+        : undefined,
     }
 
     setOptimisticRoom(nextRoom)
@@ -941,7 +983,7 @@ function App() {
       !displayRoom?.game ||
       displayRoom.status !== 'playing' ||
       displayRoom.game.phase !== 'move' ||
-      displayRoom.players[displayRoom.game.turnIndex]?.id !== userId ||
+      !canControlSeat(displayRoom.players[displayRoom.game.turnIndex], userId) ||
       movingToken ||
       busy ||
       moveInFlightRef.current ||
@@ -980,7 +1022,7 @@ function App() {
   useEffect(() => {
     const game = room?.game
     if (!game || game.phase !== 'power' || !game.pendingPower || !room) return
-    if (room.players[game.turnIndex]?.id !== userId) return
+    if (!canControlSeat(room.players[game.turnIndex], userId)) return
     if (moveInFlightRef.current || powerResolveInFlightRef.current || movingToken) {
       return
     }
@@ -1248,6 +1290,18 @@ function App() {
                   <strong>Blitz</strong>
                   <span>Timed scoring · 4 tokens · pick match length</span>
                 </button>
+                <button
+                  type="button"
+                  className={`mode-option ${gameMode === 'team' ? 'active' : ''}`}
+                  onClick={() => {
+                    setGameMode('team')
+                    setTeamSize(2)
+                    if (![2, 4, 5, 6, 8].includes(maxPlayers)) setMaxPlayers(4)
+                  }}
+                >
+                  <strong>Team Power</strong>
+                  <span>2 tokens each · teams · Super/TNT · no career wins</span>
+                </button>
               </div>
             </label>
             {gameMode === 'blitz' ? (
@@ -1265,10 +1319,44 @@ function App() {
                 </select>
               </label>
             ) : null}
+            {gameMode === 'team' ? (
+              <>
+                <label>
+                  Team size
+                  <select
+                    value={teamSize}
+                    onChange={(event) => {
+                      const next = Number(event.target.value) as TeamSize
+                      setTeamSize(next)
+                      const sizes = teamRoomSizes(next)
+                      if (!sizes.includes(maxPlayers)) setMaxPlayers(sizes[0])
+                    }}
+                  >
+                    <option value={2}>2 players per team</option>
+                    <option value={3}>3 players per team</option>
+                  </select>
+                </label>
+                <label>
+                  Team pick
+                  <select
+                    value={teamAssign}
+                    onChange={(event) =>
+                      setTeamAssign(event.target.value as TeamAssignMode)
+                    }
+                  >
+                    <option value="random">Random teams at start</option>
+                    <option value="manual">Host picks in lobby</option>
+                  </select>
+                </label>
+                <p className="join-hint">
+                  5 seats + size 2 → leftover human gets a bot they control.
+                </p>
+              </>
+            ) : null}
             <label>
               Room size
               <select value={maxPlayers} onChange={(event) => setMaxPlayers(Number(event.target.value))}>
-                {[2, 3, 4, 5, 6, 7, 8].map((count) => (
+                {(gameMode === 'team' ? teamRoomSizes(teamSize) : [2, 3, 4, 5, 6, 7, 8]).map((count) => (
                   <option key={count} value={count}>{count} players</option>
                 ))}
               </select>
@@ -1286,6 +1374,7 @@ function App() {
                   {
                     ...roomColorOptions,
                     ...(gameMode === 'blitz' ? { blitzDurationMs } : {}),
+                    ...(gameMode === 'team' ? { teamSize, teamAssign } : {}),
                   },
                 )
                 setRoom(created)
@@ -1341,7 +1430,28 @@ function App() {
   const blitzScores = isBlitz && viewRoom.game ? rankBlitzPlayers(viewRoom) : []
 
   const currentPlayer = viewRoom.game ? viewRoom.players[viewRoom.game.turnIndex] : null
-  const isMyTurn = currentPlayer?.id === userId
+  const isMyTurn = canControlSeat(currentPlayer, userId)
+  const myTeam = isTeamMode(viewRoom.gameMode)
+    ? teamOfPlayer(viewRoom, userId)
+    : null
+  const myTeamIndex =
+    myTeam && viewRoom.teams
+      ? viewRoom.teams.findIndex((team) => team.id === myTeam.id)
+      : -1
+  const myTeammateNames =
+    myTeam?.memberIds
+      .map((id) => {
+        const player = viewRoom.players.find((entry) => entry.id === id)
+        if (!player) return null
+        if (player.id === userId) return `${player.name} (you)`
+        if (player.controlledBy === userId) return `${player.name} (you control)`
+        return player.name
+      })
+      .filter(Boolean) ?? []
+  const teamIndexOf = (playerId: string) => {
+    if (!viewRoom.teams?.length) return -1
+    return viewRoom.teams.findIndex((team) => team.memberIds.includes(playerId))
+  }
   const canPickRollFor = (playerId: string) => {
     if (!extraCtrl || viewRoom.status !== 'playing' || !viewRoom.game) return false
     if (viewRoom.game.winnerIds.includes(playerId)) return false
@@ -1642,11 +1752,206 @@ function App() {
                 )
               })}
             </div>
+            {isTeamMode(room.gameMode) ? (
+              <div className="team-lobby">
+                <p className="lobby-hint">
+                  Team · {room.teamSize ?? 2} per side ·{' '}
+                  {(room.teamAssign ?? teamAssign) === 'manual'
+                    ? 'host picks below'
+                    : 'random at start'}
+                  {(room.maxPlayers === 5 && (room.teamSize ?? 2) === 2)
+                    ? ' · leftover seat gets a controlled bot'
+                    : ''}
+                </p>
+                {room.hostId === userId ? (
+                  <>
+                    <div className="team-assign-row">
+                      <button
+                        type="button"
+                        className={(room.teamAssign ?? teamAssign) === 'random' ? 'active' : ''}
+                        disabled={busy}
+                        onClick={() => perform(async () => {
+                          setTeamAssign('random')
+                          await setTeams(room.id, userId, [], 'random')
+                        })}
+                      >
+                        Random
+                      </button>
+                      <button
+                        type="button"
+                        className={(room.teamAssign ?? teamAssign) === 'manual' ? 'active' : ''}
+                        disabled={busy}
+                        onClick={() => {
+                          setTeamAssign('manual')
+                          const size = room.teamSize ?? 2
+                          const count = Math.ceil(room.players.length / size) || 2
+                          setManualDraft(
+                            Array.from({ length: Math.max(count, 2) }, (_, index) =>
+                              manualDraft[index] ?? [],
+                            ),
+                          )
+                        }}
+                      >
+                        Manual
+                      </button>
+                    </div>
+                    {(room.teamAssign ?? teamAssign) === 'manual' ? (
+                      <div className="team-manual">
+                        {manualDraft.map((members, teamIndex) => (
+                          <div className="team-manual-card" key={teamIndex}>
+                            <strong>Team {teamIndex + 1}</strong>
+                            <ul>
+                              {members.map((id) => {
+                                const player = room.players.find((entry) => entry.id === id)
+                                return (
+                                  <li key={id}>
+                                    {player?.name ?? id.slice(0, 6)}
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setManualDraft((prev) =>
+                                          prev.map((list, index) =>
+                                            index === teamIndex
+                                              ? list.filter((entry) => entry !== id)
+                                              : list,
+                                          ),
+                                        )
+                                      }
+                                    >
+                                      ×
+                                    </button>
+                                  </li>
+                                )
+                              })}
+                            </ul>
+                            <select
+                              value=""
+                              onChange={(event) => {
+                                const id = event.target.value
+                                if (!id) return
+                                setManualDraft((prev) => {
+                                  const cleaned = prev.map((list) =>
+                                    list.filter((entry) => entry !== id),
+                                  )
+                                  cleaned[teamIndex] = [
+                                    ...cleaned[teamIndex],
+                                    id,
+                                  ].slice(0, room.teamSize ?? 2)
+                                  return cleaned
+                                })
+                              }}
+                            >
+                              <option value="">Add player…</option>
+                              {room.players
+                                .filter(
+                                  (player) =>
+                                    !manualDraft.some((list) =>
+                                      list.includes(player.id),
+                                    ),
+                                )
+                                .map((player) => (
+                                  <option key={player.id} value={player.id}>
+                                    {player.name}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={busy}
+                          onClick={() =>
+                            setManualDraft((prev) => [...prev, []])
+                          }
+                        >
+                          + Team
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={busy}
+                          onClick={() =>
+                            perform(async () => {
+                              await setTeams(
+                                room.id,
+                                userId,
+                                manualDraft
+                                  .filter((list) => list.length > 0)
+                                  .map((memberIds) => ({
+                                    id: crypto.randomUUID(),
+                                    memberIds,
+                                  })),
+                                'manual',
+                              )
+                            })
+                          }
+                        >
+                          Save teams
+                        </button>
+                      </div>
+                    ) : null}
+                    {room.teams?.length ? (
+                      <div className="team-preview">
+                        {room.teams.map((team, index) => (
+                          <p key={team.id}>
+                            Team {index + 1}:{' '}
+                            {team.memberIds
+                              .map(
+                                (id) =>
+                                  room.players.find((player) => player.id === id)
+                                    ?.name ?? '?',
+                              )
+                              .join(' + ')}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                  </>
+                ) : room.teams?.length ? (
+                  <div className="team-preview">
+                    {room.teams.map((team, index) => (
+                      <p key={team.id}>
+                        Team {index + 1}:{' '}
+                        {team.memberIds
+                          .map(
+                            (id) =>
+                              room.players.find((player) => player.id === id)
+                                ?.name ?? '?',
+                          )
+                          .join(' + ')}
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="lobby-hint">Host sets teams before start.</p>
+                )}
+              </div>
+            ) : null}
             {room.hostId === userId ? (
               <button
                 className="start-button"
                 disabled={busy || room.players.length < 2}
-                onClick={() => perform(() => startRoom(room.id, userId))}
+                onClick={() => perform(async () => {
+                  if (
+                    isTeamMode(room.gameMode) &&
+                    (room.teamAssign ?? teamAssign) === 'manual' &&
+                    manualDraft.some((list) => list.length > 0)
+                  ) {
+                    await setTeams(
+                      room.id,
+                      userId,
+                      manualDraft
+                        .filter((list) => list.length > 0)
+                        .map((memberIds) => ({
+                          id: crypto.randomUUID(),
+                          memberIds,
+                        })),
+                      'manual',
+                    )
+                  }
+                  await startRoom(room.id, userId)
+                })}
               >Start game ({room.players.length}/{room.maxPlayers})</button>
             ) : <p className="waiting-text">Waiting for the host to start…</p>}
             {room.hostId === userId && (
@@ -1697,10 +2002,12 @@ function App() {
             {viewRoom.players.map((player, index) => {
               const isHost = room.hostId === userId
               const hasShield = Boolean(viewRoom.game?.shieldBuff?.[player.id])
+              const teamIndex = teamIndexOf(player.id)
+              const onMyTeam = Boolean(myTeam?.memberIds.includes(player.id))
               return (
                 <div
                   key={player.id}
-                  className={`player-row ${playerColorClass(player.color)} ${viewRoom.game?.turnIndex === index ? 'active' : ''} ${hasShield ? 'has-shield' : ''}`}
+                  className={`player-row ${playerColorClass(player.color)} ${viewRoom.game?.turnIndex === index ? 'active' : ''} ${hasShield ? 'has-shield' : ''} ${onMyTeam ? 'player-row--ally' : ''}`}
                   style={playerColorStyle(player.color)}
                 >
                   <div className="player-row-main">
@@ -1708,6 +2015,14 @@ function App() {
                     <div>
                       <strong>
                         {player.name}
+                        {teamIndex >= 0 ? (
+                          <span
+                            className={`team-chip ${onMyTeam ? 'team-chip--ally' : ''}`}
+                            title={onMyTeam ? 'Your teammate' : `Team ${teamIndex + 1}`}
+                          >
+                            T{teamIndex + 1}
+                          </span>
+                        ) : null}
                         {hasShield ? (
                           <span className="shield-badge" title="Shield active — next capture blocked">
                             🛡
@@ -1719,14 +2034,17 @@ function App() {
                           ? `${blitzScores.find((entry) => entry.player.id === player.id)?.breakdown.total ?? 0} pts`
                           : viewRoom.game?.winnerIds.includes(player.id)
                             ? `Finished #${viewRoom.game.winnerIds.indexOf(player.id) + 1}`
-                            : player.isBot
-                              ? 'Bot'
-                              : [
-                                player.id === userId ? 'You' : null,
-                                player.autoPlay ? 'Autoplay' : player.id === userId ? null : 'Online',
-                              ]
-                                .filter(Boolean)
-                                .join(' · ') || 'Online'}
+                            : player.controlledBy === userId
+                              ? 'Your bot · you control'
+                              : player.isBot
+                                ? 'Bot'
+                                : [
+                                  player.id === userId ? 'You' : null,
+                                  onMyTeam && player.id !== userId ? 'Ally' : null,
+                                  player.autoPlay ? 'Autoplay' : player.id === userId ? null : 'Online',
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ') || 'Online'}
                         {isHost && player.rejoinCode ? ` · Seat ${player.rejoinCode}` : ''}
                         {hasShield ? ' · Shield' : ''}
                       </small>
@@ -1844,6 +2162,12 @@ function App() {
                 </span>
               ) : null}
             </div>
+            {myTeam && myTeamIndex >= 0 ? (
+              <div className="your-team-banner">
+                <span>Your team · T{myTeamIndex + 1}</span>
+                <strong>{myTeammateNames.join(' + ')}</strong>
+              </div>
+            ) : null}
             <LudoBoard
               room={viewRoom}
               userId={userId}

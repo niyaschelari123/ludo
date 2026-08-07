@@ -295,50 +295,70 @@ export function sortMotmBoard(board: CareerBoardEntry[]): CareerBoardEntry[] {
 }
 
 /**
- * Atomically record one win for a finished room (logged-in champion only).
+ * Atomically record wins for one or more login accounts in a finished room.
  * Safe if multiple clients call it for the same room.
  */
-export async function recordMatchWin(roomId: string, winnerAccountId: string) {
+export async function recordMatchWins(
+  roomId: string,
+  winnerAccountIds: string[],
+) {
   if (!isFirebaseConfigured || !db) return false
-  if (!isLoginAccountId(winnerAccountId) || !roomId) return false
+  if (!roomId) return false
+  const unique = [
+    ...new Set(winnerAccountIds.filter((id) => isLoginAccountId(id))),
+  ]
+  if (unique.length === 0) return false
 
   try {
     await ensureAnonymousAuth()
     const eventRef = doc(db, 'winEvents', roomId)
-    const profileRef = doc(db, 'profiles', profileDocId(winnerAccountId))
 
     await runTransaction(db, async (tx) => {
       const eventSnap = await tx.get(eventRef)
       if (eventSnap.exists()) return
 
-      const profileSnap = await tx.get(profileRef)
-      const current = readWins(
-        profileSnap.exists()
-          ? (profileSnap.data() as Partial<CloudProfile>)
-          : undefined,
-        winnerAccountId,
+      const profiles = await Promise.all(
+        unique.map(async (accountId) => {
+          const profileRef = doc(db, 'profiles', profileDocId(accountId))
+          const profileSnap = await tx.get(profileRef)
+          const current = readWins(
+            profileSnap.exists()
+              ? (profileSnap.data() as Partial<CloudProfile>)
+              : undefined,
+            accountId,
+          )
+          return { accountId, profileRef, current }
+        }),
       )
 
       tx.set(eventRef, {
         roomId,
-        winnerId: winnerAccountId,
+        winnerId: unique[0],
+        winnerIds: unique,
         recordedAt: serverTimestamp(),
       })
-      tx.set(
-        profileRef,
-        {
-          accountId: winnerAccountId,
-          wins: current + 1,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      )
+      for (const entry of profiles) {
+        tx.set(
+          entry.profileRef,
+          {
+            accountId: entry.accountId,
+            wins: entry.current + 1,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        )
+      }
     })
     return true
   } catch (error) {
-    console.warn('Failed to record match win', error)
+    console.warn('Failed to record match wins', error)
     return false
   }
+}
+
+/** @deprecated Prefer recordMatchWins for team support. */
+export async function recordMatchWin(roomId: string, winnerAccountId: string) {
+  return recordMatchWins(roomId, [winnerAccountId])
 }
 
 /**

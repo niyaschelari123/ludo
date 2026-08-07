@@ -14,7 +14,14 @@ export const PLAYER_COLORS = [
 export type PlayerColor = (typeof PLAYER_COLORS)[number];
 export type RoomStatus = "lobby" | "playing" | "finished";
 export type TurnPhase = "roll" | "move" | "power";
-export type GameMode = "classic" | "power" | "quick" | "race" | "blitz";
+export type GameMode = "classic" | "power" | "quick" | "race" | "blitz" | "team";
+export type TeamSize = 2 | 3;
+export type TeamAssignMode = "random" | "manual";
+
+export interface Team {
+  id: string;
+  memberIds: string[];
+}
 
 /** Allowed Blitz match lengths (minutes). */
 export const BLITZ_DURATION_OPTIONS = [
@@ -55,10 +62,14 @@ export function blitzDurationLabel(ms?: number | null): string {
   );
 }
 
-/** Power, Quick, Race, and Blitz place tiles on the track. */
+/** Power, Quick, Race, Blitz, and Team place tiles on the track. */
 export function hasPowerBoard(mode: GameMode | null | undefined): boolean {
   return (
-    mode === "power" || mode === "quick" || mode === "race" || mode === "blitz"
+    mode === "power" ||
+    mode === "quick" ||
+    mode === "race" ||
+    mode === "blitz" ||
+    mode === "team"
   );
 }
 
@@ -67,6 +78,13 @@ export function usesQuickPowerBoard(
   mode: GameMode | null | undefined,
 ): boolean {
   return mode === "quick" || mode === "race" || mode === "blitz";
+}
+
+/** Team: full Power set + Super leaps (TNT, −5, Super). */
+export function usesTeamPowerBoard(
+  mode: GameMode | null | undefined,
+): boolean {
+  return mode === "team";
 }
 
 /** Race mode: tokens share cells; captures are disabled. */
@@ -91,6 +109,7 @@ export function gameModeLabel(mode: GameMode | null | undefined): string {
   if (mode === "quick") return "Quick";
   if (mode === "race") return "Race";
   if (mode === "blitz") return "Blitz";
+  if (mode === "team") return "Team Power";
   return "Classic";
 }
 export type PowerUpType =
@@ -127,6 +146,11 @@ export interface Player {
   isBot?: boolean;
   /** Host-enabled: server plays this human seat until cancelled. */
   autoPlay?: boolean;
+  /**
+   * Team mode: this bot seat is played by another human (not server autoplay).
+   * Human rolls/moves for both their seat and this bot.
+   */
+  controlledBy?: string;
   /** Locked profile color — preserved across seat shuffle. */
   colorLocked?: boolean;
   /**
@@ -137,9 +161,21 @@ export interface Player {
   joinedAt: number;
 }
 
-/** Bots and host-autoplay humans are driven by the server. */
+/** Bots (unless human-controlled) and host-autoplay humans are driven by the server. */
 export function isAutoControlled(player: Player | null | undefined): boolean {
-  return Boolean(player?.isBot || player?.autoPlay);
+  if (!player) return false;
+  if (player.autoPlay) return true;
+  if (player.isBot && !player.controlledBy) return true;
+  return false;
+}
+
+/** True if `userId` may roll/move for this seat. */
+export function canControlSeat(
+  player: Player | null | undefined,
+  userId: string,
+): boolean {
+  if (!player) return false;
+  return player.id === userId || player.controlledBy === userId;
 }
 
 export interface DepartedPlayer extends Player {
@@ -171,6 +207,8 @@ export interface MovingToken {
   targetProgress?: number;
   /** True when this hop will capture — used to time the eliminate SFX. */
   willCapture?: boolean;
+  /** Player ids whose tokens were sent back by this capture. */
+  captureVictimIds?: string[];
 }
 
 export interface ActiveMove {
@@ -310,6 +348,14 @@ export interface Room {
   gameMode: GameMode;
   /** Blitz only: selected match length in ms (from BLITZ_DURATION_OPTIONS). */
   blitzDurationMs?: number | null;
+  /** Team mode: 2 or 3 players per team. */
+  teamSize?: TeamSize | null;
+  /** Team mode: random shuffle or host-picked teams. */
+  teamAssign?: TeamAssignMode | null;
+  /** Team mode: current team roster (lobby + in-match). */
+  teams?: Team[] | null;
+  /** Team mode: set when a full team finishes. */
+  winningTeamId?: string | null;
   status: RoomStatus;
   players: Player[];
   departedPlayers: DepartedPlayer[];

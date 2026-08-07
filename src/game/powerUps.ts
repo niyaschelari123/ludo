@@ -12,6 +12,7 @@ import {
 } from './engine'
 import type { GameMode, GameState, Player, PowerTile, PowerUpType, Room, Token } from './types'
 import { allowsCaptures } from './types'
+import { areTeammates } from './teams'
 
 export const ACTIVE_POWER_TYPES: PowerUpType[] = [
   'rocket',
@@ -98,6 +99,9 @@ export function powerInfoForMode(mode: GameMode | null | undefined) {
     return POWER_UP_INFO.filter(
       (entry) => entry.type !== 'tnt' && entry.type !== 'back5',
     )
+  }
+  if (mode === 'team') {
+    return POWER_UP_INFO
   }
   return POWER_UP_INFO.filter((entry) => entry.type !== 'super')
 }
@@ -275,6 +279,19 @@ export function generateQuickPowerTiles(
   return tiles
 }
 
+/** Team Power: classic Power set plus Super leaps. */
+export function generateTeamPowerTiles(
+  playerCount: number,
+): Record<number, PowerUpType> {
+  const tiles: Record<number, PowerUpType> = {}
+  placeCommonAndRare(tiles, playerCount, {
+    includeTnt: true,
+    includeBack5: true,
+    includeSuper: true,
+  })
+  return tiles
+}
+
 export function powerTilesList(
   tiles: Record<number, PowerUpType> | undefined,
 ): PowerTile[] {
@@ -355,6 +372,7 @@ function opponentsOnCell(
   return game.tokens.filter(
     (candidate) =>
       candidate.playerId !== playerId &&
+      !areTeammates(room, playerId, candidate.playerId) &&
       globalCell(candidate, room) === cell,
   )
 }

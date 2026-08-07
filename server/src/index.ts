@@ -38,6 +38,7 @@ import {
   endBlitzRoom,
   setBlitzDuration,
   extendBlitzTime,
+  setTeams,
 } from './roomManager.js'
 import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.js'
 import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
@@ -324,6 +325,8 @@ io.on('connection', (socket) => {
         color?: string
         lockColor?: boolean
         blitzDurationMs?: number
+        teamSize?: 2 | 3
+        teamAssign?: 'random' | 'manual'
       },
       callback?: Ack<{ room: Room }>,
     ) => {
@@ -336,8 +339,39 @@ io.on('connection', (socket) => {
           payload.color,
           payload.lockColor,
           payload.blitzDurationMs,
+          payload.teamSize,
+          payload.teamAssign,
         )
         bindSession(socket, payload.userId, room.id)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'setTeams',
+    (
+      payload: {
+        roomId: string
+        userId: string
+        teams: Array<{ id?: string; memberIds: string[] }>
+        teamAssign?: 'random' | 'manual'
+      },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = setTeams(
+          payload.roomId,
+          payload.userId,
+          payload.teams.map((team) => ({
+            id: team.id ?? crypto.randomUUID(),
+            memberIds: team.memberIds,
+          })),
+          payload.teamAssign,
+        )
         ackRoom(callback, room, payload.userId)
         broadcastState(room)
       } catch (error) {

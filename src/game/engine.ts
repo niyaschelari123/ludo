@@ -9,19 +9,23 @@ import type {
   Token,
 } from "./types";
 import {
+  applyPowerUp,
+  generatePowerTiles,
+  generateQuickPowerTiles,
+  generateTeamPowerTiles,
+  powerUpAtCell,
+} from "./powerUps";
+import { areTeammates, isTeamMode } from "./teams";
+import {
   allowsCaptures,
+  canControlSeat,
   hasPowerBoard,
   isBlitzMode,
   returnsCaptureToStart,
   usesQuickPowerBoard,
+  usesTeamPowerBoard,
   normalizeBlitzDurationMs,
 } from "./types";
-import {
-  applyPowerUp,
-  generatePowerTiles,
-  generateQuickPowerTiles,
-  powerUpAtCell,
-} from "./powerUps";
 
 // A classic four-player board has 52 outer cells: 13 per player.
 // The same sector length extends cleanly to the 5–8 player polygon boards.
@@ -30,11 +34,14 @@ export const CELLS_PER_PLAYER = 13;
 export const HOME_LENGTH = 5;
 export const TOKENS_PER_PLAYER = 4;
 export const QUICK_TOKENS_PER_PLAYER = 3;
+export const TEAM_TOKENS_PER_PLAYER = 2;
 export const TURN_ROLL_TIMEOUT_MS = 20_000;
 export const TURN_MOVE_TIMEOUT_MS = 20_000;
 
 export function tokensPerPlayer(gameMode: GameMode | null | undefined) {
-  return gameMode === "quick" ? QUICK_TOKENS_PER_PLAYER : TOKENS_PER_PLAYER;
+  if (gameMode === "quick") return QUICK_TOKENS_PER_PLAYER;
+  if (gameMode === "team") return TEAM_TOKENS_PER_PLAYER;
+  return TOKENS_PER_PLAYER;
 }
 
 /** Captured tokens go to the yard (−1), except Quick/Blitz (back to start at 0). */
@@ -162,11 +169,13 @@ export function createGame(
       players.map((player) => [player.id, emptyPlayerStats()]),
     ),
     activeMove: null,
-    powerTiles: usesQuickPowerBoard(gameMode)
-      ? generateQuickPowerTiles(boardPlayerCount)
-      : gameMode === "power"
-        ? generatePowerTiles(boardPlayerCount)
-        : {},
+    powerTiles: usesTeamPowerBoard(gameMode)
+      ? generateTeamPowerTiles(boardPlayerCount)
+      : usesQuickPowerBoard(gameMode)
+        ? generateQuickPowerTiles(boardPlayerCount)
+        : gameMode === "power"
+          ? generatePowerTiles(boardPlayerCount)
+          : {},
     shieldBuff: {},
     pendingExtraTurn: null,
     pendingPower: null,
@@ -238,6 +247,7 @@ export function resolveLandingCapture(
   for (const opponent of game.tokens) {
     if (
       opponent.playerId !== playerId &&
+      !areTeammates(room, playerId, opponent.playerId) &&
       globalCell(opponent, room) === landingCell
     ) {
       if (isSoleTokenProtected(game, opponent.playerId, room)) {
@@ -326,7 +336,7 @@ export function performLocalMove(room: Room, userId: string, tokenId: number) {
   if (!game || game.phase !== "move") {
     throw new Error("A token cannot be moved now.");
   }
-  if (next.players[game.turnIndex]?.id !== userId) {
+  if (!canControlSeat(next.players[game.turnIndex], userId)) {
     throw new Error("It is not your turn.");
   }
   applyMove(next, tokenId);
@@ -503,6 +513,29 @@ function completeTurnAfterMove(
 /** Classic/Power/Quick/Race: filling places can end the match. Blitz waits for the clock. */
 function tryConcludeByFinishPlaces(room: Room, game: GameState) {
   if (isBlitzMode(room.gameMode)) return false;
+
+  if (isTeamMode(room.gameMode) && room.teams?.length) {
+    const teamSize = room.teamSize ?? 2;
+    const finishedTeam = room.teams.find(
+      (team) =>
+        team.memberIds.length >= teamSize &&
+        team.memberIds.every((id) => game.winnerIds.includes(id)),
+    );
+    if (!finishedTeam) return false;
+    room.winningTeamId = finishedTeam.id;
+    room.status = "finished";
+    game.lastAction = `Team wins! ${finishedTeam.memberIds
+      .map(
+        (id) =>
+          room.players.find((player) => player.id === id)?.name ??
+          (room.departedPlayers ?? []).find((player) => player.id === id)
+            ?.name ??
+          "Player",
+      )
+      .join(" & ")} finished`;
+    return true;
+  }
+
   if (game.winnerIds.length < room.players.length - 1) return false;
   const lastPlayer = room.players.find(
     (candidate) => !game.winnerIds.includes(candidate.id),
@@ -519,7 +552,18 @@ function notePlayerFinished(room: Room, game: GameState, player: Player) {
   }
   if (game.winnerIds.includes(player.id)) return;
   game.winnerIds.push(player.id);
-  game.lastAction = `${player.name} finished in place #${game.winnerIds.length}`;
+  if (isTeamMode(room.gameMode)) {
+    const team = room.teams?.find((entry) =>
+      entry.memberIds.includes(player.id),
+    );
+    const done = team
+      ? team.memberIds.filter((id) => game.winnerIds.includes(id)).length
+      : 1;
+    const need = room.teamSize ?? team?.memberIds.length ?? 2;
+    game.lastAction = `${player.name} finished (${done}/${need} teammates home)`;
+  } else {
+    game.lastAction = `${player.name} finished in place #${game.winnerIds.length}`;
+  }
 }
 
 export function applyPendingPower(room: Room, startedAt = Date.now()) {
@@ -615,7 +659,7 @@ export function performLocalResolvePower(room: Room, userId: string) {
   if (!game || game.phase !== "power") {
     throw new Error("No power to resolve.");
   }
-  if (next.players[game.turnIndex]?.id !== userId) {
+  if (!canControlSeat(next.players[game.turnIndex], userId)) {
     throw new Error("It is not your turn.");
   }
   applyPendingPower(next);
@@ -725,6 +769,28 @@ export function applyMove(room: Room, tokenId: number) {
   });
 }
 
+/** Players whose tokens were reset to the eliminated slot between two room states. */
+export function findCaptureVictimIds(prev: Room, next: Room): string[] {
+  if (!prev.game || !next.game) return [];
+  const elim = eliminatedProgress(next);
+  const victims = new Set<string>();
+  for (const token of next.game.tokens) {
+    const before = prev.game.tokens.find(
+      (candidate) =>
+        candidate.playerId === token.playerId && candidate.id === token.id,
+    );
+    if (!before) continue;
+    if (
+      before.progress !== token.progress &&
+      token.progress === elim &&
+      before.progress !== elim
+    ) {
+      victims.add(token.playerId);
+    }
+  }
+  return [...victims];
+}
+
 export function detectMovedToken(prev: Room, next: Room): MovingToken | null {
   if (!prev.game || !next.game) return null;
   if (prev.game.lastAction === next.game.lastAction) return null;
@@ -751,13 +817,17 @@ export function detectMovedToken(prev: Room, next: Room): MovingToken | null {
       const dice =
         oldToken.progress === -1 ? 6 : token.progress - oldToken.progress;
       if (dice > 0) {
+        const willCapture = action.includes("captured");
         return {
           playerId: mover.id,
           id: token.id,
           fromProgress: oldToken.progress,
           dice,
           targetProgress: token.progress,
-          willCapture: action.includes("captured"),
+          willCapture,
+          captureVictimIds: willCapture
+            ? findCaptureVictimIds(prev, next)
+            : undefined,
         };
       }
     }

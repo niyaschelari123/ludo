@@ -14,7 +14,16 @@ import {
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
 import { sanitizePowerTiles } from '../../src/game/powerUps.js'
-import { PLAYER_COLORS, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, BLITZ_EXTEND_MS, type Room } from '../../src/game/types.js'
+import { PLAYER_COLORS, canControlSeat, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, BLITZ_EXTEND_MS, type Room, type Team, type TeamAssignMode, type TeamSize } from '../../src/game/types.js'
+import {
+  buildRandomTeams,
+  buildSequentialTeams,
+  isTeamMode,
+  normalizeTeamAssign,
+  normalizeTeamSize,
+  teamRoomSizes,
+  validateTeamAssignment,
+} from '../../src/game/teams.js'
 import { finalizeBlitzGame } from '../../src/game/matchAwards.js'
 import { normalizeColorKey } from '../../src/game/colors.js'
 
@@ -222,9 +231,21 @@ export function createRoom(
   preferredColor?: string,
   lockColor?: boolean,
   blitzDurationMs?: number | null,
+  teamSize?: TeamSize | null,
+  teamAssign?: TeamAssignMode | null,
 ) {
   if (maxPlayers < 2 || maxPlayers > 8) {
     throw new Error('Room size must be between 2 and 8 players.')
+  }
+  if (isTeamMode(gameMode)) {
+    const size = normalizeTeamSize(teamSize, maxPlayers)
+    if (!teamRoomSizes(size).includes(maxPlayers)) {
+      throw new Error(
+        size === 3
+          ? 'Team (3) needs 3 or 6 players.'
+          : 'Team (2) needs 2, 4, 5, 6, or 8 players.',
+      )
+    }
   }
 
   const now = Date.now()
@@ -251,6 +272,14 @@ export function createRoom(
     gameMode,
     blitzDurationMs:
       gameMode === 'blitz' ? normalizeBlitzDurationMs(blitzDurationMs) : null,
+    teamSize: isTeamMode(gameMode)
+      ? normalizeTeamSize(teamSize, maxPlayers)
+      : null,
+    teamAssign: isTeamMode(gameMode)
+      ? normalizeTeamAssign(teamAssign)
+      : null,
+    teams: null,
+    winningTeamId: null,
     status: 'lobby',
     players: [
       {
@@ -373,6 +402,103 @@ export function setSlotBot(
   return room
 }
 
+export function setTeams(
+  roomId: string,
+  hostId: string,
+  teams: Team[],
+  teamAssign?: TeamAssignMode,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) throw new Error('Only the host can set teams.')
+  if (room.status !== 'lobby') throw new Error('Teams can only be set in the lobby.')
+  if (!isTeamMode(room.gameMode)) throw new Error('This room is not Team mode.')
+  const assign = normalizeTeamAssign(teamAssign ?? room.teamAssign)
+  room.teamAssign = assign
+
+  if (assign === 'random' && teams.length === 0) {
+    room.teams = null
+    room.updatedAt = Date.now()
+    return room
+  }
+
+  const teamSize = room.teamSize ?? 2
+  const error = validateTeamAssignment(room.players, teams, teamSize)
+  if (error) throw new Error(error)
+  room.teams = teams.map((team) => ({
+    id: team.id || crypto.randomUUID(),
+    memberIds: [...team.memberIds],
+  }))
+  room.updatedAt = Date.now()
+  return room
+}
+
+function addControlledTeammateBot(room: Room, humanId: string) {
+  if (room.players.length >= 8) {
+    throw new Error('Cannot add teammate bot — board is full.')
+  }
+  if (room.players.length >= room.maxPlayers) {
+    room.maxPlayers = Math.min(8, room.players.length + 1)
+  }
+  const seat = firstOpenSeat(room)
+  if (seat === -1) throw new Error('No open seat for teammate bot.')
+  const botCount = room.players.filter((player) => player.isBot).length
+  const botId = crypto.randomUUID()
+  room.players.push({
+    id: botId,
+    name: `Bot ${botCount + 1}`,
+    color: nextFreePresetColor(room),
+    seat,
+    connected: true,
+    isBot: true,
+    controlledBy: humanId,
+    rejoinCode: allocateRejoinCode(room),
+    joinedAt: Date.now(),
+  })
+  sortPlayers(room)
+  return botId
+}
+
+/**
+ * Fill leftover solo seat with a controlled bot (5 humans + team size 2),
+ * then build / complete teams before kickoff.
+ */
+function prepareTeamModeStart(room: Room) {
+  const teamSize = room.teamSize ?? 2
+  room.teamSize = teamSize
+  room.teamAssign = normalizeTeamAssign(room.teamAssign)
+
+  let teams = room.teams ? structuredClone(room.teams) : null
+
+  if (room.teamAssign === 'random' || !teams?.length) {
+    teams = buildRandomTeams(room.players, teamSize)
+  }
+
+  // 5 humans + size-2: one incomplete pair → add bot teammate that human controls.
+  if (teamSize === 2) {
+    const short = teams.filter((team) => team.memberIds.length === 1)
+    const full = teams.filter((team) => team.memberIds.length === 2)
+    if (short.length === 1 && full.length * 2 + 1 === room.players.length) {
+      const humanId = short[0].memberIds[0]
+      const botId = addControlledTeammateBot(room, humanId)
+      short[0].memberIds.push(botId)
+    }
+  }
+
+  const error = validateTeamAssignment(room.players, teams, teamSize)
+  if (error) throw new Error(error)
+
+  // Rebuild if seats changed after bot inject and assign was random-ish incomplete.
+  if (teams.some((team) => team.memberIds.length < teamSize)) {
+    teams = buildSequentialTeams(room.players, teamSize)
+  }
+
+  const finalError = validateTeamAssignment(room.players, teams, teamSize)
+  if (finalError) throw new Error(finalError)
+
+  room.teams = teams
+  room.winningTeamId = null
+}
+
 export function startRoom(roomId: string, userId: string) {
   const room = getRoom(roomId)
   if (room.hostId !== userId) throw new Error('Only the host can start.')
@@ -381,8 +507,13 @@ export function startRoom(roomId: string, userId: string) {
     throw new Error('At least two players are required.')
   }
 
+  if (isTeamMode(room.gameMode)) {
+    prepareTeamModeStart(room)
+  }
+
   sortPlayers(room)
   assignRandomGamePositions(room)
+  // After seat shuffle, team memberIds stay stable (ids), only seats moved.
   for (const player of room.players) {
     if (!player.rejoinCode) player.rejoinCode = allocateRejoinCode(room)
   }
@@ -484,7 +615,7 @@ export function rollDice(
     return { room, dice: forcedDice }
   }
 
-  if (player.id !== userId) {
+  if (!canControlSeat(player, userId)) {
     throw new Error('It is not your turn.')
   }
 
@@ -517,7 +648,8 @@ export function movePawn(
   targetProgress?: number,
 ) {
   const room = structuredClone(getRoom(roomId)) as Room
-  if (room.players[room.game?.turnIndex ?? -1]?.id !== userId) {
+  const turnPlayer = room.players[room.game?.turnIndex ?? -1]
+  if (!canControlSeat(turnPlayer, userId)) {
     throw new Error('It is not your turn.')
   }
 
@@ -525,13 +657,14 @@ export function movePawn(
   if (game.phase !== 'move') throw new Error('A token cannot be moved now.')
 
   const token = game.tokens.find(
-    (candidate) => candidate.playerId === userId && candidate.id === tokenId,
+    (candidate) =>
+      candidate.playerId === turnPlayer.id && candidate.id === tokenId,
   )
   if (!token) throw new Error('That move is not valid.')
 
   // Broadcast-friendly active move so remote clients can animate before final state.
   game.activeMove = {
-    playerId: userId,
+    playerId: turnPlayer.id,
     tokenId,
     fromProgress: token.progress,
     dice: game.dice ?? 1,
@@ -567,7 +700,7 @@ export function resolvePendingPower(
     return { previewRoom: current, room: current }
   }
 
-  if (current.players[game.turnIndex]?.id !== userId) {
+  if (!canControlSeat(current.players[game.turnIndex], userId)) {
     throw new Error('It is not your turn.')
   }
 
@@ -803,6 +936,21 @@ function finalizeGameIfNeeded(room: Room) {
   const game = room.game
   if (!game) return
 
+  if (isTeamMode(room.gameMode) && room.teams?.length) {
+    const teamSize = room.teamSize ?? 2
+    const finishedTeam = room.teams.find(
+      (team) =>
+        team.memberIds.length >= teamSize &&
+        team.memberIds.every((id) => game.winnerIds.includes(id)),
+    )
+    if (finishedTeam) {
+      room.winningTeamId = finishedTeam.id
+      room.status = 'finished'
+      game.turnDeadline = null
+    }
+    return
+  }
+
   if (
     room.players.length === 1 ||
     game.winnerIds.length >= room.players.length - 1
@@ -896,7 +1044,10 @@ export function setPlayerAutoPlay(
 
   const player = room.players.find((candidate) => candidate.id === targetUserId)
   if (!player) throw new Error('Player not found.')
-  if (player.isBot) throw new Error('Bots are already automatic.')
+  if (player.isBot) throw new Error('Uncontrolled bots are already automatic.')
+  if (player.controlledBy) {
+    throw new Error('This bot is controlled by a teammate.')
+  }
 
   player.autoPlay = enabled || undefined
   room.game.lastAction = enabled

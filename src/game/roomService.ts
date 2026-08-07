@@ -10,7 +10,13 @@ export async function createRoom(
   name: string,
   maxPlayers: number,
   gameMode: Room['gameMode'] = 'classic',
-  options?: { color?: string; lockColor?: boolean; blitzDurationMs?: number },
+  options?: {
+    color?: string
+    lockColor?: boolean
+    blitzDurationMs?: number
+    teamSize?: 2 | 3
+    teamAssign?: 'random' | 'manual'
+  },
 ) {
   const { room } = await emitAck<{ room: Room }>('createRoom', {
     userId,
@@ -21,6 +27,27 @@ export async function createRoom(
     ...(gameMode === 'blitz'
       ? { blitzDurationMs: options?.blitzDurationMs }
       : {}),
+    ...(gameMode === 'team'
+      ? {
+          teamSize: options?.teamSize ?? 2,
+          teamAssign: options?.teamAssign ?? 'random',
+        }
+      : {}),
+  })
+  return room
+}
+
+export async function setTeams(
+  roomId: string,
+  userId: string,
+  teams: Array<{ id?: string; memberIds: string[] }>,
+  teamAssign?: 'random' | 'manual',
+) {
+  const { room } = await emitAck<{ room: Room }>('setTeams', {
+    roomId,
+    userId,
+    teams,
+    teamAssign,
   })
   return room
 }
