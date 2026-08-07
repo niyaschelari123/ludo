@@ -155,3 +155,18 @@ export function playWin() {
 export function playYourTurn() {
   playSample(SFX.yourTurn, 0.85)
 }
+
+/** Bright metallic rise — shield picked up. */
+export function playShieldGain() {
+  tone(392, 0.08, { volume: 0.05, type: 'triangle', endFrequency: 523 })
+  tone(523, 0.12, { delay: 0.06, volume: 0.065, type: 'sine', endFrequency: 784 })
+  tone(784, 0.18, { delay: 0.12, volume: 0.055, type: 'triangle', endFrequency: 988 })
+  tone(1175, 0.1, { delay: 0.2, volume: 0.035, type: 'sine' })
+}
+
+/** Soft break / shatter — shield blocked a hit and dropped. */
+export function playShieldLose() {
+  tone(620, 0.07, { volume: 0.055, type: 'square', endFrequency: 280 })
+  tone(440, 0.1, { delay: 0.04, volume: 0.045, type: 'sawtooth', endFrequency: 160 })
+  tone(220, 0.16, { delay: 0.09, volume: 0.04, type: 'triangle', endFrequency: 90 })
+}

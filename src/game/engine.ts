@@ -35,11 +35,29 @@ export const HOME_LENGTH = 5;
 export const TOKENS_PER_PLAYER = 4;
 export const QUICK_TOKENS_PER_PLAYER = 3;
 export const TEAM_TOKENS_PER_PLAYER = 2;
+export const QUICK_TOKEN_OPTIONS = [1, 2, 3, 4] as const;
+export type QuickTokenCount = (typeof QUICK_TOKEN_OPTIONS)[number];
+
+export function normalizeQuickTokenCount(
+  value: number | null | undefined,
+): QuickTokenCount {
+  if (
+    typeof value === "number" &&
+    (QUICK_TOKEN_OPTIONS as readonly number[]).includes(value)
+  ) {
+    return value as QuickTokenCount;
+  }
+  return QUICK_TOKENS_PER_PLAYER;
+}
+
 export const TURN_ROLL_TIMEOUT_MS = 20_000;
 export const TURN_MOVE_TIMEOUT_MS = 20_000;
 
-export function tokensPerPlayer(gameMode: GameMode | null | undefined) {
-  if (gameMode === "quick") return QUICK_TOKENS_PER_PLAYER;
+export function tokensPerPlayer(
+  gameMode: GameMode | null | undefined,
+  override?: number | null,
+) {
+  if (gameMode === "quick") return normalizeQuickTokenCount(override);
   if (gameMode === "team") return TEAM_TOKENS_PER_PLAYER;
   return TOKENS_PER_PLAYER;
 }
@@ -138,10 +156,11 @@ export function recordEliminated(game: GameState, playerId: string) {
 export function createGame(
   players: Player[],
   gameMode: GameMode = "classic",
-  options?: { blitzDurationMs?: number | null },
+  options?: { blitzDurationMs?: number | null; quickTokens?: number | null },
 ): GameState {
   const boardPlayerCount = players.length;
   const blitzMs = normalizeBlitzDurationMs(options?.blitzDurationMs);
+  const tokenCount = tokensPerPlayer(gameMode, options?.quickTokens);
   return {
     turnIndex: 0,
     phase: "roll",
@@ -157,7 +176,7 @@ export function createGame(
     ),
     winnerIds: [],
     tokens: players.flatMap((player) =>
-      Array.from({ length: tokensPerPlayer(gameMode) }, (_, id) => ({
+      Array.from({ length: tokenCount }, (_, id) => ({
         id,
         playerId: player.id,
         // Start with one token already on the start square so games open faster.

@@ -1428,6 +1428,13 @@ select:focus {
   opacity: 0.92;
 }
 
+.token.shielded {
+  filter:
+    drop-shadow(0 0 3px rgba(125, 211, 252, 0.95))
+    drop-shadow(0 0 10px rgba(56, 189, 248, 0.55))
+    drop-shadow(0 3px 5px rgba(0, 0, 0, 0.55));
+}
+
 .token.movable {
   cursor: pointer;
   animation: token-pulse .75s infinite alternate;

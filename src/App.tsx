@@ -8,6 +8,8 @@ import {
   playDiceResult,
   playDiceTick,
   playHome,
+  playShieldGain,
+  playShieldLose,
   playWin,
   playYourTurn,
   setSoundEnabled,
@@ -32,6 +34,7 @@ import {
   setSlotBot,
   setPlayerAutoPlay,
   setBlitzDuration,
+  setQuickTokens,
   extendBlitzTime,
   skipMoveTimer,
   skipPowerTimer,
@@ -66,8 +69,10 @@ import {
   movableTokens,
   performLocalMove,
   performLocalResolvePower,
+  QUICK_TOKEN_OPTIONS,
   TURN_MOVE_TIMEOUT_MS,
   TURN_ROLL_TIMEOUT_MS,
+  type QuickTokenCount,
 } from './game/engine'
 import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWinOdds, rankBlitzPlayers, readPlayerStats, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
 import { PLAYER_COLORS, BLITZ_DURATION_OPTIONS, DEFAULT_BLITZ_DURATION_MS, blitzDurationLabel, canControlSeat, gameModeLabel, hasPowerBoard, isAutoControlled, isBlitzMode, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room, type TeamAssignMode, type TeamSize } from './game/types'
@@ -210,6 +215,7 @@ function App() {
   const [maxPlayers, setMaxPlayers] = useState(6)
   const [gameMode, setGameMode] = useState<GameMode>('classic')
   const [blitzDurationMs, setBlitzDurationMs] = useState(DEFAULT_BLITZ_DURATION_MS)
+  const [quickTokens, setQuickTokensChoice] = useState<QuickTokenCount>(3)
   const [teamSize, setTeamSize] = useState<TeamSize>(2)
   const [teamAssign, setTeamAssign] = useState<TeamAssignMode>('random')
   const [manualDraft, setManualDraft] = useState<string[][]>([[], []])
@@ -257,6 +263,8 @@ function App() {
   const lastYourTurnCue = useRef<string | null>(null)
   const prevTurnPlayerIdForCue = useRef<string | null>(null)
   const lastBotRollRef = useRef<string | null>(null)
+  const prevShieldBuffRef = useRef<Record<string, boolean>>({})
+  const shieldSfxPrimedRef = useRef(false)
   const extraCtrl = useMemo(() => {
     try {
       return localStorage.getItem('ludo_admin') === 'true'
@@ -625,6 +633,41 @@ function App() {
       playWin()
     }
   }, [displayRoom?.game?.lastAction])
+
+  useEffect(() => {
+    shieldSfxPrimedRef.current = false
+    prevShieldBuffRef.current = {}
+  }, [roomId])
+
+  useEffect(() => {
+    const buff = displayRoom?.game?.shieldBuff ?? {}
+    const snapshot: Record<string, boolean> = {}
+    for (const [id, on] of Object.entries(buff)) {
+      snapshot[id] = Boolean(on)
+    }
+    // Also track players who lost shield (key removed / false).
+    for (const id of Object.keys(prevShieldBuffRef.current)) {
+      if (!(id in snapshot)) snapshot[id] = false
+    }
+
+    if (!shieldSfxPrimedRef.current) {
+      shieldSfxPrimedRef.current = true
+      prevShieldBuffRef.current = snapshot
+      return
+    }
+
+    const ids = new Set([
+      ...Object.keys(prevShieldBuffRef.current),
+      ...Object.keys(snapshot),
+    ])
+    for (const id of ids) {
+      const was = Boolean(prevShieldBuffRef.current[id])
+      const now = Boolean(snapshot[id])
+      if (!was && now) playShieldGain()
+      if (was && !now) playShieldLose()
+    }
+    prevShieldBuffRef.current = snapshot
+  }, [displayRoom?.game?.shieldBuff, displayRoom?.id])
 
   // Faa SFX: start as soon as the capturing token begins hopping (preloaded = no lag).
   useEffect(() => {
@@ -1272,7 +1315,7 @@ function App() {
                   onClick={() => setGameMode('quick')}
                 >
                   <strong>Quick</strong>
-                  <span>3 tokens, capture to start, Super leaps</span>
+                  <span>Pick token count · capture to start · Super leaps</span>
                 </button>
                 <button
                   type="button"
@@ -1314,6 +1357,23 @@ function App() {
                   {BLITZ_DURATION_OPTIONS.map((option) => (
                     <option key={option.minutes} value={option.minutes * 60_000}>
                       {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {gameMode === 'quick' ? (
+              <label>
+                Tokens per player
+                <select
+                  value={quickTokens}
+                  onChange={(event) =>
+                    setQuickTokensChoice(Number(event.target.value) as QuickTokenCount)
+                  }
+                >
+                  {QUICK_TOKEN_OPTIONS.map((count) => (
+                    <option key={count} value={count}>
+                      {count} token{count === 1 ? '' : 's'}
                     </option>
                   ))}
                 </select>
@@ -1374,6 +1434,7 @@ function App() {
                   {
                     ...roomColorOptions,
                     ...(gameMode === 'blitz' ? { blitzDurationMs } : {}),
+                    ...(gameMode === 'quick' ? { quickTokens } : {}),
                     ...(gameMode === 'team' ? { teamSize, teamAssign } : {}),
                   },
                 )
@@ -1676,6 +1737,35 @@ function App() {
                     </label>
                   ) : (
                     <strong>{blitzDurationLabel(room.blitzDurationMs)}</strong>
+                  )}
+                </>
+              ) : null}
+              {room.gameMode === 'quick' ? (
+                <>
+                  {' '}
+                  ·{' '}
+                  {room.hostId === userId ? (
+                    <label className="lobby-blitz-duration">
+                      Tokens
+                      <select
+                        value={room.quickTokens ?? 3}
+                        disabled={busy}
+                        onChange={(event) => {
+                          const next = Number(event.target.value)
+                          void perform(async () => {
+                            await setQuickTokens(room.id, userId, next)
+                          })
+                        }}
+                      >
+                        {QUICK_TOKEN_OPTIONS.map((count) => (
+                          <option key={count} value={count}>
+                            {count}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <strong>{room.quickTokens ?? 3} tokens</strong>
                   )}
                 </>
               ) : null}
@@ -2338,7 +2428,10 @@ function App() {
                   <p className="power-rules-title">
                     <strong>Quick mode:</strong> a faster Power board with a few rule changes.
                   </p>
-                  <p>Each player has 3 tokens (not 4).</p>
+                  <p>
+                    Each player has {viewRoom.quickTokens ?? 3} token
+                    {(viewRoom.quickTokens ?? 3) === 1 ? '' : 's'} (host picks before start).
+                  </p>
                   <p>Roll 6 to leave the yard.</p>
                   <p>
                     When a token is eliminated, it returns to its colored start square — not the yard —

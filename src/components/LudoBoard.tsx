@@ -215,15 +215,89 @@ function TokenDisc({
   color,
   radius,
   finished,
+  shielded,
 }: {
   color: string
   radius: number
   finished?: boolean
+  shielded?: boolean
 }) {
   const style = tokenStyleFor(color)
   const rim = Math.max(1.4, radius * 0.16)
   const body = Math.max(0, radius - rim * 0.45)
   const glowWidth = Math.max(1.2, radius * 0.14)
+  // Heater-style shield outline centered on token origin.
+  const shieldPath = [
+    `M 0 ${-radius * 1.05}`,
+    `L ${radius * 0.78} ${-radius * 0.55}`,
+    `L ${radius * 0.82} ${radius * 0.12}`,
+    `Q 0 ${radius * 1.2} ${-radius * 0.82} ${radius * 0.12}`,
+    `L ${-radius * 0.78} ${-radius * 0.55}`,
+    'Z',
+  ].join(' ')
+
+  if (shielded) {
+    return (
+      <>
+        <ellipse
+          cx={radius * 0.04}
+          cy={radius * 0.95}
+          rx={radius * 0.72}
+          ry={radius * 0.2}
+          fill="rgba(0,0,0,0.32)"
+        />
+        <path
+          d={shieldPath}
+          fill="none"
+          stroke={style.glow}
+          strokeWidth={glowWidth * 1.6}
+          opacity={finished ? 0.3 : 0.5}
+        />
+        <path
+          d={shieldPath}
+          fill={style.fill}
+          stroke={style.rim}
+          strokeWidth={rim}
+          strokeLinejoin="round"
+        />
+        <path
+          d={[
+            `M 0 ${-radius * 0.78}`,
+            `L ${radius * 0.52} ${-radius * 0.4}`,
+            `L ${radius * 0.55} ${radius * 0.02}`,
+            `Q 0 ${radius * 0.78} ${-radius * 0.55} ${radius * 0.02}`,
+            `L ${-radius * 0.52} ${-radius * 0.4}`,
+            'Z',
+          ].join(' ')}
+          fill={style.shine}
+          opacity={finished ? 0.18 : 0.32}
+        />
+        <path
+          d={`M 0 ${-radius * 0.85} L 0 ${radius * 0.55}`}
+          fill="none"
+          stroke="rgba(255,255,255,0.55)"
+          strokeWidth={Math.max(1, radius * 0.1)}
+          strokeLinecap="round"
+          opacity={0.75}
+        />
+        <path
+          d={`M ${-radius * 0.42} ${-radius * 0.15} L ${radius * 0.42} ${-radius * 0.15}`}
+          fill="none"
+          stroke="rgba(255,255,255,0.45)"
+          strokeWidth={Math.max(0.8, radius * 0.08)}
+          strokeLinecap="round"
+          opacity={0.7}
+        />
+        <path
+          d={shieldPath}
+          fill="none"
+          stroke="rgba(255,255,255,0.85)"
+          strokeWidth={Math.max(0.7, radius * 0.06)}
+          opacity={finished ? 0.45 : 0.7}
+        />
+      </>
+    )
+  }
 
   return (
     <>
@@ -755,6 +829,7 @@ export function LudoBoard({
             // never fan them out or they'll spill onto neighboring sectors.
             const stacked = !isFinished && group.length > 1
             const inYard = originalToken.progress === -1
+            const shielded = Boolean(room.game?.shieldBuff?.[player.id])
             const tokenRadius = tokenDisplayRadius(
               boardCount,
               isSquare,
@@ -789,7 +864,7 @@ export function LudoBoard({
             return (
               <g
                 key={`${originalToken.playerId}-${originalToken.id}`}
-                className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''}`}
+                className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''} ${shielded ? 'shielded' : ''}`}
                 style={{
                   transform: `translate(${position.x + offsetX}px, ${position.y + offsetY}px)`,
                 }}
@@ -800,6 +875,7 @@ export function LudoBoard({
                   color={player.color}
                   radius={tokenRadius}
                   finished={isFinished}
+                  shielded={shielded}
                 />
               </g>
             )

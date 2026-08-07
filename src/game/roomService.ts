@@ -16,6 +16,7 @@ export async function createRoom(
     blitzDurationMs?: number
     teamSize?: 2 | 3
     teamAssign?: 'random' | 'manual'
+    quickTokens?: number
   },
 ) {
   const { room } = await emitAck<{ room: Room }>('createRoom', {
@@ -27,12 +28,28 @@ export async function createRoom(
     ...(gameMode === 'blitz'
       ? { blitzDurationMs: options?.blitzDurationMs }
       : {}),
+    ...(gameMode === 'quick'
+      ? { quickTokens: options?.quickTokens ?? 3 }
+      : {}),
     ...(gameMode === 'team'
       ? {
           teamSize: options?.teamSize ?? 2,
           teamAssign: options?.teamAssign ?? 'random',
         }
       : {}),
+  })
+  return room
+}
+
+export async function setQuickTokens(
+  roomId: string,
+  userId: string,
+  quickTokens: number,
+) {
+  const { room } = await emitAck<{ room: Room }>('setQuickTokens', {
+    roomId,
+    userId,
+    quickTokens,
   })
   return room
 }

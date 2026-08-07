@@ -39,6 +39,7 @@ import {
   setBlitzDuration,
   extendBlitzTime,
   setTeams,
+  setQuickTokens,
 } from './roomManager.js'
 import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.js'
 import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
@@ -327,6 +328,7 @@ io.on('connection', (socket) => {
         blitzDurationMs?: number
         teamSize?: 2 | 3
         teamAssign?: 'random' | 'manual'
+        quickTokens?: number
       },
       callback?: Ack<{ room: Room }>,
     ) => {
@@ -341,8 +343,33 @@ io.on('connection', (socket) => {
           payload.blitzDurationMs,
           payload.teamSize,
           payload.teamAssign,
+          payload.quickTokens,
         )
         bindSession(socket, payload.userId, room.id)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'setQuickTokens',
+    (
+      payload: {
+        roomId: string
+        userId: string
+        quickTokens: number
+      },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = setQuickTokens(
+          payload.roomId,
+          payload.userId,
+          payload.quickTokens,
+        )
         ackRoom(callback, room, payload.userId)
         broadcastState(room)
       } catch (error) {

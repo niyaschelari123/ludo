@@ -348,6 +348,8 @@ export interface Room {
   gameMode: GameMode;
   /** Blitz only: selected match length in ms (from BLITZ_DURATION_OPTIONS). */
   blitzDurationMs?: number | null;
+  /** Quick only: how many tokens each player starts with (1–4). */
+  quickTokens?: number | null;
   /** Team mode: 2 or 3 players per team. */
   teamSize?: TeamSize | null;
   /** Team mode: random shuffle or host-picked teams. */

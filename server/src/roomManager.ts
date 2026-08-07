@@ -9,6 +9,7 @@ import {
   applyRollMisses,
   createGame,
   getBoardPlayerCount,
+  normalizeQuickTokenCount,
   pickBestMovableToken,
   resolveDiceValue,
   TURN_ROLL_TIMEOUT_MS,
@@ -233,6 +234,7 @@ export function createRoom(
   blitzDurationMs?: number | null,
   teamSize?: TeamSize | null,
   teamAssign?: TeamAssignMode | null,
+  quickTokens?: number | null,
 ) {
   if (maxPlayers < 2 || maxPlayers > 8) {
     throw new Error('Room size must be between 2 and 8 players.')
@@ -272,6 +274,8 @@ export function createRoom(
     gameMode,
     blitzDurationMs:
       gameMode === 'blitz' ? normalizeBlitzDurationMs(blitzDurationMs) : null,
+    quickTokens:
+      gameMode === 'quick' ? normalizeQuickTokenCount(quickTokens) : null,
     teamSize: isTeamMode(gameMode)
       ? normalizeTeamSize(teamSize, maxPlayers)
       : null,
@@ -519,8 +523,30 @@ export function startRoom(roomId: string, userId: string) {
   }
   room.game = createGame(room.players, room.gameMode ?? 'classic', {
     blitzDurationMs: room.blitzDurationMs,
+    quickTokens: room.quickTokens,
   })
   room.status = 'playing'
+  room.updatedAt = Date.now()
+  return room
+}
+
+/** Host can change Quick token count while still in the lobby. */
+export function setQuickTokens(
+  roomId: string,
+  hostId: string,
+  quickTokens: number,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can change token count.')
+  }
+  if (room.status !== 'lobby') {
+    throw new Error('Token count can only be changed in the lobby.')
+  }
+  if (room.gameMode !== 'quick') {
+    throw new Error('Token count only applies to Quick mode.')
+  }
+  room.quickTokens = normalizeQuickTokenCount(quickTokens)
   room.updatedAt = Date.now()
   return room
 }
