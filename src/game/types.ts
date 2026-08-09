@@ -17,6 +17,21 @@ export type TurnPhase = "roll" | "move" | "power";
 export type GameMode = "classic" | "power" | "quick" | "race" | "blitz" | "team";
 export type TeamSize = 2 | 3;
 export type TeamAssignMode = "random" | "manual";
+/** Host policy for people who want to watch without a seat. */
+export type SpectatorAccess = "off" | "request" | "open";
+
+export interface Spectator {
+  id: string;
+  name: string;
+  connected: boolean;
+  joinedAt: number;
+}
+
+export interface SpectatorRequest {
+  id: string;
+  name: string;
+  requestedAt: number;
+}
 
 export interface Team {
   id: string;
@@ -339,6 +354,22 @@ export interface GameState {
   endsAt?: number | null;
 }
 
+export type ChatScope = "all" | "dm";
+
+export interface ChatMessage {
+  id: string;
+  roomId: string;
+  fromId: string;
+  fromName: string;
+  fromColor: string;
+  text: string;
+  scope: ChatScope;
+  /** Set when scope is dm. */
+  toId?: string;
+  toName?: string;
+  at: number;
+}
+
 export interface Room {
   id: string;
   code: string;
@@ -358,6 +389,10 @@ export interface Room {
   teams?: Team[] | null;
   /** Team mode: set when a full team finishes. */
   winningTeamId?: string | null;
+  /** Who may watch without playing. Default request. */
+  spectatorAccess?: SpectatorAccess;
+  spectators?: Spectator[];
+  spectatorRequests?: SpectatorRequest[];
   status: RoomStatus;
   players: Player[];
   departedPlayers: DepartedPlayer[];

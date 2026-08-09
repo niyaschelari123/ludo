@@ -11,24 +11,30 @@ import express from 'express'
 import { createServer } from 'node:http'
 import { Server, type Socket } from 'socket.io'
 import {
+  approveSpectate,
   claimPlayerColor,
   claimSeat,
   createRoom,
+  denySpectate,
   getRoom,
   handleMoveTimeout,
   handlePowerTimeout,
   handleRollTimeout,
   joinRoom,
   leaveRoom,
+  leaveSpectate,
   listColorClaims,
   markDisconnected,
   movePawn,
   releasePlayerColor,
   removePlayer,
+  removeSpectator,
+  requestSpectate,
   resolvePendingPower,
   rollDice,
   roomViewFor,
   setSlotBot,
+  setSpectatorAccess,
   skipMoveTimer,
   skipPowerTimer,
   skipRollTimer,
@@ -45,7 +51,8 @@ import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.
 import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
 import { schedulePowerTimer, stopPowerTimer } from './powerTimer.js'
 import { scheduleBlitzTimer, stopBlitzTimer } from './blitzTimer.js'
-import type { ActiveMove, Room } from '../../src/game/types.js'
+import { chatHistoryFor, postChatMessage } from './chat.js'
+import type { ActiveMove, ChatMessage, Room } from '../../src/game/types.js'
 import { isBlitzMode } from '../../src/game/types.js'
 import { tokenMoveDurationMs } from '../../src/game/types.js'
 
@@ -244,6 +251,31 @@ function emitAnimatedMove(roomId: string, previewRoom: Room, finalRoom: Room) {
   setTimeout(() => {
     scheduleBotTurn(roomId, handleBotAction, 'afterMove')
   }, animMs)
+}
+
+function emitChatMessage(roomId: string, message: ChatMessage) {
+  if (message.scope === 'all') {
+    io.to(roomId).emit('chatMessage', message)
+    return
+  }
+
+  void io
+    .in(roomId)
+    .fetchSockets()
+    .then((sockets) => {
+      for (const peer of sockets) {
+        const session = sessions.get(peer.id)
+        if (
+          session?.userId === message.fromId ||
+          session?.userId === message.toId
+        ) {
+          peer.emit('chatMessage', message)
+        }
+      }
+    })
+    .catch((error) => {
+      console.error(`Failed to deliver DM in room ${roomId}:`, error)
+    })
 }
 
 function bindSession(socket: Socket, userId: string, roomId: string) {
@@ -505,6 +537,164 @@ io.on('connection', (socket) => {
     },
   )
 
+  socket.on(
+    'requestSpectate',
+    (
+      payload: { userId: string; name: string; code: string },
+      callback?: Ack<{ room: Room; status: 'pending' | 'watching' }>,
+    ) => {
+      try {
+        const { room, status } = requestSpectate(
+          payload.userId,
+          payload.name,
+          payload.code,
+        )
+        bindSession(socket, payload.userId, room.id)
+        callback?.({
+          ok: true,
+          data: { room: roomViewFor(room, payload.userId), status },
+        })
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'approveSpectate',
+    (
+      payload: { roomId: string; userId: string; targetUserId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = approveSpectate(
+          payload.roomId,
+          payload.userId,
+          payload.targetUserId,
+        )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'denySpectate',
+    (
+      payload: { roomId: string; userId: string; targetUserId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = denySpectate(
+          payload.roomId,
+          payload.userId,
+          payload.targetUserId,
+        )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+        // Drop denied requester from the socket room if still connected.
+        void io
+          .in(payload.roomId)
+          .fetchSockets()
+          .then((sockets) => {
+            for (const peer of sockets) {
+              const session = sessions.get(peer.id)
+              if (session?.userId === payload.targetUserId) {
+                peer.leave(payload.roomId)
+                sessions.delete(peer.id)
+                peer.emit('spectateDenied', { roomId: payload.roomId })
+              }
+            }
+          })
+          .catch(() => {})
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'removeSpectator',
+    (
+      payload: { roomId: string; userId: string; targetUserId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = removeSpectator(
+          payload.roomId,
+          payload.userId,
+          payload.targetUserId,
+        )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+        void io
+          .in(payload.roomId)
+          .fetchSockets()
+          .then((sockets) => {
+            for (const peer of sockets) {
+              const session = sessions.get(peer.id)
+              if (session?.userId === payload.targetUserId) {
+                peer.leave(payload.roomId)
+                sessions.delete(peer.id)
+                peer.emit('spectateDenied', { roomId: payload.roomId })
+              }
+            }
+          })
+          .catch(() => {})
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'leaveSpectate',
+    (
+      payload: { roomId: string; userId: string },
+      callback?: Ack<{ room: Room | null }>,
+    ) => {
+      try {
+        const room = leaveSpectate(payload.roomId, payload.userId)
+        sessions.delete(socket.id)
+        socket.leave(payload.roomId)
+        callback?.({
+          ok: true,
+          data: { room: room ? roomViewFor(room, payload.userId) : null },
+        })
+        if (room) broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'setSpectatorAccess',
+    (
+      payload: {
+        roomId: string
+        userId: string
+        access: 'off' | 'request' | 'open'
+      },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = setSpectatorAccess(
+          payload.roomId,
+          payload.userId,
+          payload.access,
+        )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
   // --- setSlotBot: host fills a seat with a bot or clears it ---
   socket.on(
     'setSlotBot',
@@ -662,6 +852,48 @@ io.on('connection', (socket) => {
   )
 
   socket.on(
+    'sendChat',
+    (
+      payload: {
+        roomId: string
+        userId: string
+        text: string
+        toUserId?: string | null
+      },
+      callback?: Ack<{ message: ChatMessage }>,
+    ) => {
+      try {
+        const room = getRoom(payload.roomId)
+        const message = postChatMessage(room, payload.userId, payload.text, {
+          toUserId: payload.toUserId,
+        })
+        callback?.({ ok: true, data: { message } })
+        emitChatMessage(payload.roomId, message)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'fetchChat',
+    (
+      payload: { roomId: string; userId: string },
+      callback?: Ack<{ messages: ChatMessage[] }>,
+    ) => {
+      try {
+        getRoom(payload.roomId)
+        callback?.({
+          ok: true,
+          data: { messages: chatHistoryFor(payload.roomId, payload.userId) },
+        })
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
     'removePlayer',
     (
       payload: { roomId: string; userId: string; targetUserId: string },
@@ -785,6 +1017,11 @@ io.on('connection', (socket) => {
         if (player) {
           player.connected = true
           if (!player.isBot) player.autoPlay = undefined
+        } else {
+          const spectator = (room.spectators ?? []).find(
+            (entry) => entry.id === payload.userId,
+          )
+          if (spectator) spectator.connected = true
         }
         ackRoom(callback, room, payload.userId)
         broadcastState(room)

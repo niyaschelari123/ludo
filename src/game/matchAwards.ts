@@ -340,12 +340,17 @@ export function rankBlitzPlayers(room: Room): BlitzScoreEntry[] {
     }
   })
 
+  const motmOf = (playerId: string, stats: PlayerStats) => {
+    const finishIndex = room.game!.winnerIds.indexOf(playerId)
+    return scoreMotm(stats, finishIndex === -1 ? null : finishIndex)
+  }
+
   entries.sort(
     (first, second) =>
       second.breakdown.total - first.breakdown.total ||
       second.stats.tokensHome - first.stats.tokensHome ||
       second.stats.captures - first.stats.captures ||
-      first.player.name.localeCompare(second.player.name),
+      motmOf(second.player.id, second.stats) - motmOf(first.player.id, first.stats),
   )
   return entries
 }

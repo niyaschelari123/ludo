@@ -74,7 +74,11 @@ export const POWER_UP_INFO: {
     label: 'TNT',
     description: 'Eliminates unprotected tokens on this cell and sends them to the yard',
   },
-  { type: 'ice', label: 'Ice', description: 'Pushes rivals on this cell back 3 steps' },
+  {
+    type: 'ice',
+    label: 'Ice',
+    description: 'Pushes rivals on this cell back 3 steps (does not eliminate)',
+  },
 ]
 
 export function powerInfoForMode(mode: GameMode | null | undefined) {

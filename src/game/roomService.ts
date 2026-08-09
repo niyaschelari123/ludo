@@ -3,7 +3,7 @@
  * Replaces the previous Firebase/Firestore implementation.
  */
 import { emitAck, getSocket, whenConnected } from './socket'
-import type { ActiveMove, Room } from './types'
+import type { ActiveMove, ChatMessage, Room, SpectatorAccess } from './types'
 
 export async function createRoom(
   userId: string,
@@ -121,6 +121,77 @@ export async function claimSeat(
   return room
 }
 
+export async function requestSpectate(
+  userId: string,
+  name: string,
+  code: string,
+) {
+  return emitAck<{ room: Room; status: 'pending' | 'watching' }>(
+    'requestSpectate',
+    { userId, name, code },
+  )
+}
+
+export async function approveSpectate(
+  roomId: string,
+  userId: string,
+  targetUserId: string,
+) {
+  const { room } = await emitAck<{ room: Room }>('approveSpectate', {
+    roomId,
+    userId,
+    targetUserId,
+  })
+  return room
+}
+
+export async function denySpectate(
+  roomId: string,
+  userId: string,
+  targetUserId: string,
+) {
+  const { room } = await emitAck<{ room: Room }>('denySpectate', {
+    roomId,
+    userId,
+    targetUserId,
+  })
+  return room
+}
+
+export async function removeSpectator(
+  roomId: string,
+  userId: string,
+  targetUserId: string,
+) {
+  const { room } = await emitAck<{ room: Room }>('removeSpectator', {
+    roomId,
+    userId,
+    targetUserId,
+  })
+  return room
+}
+
+export async function leaveSpectate(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room | null }>('leaveSpectate', {
+    roomId,
+    userId,
+  })
+  return room
+}
+
+export async function setSpectatorAccess(
+  roomId: string,
+  userId: string,
+  access: SpectatorAccess,
+) {
+  const { room } = await emitAck<{ room: Room }>('setSpectatorAccess', {
+    roomId,
+    userId,
+    access,
+  })
+  return room
+}
+
 export async function listColorClaims() {
   const { claims } = await emitAck<{ claims: Record<string, string> }>(
     'listColorClaims',
@@ -165,6 +236,62 @@ export async function syncRoom(roomId: string, userId: string) {
   return room
 }
 
+export async function sendChat(
+  roomId: string,
+  userId: string,
+  text: string,
+  toUserId?: string | null,
+) {
+  const { message } = await emitAck<{ message: ChatMessage }>('sendChat', {
+    roomId,
+    userId,
+    text,
+    ...(toUserId ? { toUserId } : {}),
+  })
+  return message
+}
+
+export async function fetchChat(roomId: string, userId: string) {
+  const { messages } = await emitAck<{ messages: ChatMessage[] }>('fetchChat', {
+    roomId,
+    userId,
+  })
+  return messages
+}
+
+/** Live chat stream for the current room. */
+export function watchChat(
+  roomId: string,
+  userId: string,
+  onMessages: (messages: ChatMessage[]) => void,
+  onMessage: (message: ChatMessage) => void,
+) {
+  const socket = getSocket()
+
+  const handleMessage = (message: ChatMessage) => {
+    if (message.roomId !== roomId) return
+    if (
+      message.scope === 'dm' &&
+      message.fromId !== userId &&
+      message.toId !== userId
+    ) {
+      return
+    }
+    onMessage(message)
+  }
+
+  socket.on('chatMessage', handleMessage)
+
+  void whenConnected()
+    .then(() => fetchChat(roomId, userId))
+    .then(onMessages)
+    .catch(() => onMessages([]))
+
+  return () => {
+    socket.off('chatMessage', handleMessage)
+  }
+}
+
 /**
  * Subscribe to room state pushed by the server.
  * Returns an unsubscribe function.
@@ -175,6 +302,7 @@ export function watchRoom(
   onRoom: (room: Room | null) => void,
   onError: (message: string) => void,
   onMoveStart?: (move: ActiveMove) => void,
+  onSpectateDenied?: () => void,
 ) {
   const socket = getSocket()
 
@@ -191,6 +319,11 @@ export function watchRoom(
     if (payload.room.id === roomId) onRoom(payload.room)
   }
 
+  const handleSpectateDenied = (payload: { roomId?: string }) => {
+    if (payload.roomId && payload.roomId !== roomId) return
+    onSpectateDenied?.()
+  }
+
   const handleConnectError = (error: Error) => onError(error.message)
   const handleSocketError = (payload: { message?: string }) => {
     onError(payload.message ?? 'Connection error.')
@@ -199,6 +332,7 @@ export function watchRoom(
   socket.on('stateUpdate', handleState)
   socket.on('moveStart', handleMoveStart)
   socket.on('playerDisconnect', handleDisconnect)
+  socket.on('spectateDenied', handleSpectateDenied)
   socket.on('connect_error', handleConnectError)
   socket.on('error', handleSocketError)
 
@@ -217,6 +351,7 @@ export function watchRoom(
     socket.off('stateUpdate', handleState)
     socket.off('moveStart', handleMoveStart)
     socket.off('playerDisconnect', handleDisconnect)
+    socket.off('spectateDenied', handleSpectateDenied)
     socket.off('connect_error', handleConnectError)
     socket.off('error', handleSocketError)
   }

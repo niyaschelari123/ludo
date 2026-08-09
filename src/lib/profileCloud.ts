@@ -27,6 +27,69 @@ export type CareerBoardEntry = {
   color: string
   wins: number
   motm: number
+  /** Times awarded Worst Player of the Match. */
+  worst: number
+  /** Times finished 2nd. */
+  second: number
+  /** Times finished 3rd. */
+  third: number
+  /** Career eliminations (captures) made. */
+  eliminations: number
+  /** Career times your tokens were eliminated. */
+  timesEliminated: number
+  /** Career sixes rolled. */
+  sixes: number
+  /** Career matches finished (eligible games). */
+  matchesPlayed: number
+  /** Sum of MotM award scores across matches. */
+  motmPoints: number
+}
+
+export type CareerStatKey =
+  | 'wins'
+  | 'motm'
+  | 'worst'
+  | 'second'
+  | 'third'
+  | 'eliminations'
+  | 'timesEliminated'
+  | 'sixes'
+  | 'matchesPlayed'
+  | 'motmPoints'
+
+const CAREER_STAT_KEYS: CareerStatKey[] = [
+  'wins',
+  'motm',
+  'worst',
+  'second',
+  'third',
+  'eliminations',
+  'timesEliminated',
+  'sixes',
+  'matchesPlayed',
+  'motmPoints',
+]
+
+function roundCareerPoints(value: number) {
+  return Math.round(Math.max(0, value) * 10) / 10
+}
+
+function emptyCareerStats(accountId: string): Pick<
+  CareerBoardEntry,
+  CareerStatKey
+> {
+  return {
+    wins: INITIAL_ACCOUNT_WINS[accountId] ?? 0,
+    motm: INITIAL_ACCOUNT_MOTM[accountId] ?? 0,
+    worst: 0,
+    second: 0,
+    third: 0,
+    eliminations: 0,
+    timesEliminated: 0,
+    sixes: 0,
+    matchesPlayed: 0,
+    motmPoints: 0,
+  }
 }
 
 async function ensureAnonymousAuth() {
@@ -46,20 +109,55 @@ export type CloudProfile = {
   color: string
   wins: number
   motm: number
+  worst?: number
+  second?: number
+  third?: number
+  eliminations?: number
+  timesEliminated?: number
+  sixes?: number
+  matchesPlayed?: number
+  motmPoints?: number
+}
+
+function readStatCount(
+  data: Partial<CloudProfile> | undefined,
+  key: CareerStatKey,
+  accountId: string,
+) {
+  const value = data?.[key]
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    if (key === 'motmPoints') return roundCareerPoints(value)
+    return Math.floor(value)
+  }
+  if (key === 'wins') return INITIAL_ACCOUNT_WINS[accountId] ?? 0
+  if (key === 'motm') return INITIAL_ACCOUNT_MOTM[accountId] ?? 0
+  return 0
 }
 
 function readWins(data: Partial<CloudProfile> | undefined, accountId: string) {
-  if (typeof data?.wins === 'number' && Number.isFinite(data.wins) && data.wins >= 0) {
-    return Math.floor(data.wins)
-  }
-  return INITIAL_ACCOUNT_WINS[accountId] ?? 0
+  return readStatCount(data, 'wins', accountId)
 }
 
 function readMotm(data: Partial<CloudProfile> | undefined, accountId: string) {
-  if (typeof data?.motm === 'number' && Number.isFinite(data.motm) && data.motm >= 0) {
-    return Math.floor(data.motm)
+  return readStatCount(data, 'motm', accountId)
+}
+
+function readCareerStats(
+  data: Partial<CloudProfile> | undefined,
+  accountId: string,
+): Pick<CareerBoardEntry, CareerStatKey> {
+  return {
+    wins: readStatCount(data, 'wins', accountId),
+    motm: readStatCount(data, 'motm', accountId),
+    worst: readStatCount(data, 'worst', accountId),
+    second: readStatCount(data, 'second', accountId),
+    third: readStatCount(data, 'third', accountId),
+    eliminations: readStatCount(data, 'eliminations', accountId),
+    timesEliminated: readStatCount(data, 'timesEliminated', accountId),
+    sixes: readStatCount(data, 'sixes', accountId),
+    matchesPlayed: readStatCount(data, 'matchesPlayed', accountId),
+    motmPoints: readStatCount(data, 'motmPoints', accountId),
   }
-  return INITIAL_ACCOUNT_MOTM[accountId] ?? 0
 }
 
 /** How many distinct logged-in humans played in this room (incl. departed). */
@@ -88,28 +186,26 @@ export async function fetchCloudProfile(
     const ref = doc(db, 'profiles', profileDocId(accountId))
     const snap = await getDoc(ref)
     if (!snap.exists()) {
-      const wins = INITIAL_ACCOUNT_WINS[accountId] ?? 0
-      const motm = INITIAL_ACCOUNT_MOTM[accountId] ?? 0
+      const stats = emptyCareerStats(accountId)
       await setDoc(
         ref,
         {
           accountId,
           name: '',
           color: '',
-          wins,
-          motm,
+          ...stats,
           updatedAt: serverTimestamp(),
         },
         { merge: true },
       )
-      return { accountId, name: '', color: '', wins, motm }
+      return { accountId, name: '', color: '', ...stats }
     }
     const data = snap.data() as Partial<CloudProfile>
-    const wins = readWins(data, accountId)
-    const motm = readMotm(data, accountId)
+    const stats = readCareerStats(data, accountId)
     const patch: Record<string, unknown> = { accountId }
-    if (typeof data.wins !== 'number') patch.wins = wins
-    if (typeof data.motm !== 'number') patch.motm = motm
+    for (const key of CAREER_STAT_KEYS) {
+      if (typeof data[key] !== 'number') patch[key] = stats[key]
+    }
     if (Object.keys(patch).length > 1) {
       await setDoc(ref, patch, { merge: true })
     }
@@ -117,8 +213,7 @@ export async function fetchCloudProfile(
       accountId,
       name: typeof data.name === 'string' ? data.name.trim().slice(0, 18) : '',
       color: typeof data.color === 'string' ? data.color : '',
-      wins,
-      motm,
+      ...stats,
     }
   } catch (error) {
     console.warn('Failed to load cloud profile', error)
@@ -186,8 +281,7 @@ export async function fetchCareerBoard(
         accountId: account.accountId,
         name: account.defaultName,
         color: '',
-        wins: INITIAL_ACCOUNT_WINS[account.accountId] ?? 0,
-        motm: INITIAL_ACCOUNT_MOTM[account.accountId] ?? 0,
+        ...emptyCareerStats(account.accountId),
       } satisfies CareerBoardEntry,
     ]),
   )
@@ -199,8 +293,7 @@ export async function fetchCareerBoard(
         accountId: id,
         name: id.replace(/^acct:/, ''),
         color: '',
-        wins: INITIAL_ACCOUNT_WINS[id] ?? 0,
-        motm: INITIAL_ACCOUNT_MOTM[id] ?? 0,
+        ...emptyCareerStats(id),
       })
     }
   }
@@ -239,8 +332,7 @@ export async function fetchCareerBoard(
           typeof data.color === 'string' && data.color
             ? data.color
             : (prev?.color ?? ''),
-        wins: readWins(data, accountId),
-        motm: readMotm(data, accountId),
+        ...readCareerStats(data, accountId),
       })
     })
     await Promise.all(
@@ -255,13 +347,21 @@ export async function fetchCareerBoard(
               name: entry.name,
               wins: entry.wins,
               motm: entry.motm,
+              worst: entry.worst,
+              second: entry.second,
+              third: entry.third,
+              eliminations: entry.eliminations,
+              timesEliminated: entry.timesEliminated,
+              sixes: entry.sixes,
+              matchesPlayed: entry.matchesPlayed,
+              motmPoints: entry.motmPoints,
               updatedAt: serverTimestamp(),
             },
             { merge: true },
           ).catch(() => {})
         }),
     )
-    // Backfill motm on docs that exist but lack the field.
+    // Backfill missing career fields on existing docs.
     await Promise.all(
       ids
         .filter((id) => found.has(id))
@@ -270,12 +370,13 @@ export async function fetchCareerBoard(
           const snap = await getDoc(ref)
           if (!snap.exists()) return
           const data = snap.data() as Partial<CloudProfile>
-          if (typeof data.motm === 'number') return
-          await setDoc(
-            ref,
-            { motm: readMotm(data, accountId), accountId },
-            { merge: true },
-          ).catch(() => {})
+          const stats = readCareerStats(data, accountId)
+          const patch: Record<string, unknown> = { accountId }
+          for (const key of CAREER_STAT_KEYS) {
+            if (typeof data[key] !== 'number') patch[key] = stats[key]
+          }
+          if (Object.keys(patch).length <= 1) return
+          await setDoc(ref, patch, { merge: true }).catch(() => {})
         }),
     )
   } catch (error) {
@@ -289,9 +390,157 @@ export async function fetchCareerBoard(
 
 /** MotM standings sorted by MotM count (then name). */
 export function sortMotmBoard(board: CareerBoardEntry[]): CareerBoardEntry[] {
+  return sortCareerBoard(board, 'motm')
+}
+
+/** Sort career board by any numeric career field. */
+export function sortCareerBoard(
+  board: CareerBoardEntry[],
+  key: CareerStatKey,
+): CareerBoardEntry[] {
   return [...board].sort(
-    (a, b) => b.motm - a.motm || a.name.localeCompare(b.name),
+    (a, b) =>
+      (b[key] ?? 0) - (a[key] ?? 0) || a.name.localeCompare(b.name),
   )
+}
+
+/** Each career win is worth this many Ultimate points (on top of MotM points). */
+export const ULTIMATE_WIN_POINTS = 50
+
+/** Combined career score for Ultimate ranking. */
+export function ultimateScore(entry: CareerBoardEntry) {
+  return (entry.motmPoints ?? 0) + (entry.wins ?? 0) * ULTIMATE_WIN_POINTS
+}
+
+/** Ultimate: highest MotM points + wins combined. */
+export function sortUltimateBoard(board: CareerBoardEntry[]): CareerBoardEntry[] {
+  return [...board].sort(
+    (a, b) =>
+      ultimateScore(b) - ultimateScore(a) ||
+      (b.motmPoints ?? 0) - (a.motmPoints ?? 0) ||
+      (b.wins ?? 0) - (a.wins ?? 0) ||
+      a.name.localeCompare(b.name),
+  )
+}
+
+export type MatchCareerExtras = {
+  worstId?: string | null
+  secondId?: string | null
+  thirdId?: string | null
+  /** Per-login match deltas (stats + MotM points + +1 match). */
+  deltas: Array<{
+    accountId: string
+    eliminations: number
+    timesEliminated: number
+    sixes: number
+    motmPoints: number
+  }>
+}
+
+/**
+ * Record worst / place / elimination / MotM-points career extras once per room.
+ * Safe if multiple clients call it for the same room.
+ */
+export async function recordMatchCareerExtras(
+  roomId: string,
+  extras: MatchCareerExtras,
+) {
+  if (!isFirebaseConfigured || !db || !roomId) return false
+
+  const worstId =
+    extras.worstId && isLoginAccountId(extras.worstId) ? extras.worstId : null
+  const secondId =
+    extras.secondId && isLoginAccountId(extras.secondId) ? extras.secondId : null
+  const thirdId =
+    extras.thirdId && isLoginAccountId(extras.thirdId) ? extras.thirdId : null
+  const deltas = extras.deltas
+    .filter((entry) => isLoginAccountId(entry.accountId))
+    .map((entry) => ({
+      accountId: entry.accountId,
+      eliminations: Math.max(0, Math.floor(entry.eliminations)),
+      timesEliminated: Math.max(0, Math.floor(entry.timesEliminated)),
+      sixes: Math.max(0, Math.floor(entry.sixes)),
+      motmPoints: roundCareerPoints(entry.motmPoints),
+    }))
+
+  if (!worstId && !secondId && !thirdId && deltas.length === 0) return false
+
+  try {
+    await ensureAnonymousAuth()
+    const eventRef = doc(db, 'careerExtraEvents', roomId)
+
+    await runTransaction(db, async (tx) => {
+      const eventSnap = await tx.get(eventRef)
+      if (eventSnap.exists()) return
+
+      const touched = new Set<string>()
+      if (worstId) touched.add(worstId)
+      if (secondId) touched.add(secondId)
+      if (thirdId) touched.add(thirdId)
+      for (const entry of deltas) touched.add(entry.accountId)
+
+      const profiles = await Promise.all(
+        [...touched].map(async (accountId) => {
+          const profileRef = doc(db, 'profiles', profileDocId(accountId))
+          const profileSnap = await tx.get(profileRef)
+          const data = profileSnap.exists()
+            ? (profileSnap.data() as Partial<CloudProfile>)
+            : undefined
+          return {
+            accountId,
+            profileRef,
+            stats: readCareerStats(data, accountId),
+          }
+        }),
+      )
+
+      tx.set(eventRef, {
+        roomId,
+        worstId,
+        secondId,
+        thirdId,
+        deltas,
+        recordedAt: serverTimestamp(),
+      })
+
+      for (const entry of profiles) {
+        const next = { ...entry.stats }
+        if (entry.accountId === worstId) next.worst += 1
+        if (entry.accountId === secondId) next.second += 1
+        if (entry.accountId === thirdId) next.third += 1
+        const delta = deltas.find((item) => item.accountId === entry.accountId)
+        if (delta) {
+          next.eliminations += delta.eliminations
+          next.timesEliminated += delta.timesEliminated
+          next.sixes += delta.sixes
+          next.matchesPlayed += 1
+          next.motmPoints = roundCareerPoints(
+            next.motmPoints + delta.motmPoints,
+          )
+        }
+        tx.set(
+          entry.profileRef,
+          {
+            accountId: entry.accountId,
+            worst: next.worst,
+            second: next.second,
+            third: next.third,
+            eliminations: next.eliminations,
+            timesEliminated: next.timesEliminated,
+            sixes: next.sixes,
+            matchesPlayed: next.matchesPlayed,
+            motmPoints: next.motmPoints,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        )
+      }
+    })
+    return true
+  } catch (error) {
+    console.warn('Failed to record career extras', error)
+    return false
+  }
 }
 
 /**

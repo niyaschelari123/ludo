@@ -15,7 +15,7 @@ import {
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
 import { sanitizePowerTiles } from '../../src/game/powerUps.js'
-import { PLAYER_COLORS, canControlSeat, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, BLITZ_EXTEND_MS, type Room, type Team, type TeamAssignMode, type TeamSize } from '../../src/game/types.js'
+import { PLAYER_COLORS, canControlSeat, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, BLITZ_EXTEND_MS, type Room, type SpectatorAccess, type Team, type TeamAssignMode, type TeamSize } from '../../src/game/types.js'
 import {
   buildRandomTeams,
   buildSequentialTeams,
@@ -27,6 +27,7 @@ import {
 } from '../../src/game/teams.js'
 import { finalizeBlitzGame } from '../../src/game/matchAwards.js'
 import { normalizeColorKey } from '../../src/game/colors.js'
+import { clearRoomChat } from './chat.js'
 
 const rooms = new Map<string, Room>()
 const codeIndex = new Map<string, string>()
@@ -284,6 +285,9 @@ export function createRoom(
       : null,
     teams: null,
     winningTeamId: null,
+    spectatorAccess: 'request',
+    spectators: [],
+    spectatorRequests: [],
     status: 'lobby',
     players: [
       {
@@ -340,6 +344,7 @@ export function joinRoom(
     }
     const seat = firstOpenSeat(room)
     if (seat === -1) throw new Error('This room is full.')
+    clearSpectatorPresence(room, userId)
     const resolved = resolveJoinColor(
       room,
       userId,
@@ -857,6 +862,8 @@ export function claimSeat(
     throw new Error('You are already in this room.')
   }
 
+  clearSpectatorPresence(room, userId)
+
   room.departedPlayers ??= []
   const departedIndex = room.departedPlayers.findIndex(
     (player) =>
@@ -891,6 +898,20 @@ export function claimSeat(
   room.players.push(restored)
   sortPlayers(room)
   if (!room.memberIds.includes(userId)) room.memberIds.push(userId)
+
+  // Human takes the seat — never inherit bot / control flags.
+  for (const player of room.players) {
+    if (player.controlledBy === departed.id) {
+      delete player.controlledBy
+    }
+  }
+  if (room.teams?.length) {
+    for (const team of room.teams) {
+      team.memberIds = team.memberIds.map((id) =>
+        id === departed.id ? userId : id,
+      )
+    }
+  }
 
   const tokens = (departed.savedTokens ?? []).map((token) => ({
     ...token,
@@ -1020,10 +1041,16 @@ export function removePlayerFromRoom(
 
   room.players.splice(leavingIndex, 1)
   room.memberIds = (room.memberIds ?? []).filter((id) => id !== userId)
+  for (const player of room.players) {
+    if (player.controlledBy === userId) {
+      delete player.controlledBy
+    }
+  }
 
   if (room.players.length === 0) {
     rooms.delete(room.id)
     codeIndex.delete(room.code)
+    clearRoomChat(room.id)
     clearRollHints(room.id)
     return null
   }
@@ -1111,7 +1138,7 @@ export function removePlayer(
     room,
     targetUserId,
     `${target.name} was removed`,
-    { reclaimable: !target.isBot },
+    { reclaimable: true },
   )
   if (!next) throw new Error('Room closed.')
   rooms.set(roomId, next)
@@ -1185,6 +1212,199 @@ export function skipMoveTimer(roomId: string, hostId: string) {
   return handleMoveTimeout(roomId)
 }
 
+const MAX_SPECTATORS = 16
+const MAX_SPECTATOR_REQUESTS = 12
+
+function ensureSpectatorLists(room: Room) {
+  room.spectators ??= []
+  room.spectatorRequests ??= []
+  room.spectatorAccess ??= 'request'
+}
+
+function clearSpectatorPresence(room: Room, userId: string) {
+  ensureSpectatorLists(room)
+  room.spectators = room.spectators.filter((entry) => entry.id !== userId)
+  room.spectatorRequests = room.spectatorRequests.filter(
+    (entry) => entry.id !== userId,
+  )
+}
+
+export function requireSeatPlayer(room: Room, userId: string) {
+  if (!room.players.some((player) => player.id === userId)) {
+    throw new Error('Spectators can only watch.')
+  }
+}
+
+export function setSpectatorAccess(
+  roomId: string,
+  hostId: string,
+  access: SpectatorAccess,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can change watch settings.')
+  }
+  if (access !== 'off' && access !== 'request' && access !== 'open') {
+    throw new Error('Invalid watch setting.')
+  }
+  ensureSpectatorLists(room)
+  room.spectatorAccess = access
+  if (access === 'off') {
+    room.spectatorRequests = []
+  }
+  room.updatedAt = Date.now()
+  return room
+}
+
+/**
+ * Ask to watch (or join immediately when access is open).
+ * Returns status so the client can show waiting vs watching.
+ */
+export function requestSpectate(userId: string, name: string, code: string) {
+  const roomId = codeIndex.get(code.trim().toUpperCase())
+  if (!roomId) throw new Error('Room not found. Check the room code.')
+
+  const room = getRoom(roomId)
+  ensureSpectatorLists(room)
+  const displayName = cleanName(name)
+
+  if (room.players.some((player) => player.id === userId)) {
+    throw new Error('You are already playing in this room.')
+  }
+
+  const existingWatcher = room.spectators.find((entry) => entry.id === userId)
+  if (existingWatcher) {
+    existingWatcher.connected = true
+    existingWatcher.name = displayName
+    room.updatedAt = Date.now()
+    return { room, status: 'watching' as const }
+  }
+
+  if (room.spectatorAccess === 'off') {
+    throw new Error('The host is not allowing watchers right now.')
+  }
+
+  if (room.status === 'finished') {
+    throw new Error('This match has already ended.')
+  }
+
+  if (room.spectatorAccess === 'open') {
+    if (room.spectators.length >= MAX_SPECTATORS) {
+      throw new Error('This room has too many watchers.')
+    }
+    room.spectatorRequests = room.spectatorRequests.filter(
+      (entry) => entry.id !== userId,
+    )
+    room.spectators.push({
+      id: userId,
+      name: displayName,
+      connected: true,
+      joinedAt: Date.now(),
+    })
+    room.updatedAt = Date.now()
+    return { room, status: 'watching' as const }
+  }
+
+  // request mode
+  const pending = room.spectatorRequests.find((entry) => entry.id === userId)
+  if (pending) {
+    pending.name = displayName
+    room.updatedAt = Date.now()
+    return { room, status: 'pending' as const }
+  }
+  if (room.spectatorRequests.length >= MAX_SPECTATOR_REQUESTS) {
+    throw new Error('Too many watch requests. Try again later.')
+  }
+  room.spectatorRequests.push({
+    id: userId,
+    name: displayName,
+    requestedAt: Date.now(),
+  })
+  room.updatedAt = Date.now()
+  return { room, status: 'pending' as const }
+}
+
+export function approveSpectate(
+  roomId: string,
+  hostId: string,
+  targetUserId: string,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can approve watchers.')
+  }
+  ensureSpectatorLists(room)
+  const requestIndex = room.spectatorRequests.findIndex(
+    (entry) => entry.id === targetUserId,
+  )
+  if (requestIndex === -1) {
+    throw new Error('That watch request is gone.')
+  }
+  if (room.spectators.length >= MAX_SPECTATORS) {
+    throw new Error('This room has too many watchers.')
+  }
+  const [request] = room.spectatorRequests.splice(requestIndex, 1)
+  if (!room.spectators.some((entry) => entry.id === request.id)) {
+    room.spectators.push({
+      id: request.id,
+      name: request.name,
+      connected: true,
+      joinedAt: Date.now(),
+    })
+  }
+  room.updatedAt = Date.now()
+  return room
+}
+
+export function denySpectate(
+  roomId: string,
+  hostId: string,
+  targetUserId: string,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can decline watchers.')
+  }
+  ensureSpectatorLists(room)
+  const before = room.spectatorRequests.length
+  room.spectatorRequests = room.spectatorRequests.filter(
+    (entry) => entry.id !== targetUserId,
+  )
+  if (room.spectatorRequests.length === before) {
+    throw new Error('That watch request is gone.')
+  }
+  room.updatedAt = Date.now()
+  return room
+}
+
+export function removeSpectator(
+  roomId: string,
+  hostId: string,
+  targetUserId: string,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can remove watchers.')
+  }
+  ensureSpectatorLists(room)
+  const before = room.spectators.length
+  room.spectators = room.spectators.filter((entry) => entry.id !== targetUserId)
+  if (room.spectators.length === before) {
+    throw new Error('Watcher not found.')
+  }
+  room.updatedAt = Date.now()
+  return room
+}
+
+export function leaveSpectate(roomId: string, userId: string) {
+  const room = rooms.get(roomId)
+  if (!room) return null
+  ensureSpectatorLists(room)
+  clearSpectatorPresence(room, userId)
+  room.updatedAt = Date.now()
+  return room
+}
+
 export function leaveRoom(
   roomId: string,
   userId: string,
@@ -1193,8 +1413,13 @@ export function leaveRoom(
   const room = rooms.get(roomId)
   if (!room) return null
 
+  ensureSpectatorLists(room)
   const leavingPlayer = room.players.find((player) => player.id === userId)
-  if (!leavingPlayer) return room
+  if (!leavingPlayer) {
+    clearSpectatorPresence(room, userId)
+    room.updatedAt = Date.now()
+    return room
+  }
 
   if (room.hostId === userId && newHostId) {
     const nextHost = room.players.find(
@@ -1221,6 +1446,13 @@ export function leaveRoom(
 export function markDisconnected(roomId: string, userId: string) {
   const room = rooms.get(roomId)
   if (!room) return null
+  ensureSpectatorLists(room)
+  const spectator = room.spectators.find((entry) => entry.id === userId)
+  if (spectator) {
+    spectator.connected = false
+    room.updatedAt = Date.now()
+    return room
+  }
   const player = room.players.find((candidate) => candidate.id === userId)
   if (!player || player.isBot) return room
   player.connected = false

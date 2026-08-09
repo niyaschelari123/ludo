@@ -263,6 +263,11 @@ export function resolveLandingCapture(
     return { captured, sharedProtectedCell };
   }
 
+  // Ice handles rivals itself (push back 3) — never eliminate via normal capture.
+  if (powerUpAtCell(game, landingCell) === "ice") {
+    return { captured, sharedProtectedCell };
+  }
+
   for (const opponent of game.tokens) {
     if (
       opponent.playerId !== playerId &&
@@ -393,7 +398,11 @@ export function pickBestMovableToken(room: Room): Token | null {
 
     const landingToken = { ...token, progress: targetProgress };
     const landingCell = globalCell(landingToken, room);
-    if (landingCell !== null && !safeCells(room).has(landingCell)) {
+    if (
+      landingCell !== null &&
+      !safeCells(room).has(landingCell) &&
+      powerUpAtCell(game, landingCell) !== "ice"
+    ) {
       for (const opponent of game.tokens) {
         if (opponent.playerId === token.playerId) continue;
         if (globalCell(opponent, room) !== landingCell) continue;

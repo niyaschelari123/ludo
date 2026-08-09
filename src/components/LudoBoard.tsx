@@ -223,9 +223,25 @@ function TokenDisc({
   shielded?: boolean
 }) {
   const style = tokenStyleFor(color)
-  const rim = Math.max(1.4, radius * 0.16)
-  const body = Math.max(0, radius - rim * 0.45)
-  const glowWidth = Math.max(1.2, radius * 0.14)
+  const rim = Math.max(1.2, radius * 0.14)
+  const glowWidth = Math.max(1.1, radius * 0.13)
+  const r = radius
+  // Classic Halma / Ludo pawn: round head, slim neck, flared base.
+  const headCy = -r * 0.4
+  const headR = r * 0.4
+  const bodyPath = [
+    `M ${-headR * 0.42} ${headCy + headR * 0.72}`,
+    `C ${-r * 0.2} ${headCy + headR * 1.05}`,
+    `  ${-r * 0.18} ${r * 0.02}`,
+    `  ${-r * 0.52} ${r * 0.32}`,
+    `Q ${-r * 0.78} ${r * 0.72} ${-r * 0.68} ${r * 0.9}`,
+    `Q 0 ${r * 1.08} ${r * 0.68} ${r * 0.9}`,
+    `Q ${r * 0.78} ${r * 0.72} ${r * 0.52} ${r * 0.32}`,
+    `C ${r * 0.18} ${r * 0.02}`,
+    `  ${r * 0.2} ${headCy + headR * 1.05}`,
+    `  ${headR * 0.42} ${headCy + headR * 0.72}`,
+    'Z',
+  ].join(' ')
   // Heater-style shield outline centered on token origin.
   const shieldPath = [
     `M 0 ${-radius * 1.05}`,
@@ -302,53 +318,85 @@ function TokenDisc({
   return (
     <>
       <ellipse
-        cx={radius * 0.04}
-        cy={radius * 0.9}
-        rx={radius * 0.78}
-        ry={radius * 0.2}
-        fill="rgba(0,0,0,0.3)"
+        cx={r * 0.05}
+        cy={r * 0.98}
+        rx={r * 0.7}
+        ry={r * 0.18}
+        fill="rgba(0,0,0,0.34)"
       />
-      <circle
-        r={radius * 1.1}
+      <path
+        d={bodyPath}
         fill="none"
         stroke={style.glow}
-        strokeWidth={glowWidth * 1.8}
+        strokeWidth={glowWidth * 1.7}
         opacity={finished ? 0.28 : 0.42}
+        strokeLinejoin="round"
+      />
+      <path
+        d={bodyPath}
+        fill={style.fill}
+        stroke={style.rim}
+        strokeWidth={rim}
+        strokeLinejoin="round"
       />
       <circle
-        r={radius}
+        cx={0}
+        cy={headCy}
+        r={headR}
         fill={style.fill}
         stroke={style.rim}
         strokeWidth={rim}
       />
       <circle
-        r={body * 0.9}
-        fill={style.fill}
-        stroke="rgba(255,255,255,0.28)"
-        strokeWidth={Math.max(0.8, radius * 0.07)}
+        cx={0}
+        cy={headCy}
+        r={headR * 0.88}
+        fill={style.shine}
+        opacity={finished ? 0.14 : 0.26}
       />
-      <circle r={body * 0.72} fill={style.shine} opacity={finished ? 0.15 : 0.28} />
       <ellipse
-        cx={-radius * 0.26}
-        cy={-radius * 0.3}
-        rx={radius * 0.32}
-        ry={radius * 0.18}
+        cx={-headR * 0.32}
+        cy={headCy - headR * 0.28}
+        rx={headR * 0.38}
+        ry={headR * 0.26}
         fill="#fff"
-        opacity={finished ? 0.28 : 0.5}
+        opacity={finished ? 0.35 : 0.62}
+      />
+      <path
+        d={[
+          `M ${-r * 0.28} ${r * 0.08}`,
+          `Q ${-r * 0.42} ${r * 0.42} ${-r * 0.36} ${r * 0.72}`,
+          `Q 0 ${r * 0.82} ${r * 0.2} ${r * 0.55}`,
+          `Q ${r * 0.08} ${r * 0.22} ${-r * 0.05} ${r * 0.1}`,
+          'Z',
+        ].join(' ')}
+        fill={style.shine}
+        opacity={finished ? 0.12 : 0.22}
+      />
+      <ellipse
+        cx={-r * 0.22}
+        cy={r * 0.28}
+        rx={r * 0.16}
+        ry={r * 0.28}
+        fill="#fff"
+        opacity={finished ? 0.14 : 0.28}
       />
       <circle
-        r={radius + glowWidth * 0.15}
+        cx={0}
+        cy={headCy}
+        r={headR + glowWidth * 0.15}
         fill="none"
         stroke={style.glow}
-        strokeWidth={glowWidth}
-        opacity={finished ? 0.65 : 0.9}
+        strokeWidth={glowWidth * 0.85}
+        opacity={finished ? 0.45 : 0.7}
       />
-      <circle
-        r={radius + glowWidth * 0.05}
+      <path
+        d={bodyPath}
         fill="none"
-        stroke="rgba(255,255,255,0.9)"
-        strokeWidth={Math.max(0.7, radius * 0.06)}
-        opacity={finished ? 0.5 : 0.75}
+        stroke="rgba(255,255,255,0.75)"
+        strokeWidth={Math.max(0.7, r * 0.055)}
+        opacity={finished ? 0.4 : 0.65}
+        strokeLinejoin="round"
       />
     </>
   )
