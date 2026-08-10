@@ -1490,8 +1490,8 @@ select:focus {
 }
 
 .large-ngon-label {
-  font-size: 11px;
-  stroke-width: 3px;
+  font-size: 40px;
+  stroke-width: 4px;
 }
 
 .radial-yard {
@@ -1591,7 +1591,7 @@ select:focus {
 
 .player-label {
   fill: white;
-  font-size: 10px;
+  font-size: 40px;
   font-weight: 900;
   paint-order: stroke;
   stroke: #08101f;

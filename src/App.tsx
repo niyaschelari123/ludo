@@ -86,6 +86,10 @@ import {
   TURN_ROLL_TIMEOUT_MS,
   type QuickTokenCount,
 } from './game/engine'
+import {
+  canTriggerSuper,
+  SUPER_USES_PER_GAME,
+} from './game/powerUps'
 import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWinOdds, rankBlitzPlayers, readPlayerStats, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
 
 function formatCareerMotmPoints(value: number) {
@@ -317,6 +321,7 @@ function App() {
   const [powerToast, setPowerToast] = useState<{
     type: PowerUpType
     playerName: string
+    message?: string
   } | null>(null)
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
   const [hostLeaveOpen, setHostLeaveOpen] = useState(false)
@@ -571,9 +576,17 @@ function App() {
 
     powerResolveInFlightRef.current = true
     const player = baseRoom.players.find((candidate) => candidate.id === pending.playerId)
+    const playerName = player?.name ?? 'Player'
+    const exhaustedSuper =
+      pending.type === 'super' &&
+      baseRoom.game != null &&
+      !canTriggerSuper(baseRoom.game, pending.playerId)
     setPowerToast({
       type: pending.type,
-      playerName: player?.name ?? 'Player',
+      playerName,
+      message: exhaustedSuper
+        ? `${playerName} already used all ${SUPER_USES_PER_GAME} Super leaps`
+        : undefined,
     })
     await new Promise((resolve) => window.setTimeout(resolve, POWER_TOAST_MS))
 
@@ -1236,9 +1249,17 @@ function App() {
       const player = displayRoom?.players.find(
         (candidate) => candidate.id === pending.playerId,
       )
+      const playerName = player?.name ?? 'Player'
+      const exhaustedSuper =
+        pending.type === 'super' &&
+        displayRoom?.game != null &&
+        !canTriggerSuper(displayRoom.game, pending.playerId)
       setPowerToast({
         type: pending.type,
-        playerName: player?.name ?? 'Player',
+        playerName,
+        message: exhaustedSuper
+          ? `${playerName} already used all ${SUPER_USES_PER_GAME} Super leaps`
+          : undefined,
       })
       return
     }
@@ -1246,7 +1267,7 @@ function App() {
       const timer = window.setTimeout(() => setPowerToast(null), 300)
       return () => window.clearTimeout(timer)
     }
-  }, [displayRoom?.game?.pendingPower, displayRoom?.players])
+  }, [displayRoom?.game?.pendingPower, displayRoom?.game, displayRoom?.players])
 
   useEffect(() => {
     const game = room?.game
@@ -2771,6 +2792,7 @@ function App() {
             <PowerToast
               type={powerToast?.type ?? 'star'}
               playerName={powerToast?.playerName ?? ''}
+              message={powerToast?.message}
               visible={powerToast !== null}
             />
           </div>
@@ -2948,7 +2970,7 @@ function App() {
                     who finished the most tokens first).
                   </p>
                   <p>Each player has 4 tokens. Captures send tokens back to their colored start (not the yard).</p>
-                  <p>No TNT or −5. Super (⚡) tiles leap halfway to a safe star.</p>
+                  <p>No TNT or −5. Super (⚡) leaps halfway to a safe star (max 3 uses per player).</p>
                   <p>Getting all tokens home mid-match does <em>not</em> end the game — keep scoring until the buzzer.</p>
                   <p className="power-rules-title"><strong>How points work</strong></p>
                   <ul className="blitz-score-rules">
@@ -2970,7 +2992,7 @@ function App() {
                   <p>Each player has 4 tokens.</p>
                   <p>No eliminations — landing on another token does nothing; share the cell and keep racing.</p>
                   <p>Roll 6 to leave the yard.</p>
-                  <p>No TNT or −5 tiles. Two Super (⚡) tiles leap halfway around the board onto a safe star.</p>
+                  <p>No TNT or −5 tiles. Two Super (⚡) tiles leap halfway around the board onto a safe star (max 3 uses per player).</p>
                   <p>Ice does not push rivals. Roll 6 still grants an extra turn.</p>
                   <p>Three consecutive 6s lose the turn.</p>
                   <p>
@@ -2993,7 +3015,7 @@ function App() {
                     When a token is eliminated, it returns to its colored start square — not the yard —
                     so it can move again without another 6.
                   </p>
-                  <p>No TNT or −5 tiles. Two Super (⚡) tiles leap halfway around the board onto a safe star.</p>
+                  <p>No TNT or −5 tiles. Two Super (⚡) tiles leap halfway around the board onto a safe star (max 3 uses per player).</p>
                   <p>Capture and roll 6 for an extra turn.</p>
                   <p>A sole active token is protected until one token finishes.</p>
                   <p>Three consecutive 6s lose the turn.</p>
@@ -3049,6 +3071,9 @@ function App() {
               <PowerLegend
                 showPowers={isPowerMode}
                 gameMode={viewRoom.gameMode}
+                playerCount={
+                  viewRoom.game?.boardPlayerCount ?? viewRoom.maxPlayers
+                }
                 winOdds={winOdds}
               />
             </div>

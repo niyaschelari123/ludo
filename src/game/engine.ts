@@ -196,6 +196,7 @@ export function createGame(
           ? generatePowerTiles(boardPlayerCount)
           : {},
     shieldBuff: {},
+    superUses: {},
     pendingExtraTurn: null,
     pendingPower: null,
     endsAt: gameMode === "blitz" ? Date.now() + blitzMs : null,

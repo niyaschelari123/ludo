@@ -227,9 +227,9 @@ function proportionsFor(playerCount: number, size: number): ProportionSet {
     const outerRadius = size / 2 - 14
     // Large center finish hub (same visual weight across 5 / 6 / 7).
     const finishRadius = n === 5 ? 180 : n === 6 ? 190 : 200
-    // Keep a tip band outside the yard so player names stay on the colored home.
-    const yardRadialSpan = 26
-    const tipBand = 30
+    // Large tip band so 40px names sit outside the yard / token row.
+    const yardRadialSpan = 28
+    const tipBand = 64
     const yardRadius = outerRadius - tipBand - yardRadialSpan
     return {
       outerRadius,
@@ -243,7 +243,8 @@ function proportionsFor(playerCount: number, size: number): ProportionSet {
       homeLaneStart: trackRadius - cellSize * 1.15,
       homeLaneStep: cellSize * 0.9,
       finishRadius,
-      labelRadius: outerRadius - tipBand / 2,
+      // Outer third of tip band — clear of yard token centers.
+      labelRadius: outerRadius - tipBand * 0.28,
       rankRadius: homeInnerRadius + (outerRadius - homeInnerRadius) * 0.4,
       cellSize,
       yardTokenRadius: 22,
@@ -447,7 +448,7 @@ export function generatePolygonBoardGeometry(
 const geometryCache = new Map<string, BoardGeometry>()
 
 /** Bump when proportions change so HMR does not reuse stale layouts. */
-const GEOMETRY_REVISION = 15
+const GEOMETRY_REVISION = 16
 
 export function getPolygonBoardGeometry(
   playerCount: number,

@@ -348,6 +348,8 @@ export interface GameState {
   activeMove?: ActiveMove | null;
   powerTiles?: Record<number, PowerUpType>;
   shieldBuff?: Record<string, boolean>;
+  /** Super (⚡) leaps used this match, keyed by player id. */
+  superUses?: Record<string, number>;
   pendingExtraTurn?: string | null;
   pendingPower?: PendingPower | null;
   /** Blitz: wall-clock end time (ms since epoch). */

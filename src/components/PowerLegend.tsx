@@ -17,13 +17,15 @@ function playerColorStyle(color: string): CSSProperties | undefined {
 export function PowerLegend({
   showPowers = true,
   gameMode = 'power',
+  playerCount,
   winOdds = [],
 }: {
   showPowers?: boolean
   gameMode?: GameMode | null
+  playerCount?: number
   winOdds?: WinOddsEntry[]
 }) {
-  const powerInfo = powerInfoForMode(gameMode)
+  const powerInfo = powerInfoForMode(gameMode, playerCount)
 
   return (
     <div className="power-legend">

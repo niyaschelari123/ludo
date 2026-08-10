@@ -554,8 +554,9 @@ function PolygonPlayerLabels({
           <text
             key={player.id}
             x={sector.labelPoint.x}
-            y={sector.labelPoint.y + 4}
+            y={sector.labelPoint.y}
             textAnchor="middle"
+            dominantBaseline="middle"
             className={`player-label ${largeNgon ? 'large-ngon-label' : ''} ${departed ? 'departed-label' : ''}`}
           >
             {departed ? `${player.name} (left)${tag}` : `${player.name}${tag}`}
@@ -857,6 +858,10 @@ export function LudoBoard({
         )}
         <PowerUpLayer room={room} geometry={geometry} />
 
+        {!isSquare && geometry ? (
+          <PolygonPlayerLabels room={room} geometry={geometry} />
+        ) : null}
+
         {displayedTokens.map(
           ({
             originalToken,
@@ -928,9 +933,6 @@ export function LudoBoard({
               </g>
             )
           })}
-        {!isSquare && geometry ? (
-          <PolygonPlayerLabels room={room} geometry={geometry} />
-        ) : null}
       </svg>
     </div>
   )
