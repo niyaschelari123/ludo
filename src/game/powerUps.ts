@@ -1,6 +1,7 @@
 import {
   CELLS_PER_PLAYER,
   eliminatedProgress,
+  ensurePlayerStats,
   finishedProgress,
   globalCell,
   homeEntryProgress,
@@ -241,6 +242,7 @@ export function sanitizePowerTiles(
   // Live + old rooms: snap 5p Super tiles onto upper L/R (near ←2 → top).
   if (playerCount === 5) {
     relocateFivePlayerSupers(tiles, length);
+    relocateFivePlayerShields(tiles, length);
   }
 }
 
@@ -267,6 +269,58 @@ function placeSpacedPower(
   }
 
   return placed;
+}
+
+/** 5p shields sit 7 steps from each seat's path start (one tile before the star). */
+const FIVE_PLAYER_SHIELD_OFFSET = 7;
+
+/** 5p: shields on seats 0 / 2 / 4 at offset 7 from each path start. */
+function placeFivePlayerShields(
+  tiles: Record<number, PowerUpType>,
+  length: number,
+) {
+  const seats = [0, 2, 4];
+  for (const seat of seats) {
+    const preferred =
+      (seat * CELLS_PER_PLAYER + FIVE_PLAYER_SHIELD_OFFSET) % length;
+    if (!tiles[preferred] && !isPowerBlockedCell(preferred)) {
+      tiles[preferred] = "shield";
+      continue;
+    }
+    for (let offset = 0; offset < length; offset += 1) {
+      const cell = (preferred + offset) % length;
+      if (tiles[cell] || isPowerBlockedCell(cell)) continue;
+      tiles[cell] = "shield";
+      break;
+    }
+  }
+}
+
+/** Snap 5p shields onto offset 7 from their seat's path start. */
+function relocateFivePlayerShields(
+  tiles: Record<number, PowerUpType>,
+  length: number,
+) {
+  const shieldCells = Object.entries(tiles)
+    .filter(([, type]) => type === "shield")
+    .map(([cell]) => Number(cell));
+  if (shieldCells.length === 0) return;
+
+  for (const cell of shieldCells) {
+    const offset =
+      ((cell % CELLS_PER_PLAYER) + CELLS_PER_PLAYER) % CELLS_PER_PLAYER;
+    if (offset === FIVE_PLAYER_SHIELD_OFFSET) continue;
+
+    const seat = Math.floor(
+      (((cell % length) + length) % length) / CELLS_PER_PLAYER,
+    );
+    const target =
+      (seat * CELLS_PER_PLAYER + FIVE_PLAYER_SHIELD_OFFSET) % length;
+    if (target === cell) continue;
+    if (tiles[target] || isPowerBlockedCell(target)) continue;
+    delete tiles[cell];
+    tiles[target] = "shield";
+  }
 }
 
 function placeCommonAndRare(
@@ -306,7 +360,9 @@ function placeCommonAndRare(
     tiles[(tntSeat * CELLS_PER_PLAYER + TNT_OFFSET) % length] = "tnt";
   }
 
-  placeSpacedPower(tiles, length, SHIELD_COUNT, "shield");
+  if (playerCount !== 5) {
+    placeSpacedPower(tiles, length, SHIELD_COUNT, "shield");
+  }
   placeSpacedPower(tiles, length, EXTRA_ROCKET_COUNT, "rocket", 3);
 
   if (options.includeBack5) {
@@ -315,6 +371,11 @@ function placeCommonAndRare(
 
   if (options.includeSuper) {
     placeSuperPowers(tiles, playerCount, length);
+  }
+
+  // After Super so mid-path shields do not steal upper-path Super cells.
+  if (playerCount === 5) {
+    placeFivePlayerShields(tiles, length);
   }
 
   sanitizePowerTiles(tiles, playerCount);
@@ -678,6 +739,8 @@ export function applyPowerUp(
         return `${player.name} already used all ${SUPER_USES_PER_GAME} Super leaps`;
       }
       game.superUses[player.id] = used + 1;
+      const stats = ensurePlayerStats(game, player.id);
+      stats.superPowers = (stats.superPowers ?? 0) + 1;
       return applySuperLeap(token, player, room);
     }
     case "portal": {
@@ -693,15 +756,24 @@ export function applyPowerUp(
       token.progress = Math.max(token.progress, targetProgress);
       return `${player.name} warped through a portal`;
     }
-    case "back2":
+    case "back2": {
+      const stats = ensurePlayerStats(game, player.id);
+      stats.negativePowers = (stats.negativePowers ?? 0) + 1;
       retreatToken(token, 2, room);
       return `${player.name} slid back 2 steps`;
-    case "back3":
+    }
+    case "back3": {
+      const stats = ensurePlayerStats(game, player.id);
+      stats.negativePowers = (stats.negativePowers ?? 0) + 1;
       retreatToken(token, 3, room);
       return `${player.name} slid back 3 steps`;
-    case "back5":
+    }
+    case "back5": {
+      const stats = ensurePlayerStats(game, player.id);
+      stats.negativePowers = (stats.negativePowers ?? 0) + 1;
       retreatToken(token, 5, room);
       return `${player.name} slid back 5 steps`;
+    }
     case "yard":
       // Legacy tile — no longer generated; treat as a harmless pass.
       return `${player.name} passed an old yard tile`;

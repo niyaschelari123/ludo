@@ -121,6 +121,8 @@ function emptyPlayerStats(): PlayerStats {
     tokensHome: 0,
     sixes: 0,
     eliminatedPlayers: {},
+    negativePowers: 0,
+    superPowers: 0,
   };
 }
 
@@ -133,6 +135,8 @@ export function ensurePlayerStats(
     game.stats[playerId] = emptyPlayerStats();
   } else {
     game.stats[playerId].eliminatedPlayers ??= {};
+    game.stats[playerId].negativePowers ??= 0;
+    game.stats[playerId].superPowers ??= 0;
   }
   return game.stats[playerId];
 }
@@ -200,6 +204,8 @@ export function createGame(
     pendingExtraTurn: null,
     pendingPower: null,
     endsAt: gameMode === "blitz" ? Date.now() + blitzMs : null,
+    startedAt: Date.now(),
+    finishTimesMs: {},
   };
 }
 
@@ -575,6 +581,11 @@ function tryConcludeByFinishPlaces(room: Room, game: GameState) {
 }
 
 function notePlayerFinished(room: Room, game: GameState, player: Player) {
+  game.startedAt ??= Date.now();
+  game.finishTimesMs ??= {};
+  if (game.finishTimesMs[player.id] == null) {
+    game.finishTimesMs[player.id] = Math.max(0, Date.now() - game.startedAt);
+  }
   if (isBlitzMode(room.gameMode)) {
     game.lastAction = `${player.name} got all tokens home!`;
     return;

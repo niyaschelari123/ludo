@@ -33,6 +33,8 @@ function emptyStats(): PlayerStats {
     tokensHome: 0,
     sixes: 0,
     eliminatedPlayers: {},
+    negativePowers: 0,
+    superPowers: 0,
   }
 }
 
@@ -45,6 +47,8 @@ export function readPlayerStats(
     ...emptyStats(),
     ...stats,
     eliminatedPlayers: stats.eliminatedPlayers ?? {},
+    negativePowers: stats.negativePowers ?? 0,
+    superPowers: stats.superPowers ?? 0,
   }
 }
 

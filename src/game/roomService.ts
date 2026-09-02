@@ -90,6 +90,14 @@ export async function extendBlitzTime(roomId: string, userId: string) {
   return room
 }
 
+export async function reduceBlitzTime(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room }>('reduceBlitzTime', {
+    roomId,
+    userId,
+  })
+  return room
+}
+
 export async function joinRoom(
   userId: string,
   name: string,

@@ -15,7 +15,7 @@ import {
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
 import { sanitizePowerTiles } from '../../src/game/powerUps.js'
-import { PLAYER_COLORS, canControlSeat, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, BLITZ_EXTEND_MS, type Room, type SpectatorAccess, type Team, type TeamAssignMode, type TeamSize } from '../../src/game/types.js'
+import { PLAYER_COLORS, canControlSeat, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, BLITZ_EXTEND_MS, BLITZ_REDUCE_MS, BLITZ_MIN_REMAINING_MS, type Room, type SpectatorAccess, type Team, type TeamAssignMode, type TeamSize } from '../../src/game/types.js'
 import {
   buildRandomTeams,
   buildSequentialTeams,
@@ -596,6 +596,37 @@ export function extendBlitzTime(roomId: string, hostId: string) {
   const host = room.players.find((player) => player.id === hostId)
   room.game.endsAt = Math.max(room.game.endsAt, Date.now()) + BLITZ_EXTEND_MS
   room.game.lastAction = `${host?.name ?? 'Host'} added +5 min`
+  room.updatedAt = Date.now()
+  return room
+}
+
+/** Host removes 1 minute from the live Blitz clock (repeatable). */
+export function reduceBlitzTime(roomId: string, hostId: string) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can reduce Blitz time.')
+  }
+  if (!isBlitzMode(room.gameMode)) {
+    throw new Error('Time cuts only apply to Blitz mode.')
+  }
+  if (room.status !== 'playing' || !room.game) {
+    throw new Error('Blitz time can only be cut during a match.')
+  }
+  if (typeof room.game.endsAt !== 'number') {
+    throw new Error('This Blitz match has no clock.')
+  }
+
+  const remaining = room.game.endsAt - Date.now()
+  if (remaining <= BLITZ_MIN_REMAINING_MS) {
+    throw new Error('Not enough time left to cut another minute.')
+  }
+
+  const host = room.players.find((player) => player.id === hostId)
+  room.game.endsAt = Math.max(
+    Date.now() + BLITZ_MIN_REMAINING_MS,
+    room.game.endsAt - BLITZ_REDUCE_MS,
+  )
+  room.game.lastAction = `${host?.name ?? 'Host'} cut −1 min`
   room.updatedAt = Date.now()
   return room
 }

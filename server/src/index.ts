@@ -44,6 +44,7 @@ import {
   endBlitzRoom,
   setBlitzDuration,
   extendBlitzTime,
+  reduceBlitzTime,
   setTeams,
   setQuickTokens,
 } from './roomManager.js'
@@ -471,6 +472,22 @@ io.on('connection', (socket) => {
     ) => {
       try {
         const room = extendBlitzTime(payload.roomId, payload.userId)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'reduceBlitzTime',
+    (
+      payload: { roomId: string; userId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = reduceBlitzTime(payload.roomId, payload.userId)
         ackRoom(callback, room, payload.userId)
         broadcastState(room)
       } catch (error) {

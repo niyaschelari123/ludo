@@ -43,6 +43,7 @@ import {
   setQuickTokens,
   setSpectatorAccess,
   extendBlitzTime,
+  reduceBlitzTime,
   skipMoveTimer,
   skipPowerTimer,
   skipRollTimer,
@@ -63,11 +64,13 @@ import {
 } from './lib/profile'
 import {
   fetchCareerBoard,
+  formatCareerFinishTime,
   isCareerEligibleMatch,
   recordMatchCareerExtras,
   recordMatchMotm,
   recordMatchWins,
   sortCareerBoard,
+  sortCareerBoardAscending,
   sortUltimateBoard,
   ultimateScore,
   ULTIMATE_WIN_POINTS,
@@ -333,6 +336,7 @@ function App() {
   const [blitzBreakdownTabId, setBlitzBreakdownTabId] = useState<string | null>(null)
   const [motmBreakdownOpen, setMotmBreakdownOpen] = useState(false)
   const [motmBreakdownTabId, setMotmBreakdownTabId] = useState<string | null>(null)
+  const [elimBoardOpen, setElimBoardOpen] = useState(false)
   /** Client-side watch flow: pending host approve, or actively watching. */
   const [watchRole, setWatchRole] = useState<'pending' | 'watching' | null>(null)
   const watchRoleRef = useRef<'pending' | 'watching' | null>(null)
@@ -494,6 +498,10 @@ function App() {
           timesEliminated: stats.eliminated,
           sixes: stats.sixes,
           motmPoints: motmById.get(player.id) ?? 0,
+          negativePowers: stats.negativePowers ?? 0,
+          superPowers: stats.superPowers ?? 0,
+          plus3: stats.captures * 3,
+          finishTimeMs: room.game?.finishTimesMs?.[player.id] ?? 0,
         }
       })
 
@@ -517,6 +525,10 @@ function App() {
             sixes: entry.sixes ?? 0,
             matchesPlayed: entry.matchesPlayed ?? 0,
             motmPoints: entry.motmPoints ?? 0,
+            negativePowers: entry.negativePowers ?? 0,
+            superPowers: entry.superPowers ?? 0,
+            plus3: entry.plus3 ?? 0,
+            bestFinishMs: entry.bestFinishMs ?? 0,
           }
           if (entry.accountId === worstId) {
             next = { ...next, worst: next.worst + 1 }
@@ -537,6 +549,15 @@ function App() {
               matchesPlayed: next.matchesPlayed + 1,
               motmPoints:
                 Math.round((next.motmPoints + delta.motmPoints) * 10) / 10,
+              negativePowers: next.negativePowers + delta.negativePowers,
+              superPowers: next.superPowers + delta.superPowers,
+              plus3: next.plus3 + delta.plus3,
+              bestFinishMs:
+                delta.finishTimeMs > 0 &&
+                (next.bestFinishMs <= 0 ||
+                  delta.finishTimeMs < next.bestFinishMs)
+                  ? delta.finishTimeMs
+                  : next.bestFinishMs,
             }
           }
           return next
@@ -1797,19 +1818,25 @@ function App() {
       (player) => player.id === playerId,
     )?.name ?? 'Player'
 
-  const topEliminations = [...viewRoom.players, ...(viewRoom.departedPlayers ?? [])]
+  const matchEliminations = [...viewRoom.players, ...(viewRoom.departedPlayers ?? [])]
     .flatMap((attacker) => {
       const pairs = playerStats(attacker.id).eliminatedPlayers
       return Object.entries(pairs).map(([victimId, count]) => ({
         attackerId: attacker.id,
         attackerName: attacker.name,
+        attackerColor: attacker.color,
         victimId,
         victimName: playerNameById(victimId),
         count,
       }))
     })
-    .sort((first, second) => second.count - first.count || first.attackerName.localeCompare(second.attackerName))
-    .slice(0, 5)
+    .sort(
+      (first, second) =>
+        second.count - first.count ||
+        first.attackerName.localeCompare(second.attackerName),
+    )
+
+  const topEliminations = matchEliminations.slice(0, 5)
 
   const awardPool =
     finalRanking.filter((player) => !player.leftEarly).length > 0
@@ -1941,26 +1968,48 @@ function App() {
                 {String(blitzSecondsLeft % 60).padStart(2, '0')}
               </strong>
               {room.hostId === userId ? (
-                <button
-                  type="button"
-                  className="blitz-extend-button"
-                  disabled={busy}
-                  title="Add 5 minutes to the match clock"
-                  onClick={() => {
-                    void (async () => {
-                      setBusy(true)
-                      try {
-                        await extendBlitzTime(room.id, userId)
-                      } catch (error) {
-                        setError(error instanceof Error ? error.message : 'Could not add time.')
-                      } finally {
-                        setBusy(false)
-                      }
-                    })()
-                  }}
-                >
-                  +5 min
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="blitz-extend-button"
+                    disabled={busy}
+                    title="Add 5 minutes to the match clock"
+                    onClick={() => {
+                      void (async () => {
+                        setBusy(true)
+                        try {
+                          await extendBlitzTime(room.id, userId)
+                        } catch (error) {
+                          setError(error instanceof Error ? error.message : 'Could not add time.')
+                        } finally {
+                          setBusy(false)
+                        }
+                      })()
+                    }}
+                  >
+                    +5 min
+                  </button>
+                  <button
+                    type="button"
+                    className="blitz-extend-button blitz-reduce-button"
+                    disabled={busy || (blitzSecondsLeft !== null && blitzSecondsLeft <= 10)}
+                    title="Cut 1 minute from the match clock"
+                    onClick={() => {
+                      void (async () => {
+                        setBusy(true)
+                        try {
+                          await reduceBlitzTime(room.id, userId)
+                        } catch (error) {
+                          setError(error instanceof Error ? error.message : 'Could not cut time.')
+                        } finally {
+                          setBusy(false)
+                        }
+                      })()
+                    }}
+                  >
+                    −1 min
+                  </button>
+                </>
               ) : null}
             </div>
           ) : null}
@@ -2531,6 +2580,37 @@ function App() {
                 statKey="sixes"
                 formatCount={(value) => `${value}`}
               />
+              <CareerLobbyBoard
+                title="Most −ve powers (←2 / ←3 / −5)"
+                board={careerBoard}
+                roomPlayers={room.players}
+                statKey="negativePowers"
+                formatCount={(value) => `${value}`}
+              />
+              <CareerLobbyBoard
+                title="Most Super ⚡"
+                board={careerBoard}
+                roomPlayers={room.players}
+                statKey="superPowers"
+                formatCount={(value) => `${value}`}
+              />
+              <CareerLobbyBoard
+                title="Most +3 (elim MotM)"
+                board={careerBoard}
+                roomPlayers={room.players}
+                statKey="plus3"
+                formatCount={(value) => `${value}`}
+              />
+              <CareerLobbyBoard
+                title="Fastest finish"
+                board={careerBoard}
+                roomPlayers={room.players}
+                statKey="bestFinishMs"
+                sortEntries={(board) =>
+                  sortCareerBoardAscending(board, 'bestFinishMs')
+                }
+                formatCount={(value) => formatCareerFinishTime(value)}
+              />
             </div>
           </section>
         ) : null}
@@ -2894,6 +2974,15 @@ function App() {
             ) : null}
               </>
             )}
+            {room.status === 'playing' && viewRoom.game ? (
+              <button
+                type="button"
+                className="blitz-breakdown-open elim-board-open"
+                onClick={() => setElimBoardOpen(true)}
+              >
+                Eliminations
+              </button>
+            ) : null}
             {isBlitz && room.status === 'playing' ? (
               <div className="blitz-live-panel">
                 {blitzScores.length > 0 ? (
@@ -3087,6 +3176,86 @@ function App() {
           userId={userId}
           canSend={isSeatPlayer}
         />
+      ) : null}
+
+      {elimBoardOpen && viewRoom.game ? (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Match eliminations"
+          onClick={() => setElimBoardOpen(false)}
+        >
+          <div
+            className="confirm-card elim-board-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="blitz-breakdown-header">
+              <h2>Eliminations</h2>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setElimBoardOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <p className="elim-board-lead">
+              Who eliminated who this match, and how many times.
+            </p>
+            {matchEliminations.length > 0 ? (
+              <ol className="elim-top-list elim-board-list">
+                {matchEliminations.map((entry, index) => (
+                  <li
+                    key={`${entry.attackerId}-${entry.victimId}-${index}`}
+                    className={playerColorClass(entry.attackerColor)}
+                    style={playerColorStyle(entry.attackerColor)}
+                  >
+                    <span className="elim-rank">{index + 1}</span>
+                    <span className="elim-pair">
+                      <strong>{entry.attackerName}</strong> eliminated{' '}
+                      <strong>{entry.victimName}</strong>
+                    </span>
+                    <em className="elim-count">×{entry.count}</em>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="elim-empty">No eliminations yet this match.</p>
+            )}
+            <div className="match-stats-list elim-board-totals">
+              {[...viewRoom.players, ...(viewRoom.departedPlayers ?? [])].map(
+                (player) => {
+                  const stats = playerStats(player.id)
+                  return (
+                    <div
+                      key={`elim-live-${player.id}`}
+                      className={`match-stats-row ${playerColorClass(player.color)}`}
+                      style={playerColorStyle(player.color)}
+                    >
+                      <div className="match-stats-player">
+                        <span className="avatar">
+                          {player.name[0].toUpperCase()}
+                        </span>
+                        <strong>{player.name}</strong>
+                      </div>
+                      <div className="match-stats-grid match-stats-grid--elim">
+                        <span>
+                          <em>{stats.captures}</em>
+                          Eliminations done
+                        </span>
+                        <span>
+                          <em>{stats.eliminated}</em>
+                          Times eliminated
+                        </span>
+                      </div>
+                    </div>
+                  )
+                },
+              )}
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {motmBreakdownOpen && liveMotmStandings.length > 0 ? (

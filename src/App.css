@@ -2917,6 +2917,16 @@ select:focus {
   cursor: not-allowed;
 }
 
+.blitz-reduce-button {
+  border-color: rgba(251, 191, 36, 0.55);
+  background: rgba(251, 191, 36, 0.14);
+  color: #fde68a;
+}
+
+.blitz-reduce-button:hover:not(:disabled) {
+  background: rgba(251, 191, 36, 0.28);
+}
+
 @keyframes blitz-pulse {
 
   0%,
@@ -2996,6 +3006,33 @@ select:focus {
 
 .blitz-breakdown-open:hover {
   background: rgba(251, 191, 36, 0.18);
+}
+
+.elim-board-open {
+  margin-top: 14px;
+}
+
+.elim-board-card {
+  width: min(520px, 100%);
+  max-height: min(82vh, 720px);
+  overflow: auto;
+  text-align: left;
+  border-color: rgba(248, 113, 113, 0.28);
+}
+
+.elim-board-lead {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.elim-board-list {
+  margin-bottom: 18px;
+}
+
+.elim-board-totals {
+  max-height: none;
 }
 
 .blitz-breakdown-card {

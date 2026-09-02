@@ -56,6 +56,10 @@ export type BlitzDurationMinutes =
 export const DEFAULT_BLITZ_DURATION_MS = 45 * 60 * 1000;
 /** Host can add this much time mid-match (unlimited times). */
 export const BLITZ_EXTEND_MS = 5 * 60 * 1000;
+/** Host can cut this much time mid-match (unlimited times). */
+export const BLITZ_REDUCE_MS = 60 * 1000;
+/** Leave at least this much on the clock when reducing. */
+export const BLITZ_MIN_REMAINING_MS = 10 * 1000;
 /** @deprecated Prefer DEFAULT_BLITZ_DURATION_MS / room.blitzDurationMs */
 export const BLITZ_DURATION_MS = DEFAULT_BLITZ_DURATION_MS;
 
@@ -327,6 +331,10 @@ export interface PlayerStats {
   sixes: number;
   /** attacker -> how many times this player eliminated that opponent */
   eliminatedPlayers: Record<string, number>;
+  /** Landings on back2 / back3 / back5 this match. */
+  negativePowers?: number;
+  /** Successful Super (⚡) leaps this match. */
+  superPowers?: number;
 }
 
 export interface GameState {
@@ -354,6 +362,10 @@ export interface GameState {
   pendingPower?: PendingPower | null;
   /** Blitz: wall-clock end time (ms since epoch). */
   endsAt?: number | null;
+  /** Match start time (ms) for finish-time tracking. */
+  startedAt?: number | null;
+  /** playerId -> ms from startedAt when they finished all tokens. */
+  finishTimesMs?: Record<string, number>;
 }
 
 export type ChatScope = "all" | "dm";

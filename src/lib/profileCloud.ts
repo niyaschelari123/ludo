@@ -43,6 +43,14 @@ export type CareerBoardEntry = {
   matchesPlayed: number
   /** Sum of MotM award scores across matches. */
   motmPoints: number
+  /** Career landings on ←2 / ←3 / −5 tiles. */
+  negativePowers: number
+  /** Career Super (⚡) leaps used. */
+  superPowers: number
+  /** Career MotM elimination points (captures × 3). */
+  plus3: number
+  /** Best (lowest) all-tokens-home finish time in ms; 0 = none. */
+  bestFinishMs: number
 }
 
 export type CareerStatKey =
@@ -56,6 +64,10 @@ export type CareerStatKey =
   | 'sixes'
   | 'matchesPlayed'
   | 'motmPoints'
+  | 'negativePowers'
+  | 'superPowers'
+  | 'plus3'
+  | 'bestFinishMs'
 
 const CAREER_STAT_KEYS: CareerStatKey[] = [
   'wins',
@@ -68,6 +80,10 @@ const CAREER_STAT_KEYS: CareerStatKey[] = [
   'sixes',
   'matchesPlayed',
   'motmPoints',
+  'negativePowers',
+  'superPowers',
+  'plus3',
+  'bestFinishMs',
 ]
 
 function roundCareerPoints(value: number) {
@@ -89,6 +105,10 @@ function emptyCareerStats(accountId: string): Pick<
     sixes: 0,
     matchesPlayed: 0,
     motmPoints: 0,
+    negativePowers: 0,
+    superPowers: 0,
+    plus3: 0,
+    bestFinishMs: 0,
   }
 }
 
@@ -117,6 +137,10 @@ export type CloudProfile = {
   sixes?: number
   matchesPlayed?: number
   motmPoints?: number
+  negativePowers?: number
+  superPowers?: number
+  plus3?: number
+  bestFinishMs?: number
 }
 
 function readStatCount(
@@ -157,6 +181,10 @@ function readCareerStats(
     sixes: readStatCount(data, 'sixes', accountId),
     matchesPlayed: readStatCount(data, 'matchesPlayed', accountId),
     motmPoints: readStatCount(data, 'motmPoints', accountId),
+    negativePowers: readStatCount(data, 'negativePowers', accountId),
+    superPowers: readStatCount(data, 'superPowers', accountId),
+    plus3: readStatCount(data, 'plus3', accountId),
+    bestFinishMs: readStatCount(data, 'bestFinishMs', accountId),
   }
 }
 
@@ -404,6 +432,29 @@ export function sortCareerBoard(
   )
 }
 
+/** Lower-is-better career boards (e.g. fastest finish). Zero = no record → bottom. */
+export function sortCareerBoardAscending(
+  board: CareerBoardEntry[],
+  key: CareerStatKey,
+): CareerBoardEntry[] {
+  return [...board].sort((a, b) => {
+    const av = a[key] ?? 0
+    const bv = b[key] ?? 0
+    if (av <= 0 && bv <= 0) return a.name.localeCompare(b.name)
+    if (av <= 0) return 1
+    if (bv <= 0) return -1
+    return av - bv || a.name.localeCompare(b.name)
+  })
+}
+
+export function formatCareerFinishTime(ms: number) {
+  if (!ms || ms <= 0) return '—'
+  const totalSec = Math.floor(ms / 1000)
+  const minutes = Math.floor(totalSec / 60)
+  const seconds = totalSec % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
 /** Each career win is worth this many Ultimate points (on top of MotM points). */
 export const ULTIMATE_WIN_POINTS = 50
 
@@ -434,6 +485,10 @@ export type MatchCareerExtras = {
     timesEliminated: number
     sixes: number
     motmPoints: number
+    negativePowers: number
+    superPowers: number
+    plus3: number
+    finishTimeMs: number
   }>
 }
 
@@ -461,6 +516,10 @@ export async function recordMatchCareerExtras(
       timesEliminated: Math.max(0, Math.floor(entry.timesEliminated)),
       sixes: Math.max(0, Math.floor(entry.sixes)),
       motmPoints: roundCareerPoints(entry.motmPoints),
+      negativePowers: Math.max(0, Math.floor(entry.negativePowers)),
+      superPowers: Math.max(0, Math.floor(entry.superPowers)),
+      plus3: Math.max(0, Math.floor(entry.plus3)),
+      finishTimeMs: Math.max(0, Math.floor(entry.finishTimeMs)),
     }))
 
   if (!worstId && !secondId && !thirdId && deltas.length === 0) return false
@@ -517,6 +576,15 @@ export async function recordMatchCareerExtras(
           next.motmPoints = roundCareerPoints(
             next.motmPoints + delta.motmPoints,
           )
+          next.negativePowers += delta.negativePowers
+          next.superPowers += delta.superPowers
+          next.plus3 += delta.plus3
+          if (
+            delta.finishTimeMs > 0 &&
+            (next.bestFinishMs <= 0 || delta.finishTimeMs < next.bestFinishMs)
+          ) {
+            next.bestFinishMs = delta.finishTimeMs
+          }
         }
         tx.set(
           entry.profileRef,
@@ -530,6 +598,10 @@ export async function recordMatchCareerExtras(
             sixes: next.sixes,
             matchesPlayed: next.matchesPlayed,
             motmPoints: next.motmPoints,
+            negativePowers: next.negativePowers,
+            superPowers: next.superPowers,
+            plus3: next.plus3,
+            bestFinishMs: next.bestFinishMs,
             updatedAt: serverTimestamp(),
           },
           { merge: true },
