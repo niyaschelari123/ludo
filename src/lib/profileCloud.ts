@@ -559,10 +559,16 @@ export function formatCareerFinishTime(ms: number) {
 
 /** Each career win is worth this many Ultimate points (on top of MotM points). */
 export const ULTIMATE_WIN_POINTS = 50
+/** Each Worst of the Match award subtracts this many Ultimate points. */
+export const ULTIMATE_WORST_PENALTY = 10
 
 /** Combined career score for Ultimate ranking. */
 export function ultimateScore(entry: CareerBoardEntry) {
-  return (entry.motmPoints ?? 0) + (entry.wins ?? 0) * ULTIMATE_WIN_POINTS
+  return (
+    (entry.motmPoints ?? 0) +
+    (entry.wins ?? 0) * ULTIMATE_WIN_POINTS -
+    (entry.worst ?? 0) * ULTIMATE_WORST_PENALTY
+  )
 }
 
 /** Ultimate: highest MotM points + wins combined. */

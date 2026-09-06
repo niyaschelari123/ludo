@@ -92,6 +92,7 @@ import {
   sortUltimateBoard,
   ultimateScore,
   ULTIMATE_WIN_POINTS,
+  ULTIMATE_WORST_PENALTY,
   type CareerBoardEntry,
   type CareerStatKey,
   type ElimPairLeader,
@@ -3218,8 +3219,13 @@ function App() {
                 formatEntry={(entry) => {
                   const points = entry.motmPoints ?? 0
                   const wins = entry.wins ?? 0
+                  const worst = entry.worst ?? 0
                   const total = ultimateScore(entry)
-                  return `${formatCareerMotmPoints(total)} (${formatCareerMotmPoints(points)} pts + ${wins}×${ULTIMATE_WIN_POINTS})`
+                  const worstBit =
+                    worst > 0
+                      ? ` − ${worst}×${ULTIMATE_WORST_PENALTY}`
+                      : ''
+                  return `${formatCareerMotmPoints(total)} (${formatCareerMotmPoints(points)} pts + ${wins}×${ULTIMATE_WIN_POINTS}${worstBit})`
                 }}
               />
             </div>
