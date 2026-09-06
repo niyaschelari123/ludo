@@ -18,14 +18,18 @@ import {
 import { LudoBoard } from './components/LudoBoard'
 import { Dice3D } from './components/Dice3D'
 import { GameChat } from './components/GameChat'
+import { PlayerAvatar } from './components/PlayerAvatar'
+import { ProfilePhotoCropper } from './components/ProfilePhotoCropper'
 import { PowerLegend } from './components/PowerLegend'
 import { PowerToast } from './components/PowerToast'
 import {
   approveSpectate,
+  approveJoin,
   claimColor,
   createRoom,
   claimSeat,
   denySpectate,
+  denyJoin,
   joinRoom,
   leaveRoom,
   leaveSpectate,
@@ -34,6 +38,7 @@ import {
   removePlayer,
   removeSpectator,
   requestSpectate,
+  requestJoin,
   resolvePendingPower,
   rollDice,
   setTeams,
@@ -44,6 +49,11 @@ import {
   setSpectatorAccess,
   extendBlitzTime,
   reduceBlitzTime,
+  stopMatch,
+  setPlayerColor,
+  setOwnPhoto,
+  runSeatToss,
+  confirmSeatToss,
   skipMoveTimer,
   skipPowerTimer,
   skipRollTimer,
@@ -55,14 +65,22 @@ import {
   clearProfile,
   getActiveUserId,
   hydrateProfileFromCloud,
+  isAdminAccountId,
+  isCareerAccountId,
   isLoginAccountId,
   loadProfile,
   loginWithPin,
   saveProfile,
   saveProfileAsync,
+  CAREER_LOGIN_ACCOUNTS,
   type UserProfile,
 } from './lib/profile'
+import { loadImageFromFile, revokeImageObjectUrl } from './lib/profilePhoto'
 import {
+  adminSetCareerStats,
+  applyHistoryMostLeaders,
+  buildElimPairLeaders,
+  CAREER_STAT_EDIT_LABELS,
   fetchCareerBoard,
   formatCareerFinishTime,
   isCareerEligibleMatch,
@@ -76,7 +94,23 @@ import {
   ULTIMATE_WIN_POINTS,
   type CareerBoardEntry,
   type CareerStatKey,
+  type ElimPairLeader,
 } from './lib/profileCloud'
+import {
+  fetchMatchHistory,
+  finalizeEligibleMatchHistory,
+  formatMostLeaderValue,
+  MOST_HISTORY_LABELS,
+  type MatchHistoryEntry,
+} from './lib/matchHistory'
+import {
+  clearLiveMatch,
+  loadDismissedMatchIds,
+  publishLiveMatch,
+  saveDismissedMatchIds,
+  watchLiveMatches,
+  type LiveMatchNotice,
+} from './lib/matchNotices'
 import { PLAYER_COLOR_HEX, isNamedPlayerColor, normalizeColorKey, resolveColorHex } from './game/colors'
 import {
   activeMoveToMovingToken,
@@ -236,6 +270,58 @@ function CareerLobbyBoard({
   )
 }
 
+function CareerElimPairsBoard({
+  board,
+  roomPlayers,
+  limit = 8,
+}: {
+  board: CareerBoardEntry[] | null
+  roomPlayers: Room['players']
+  limit?: number
+}) {
+  const leaders: ElimPairLeader[] | null = board
+    ? buildElimPairLeaders(board, limit)
+    : null
+  return (
+    <aside className="lobby-wins-board lobby-stat-board lobby-elim-pairs-board">
+      <h3>Who eliminated whom (most)</h3>
+      {leaders === null ? (
+        <p className="lobby-wins-loading">Loading…</p>
+      ) : leaders.length === 0 ? (
+        <p className="lobby-wins-loading">No eliminations yet</p>
+      ) : (
+        <ol className="lobby-wins-list">
+          {leaders.map((entry, index) => {
+            const attackerInRoom = roomPlayers.some(
+              (player) => player.id === entry.attackerId,
+            )
+            return (
+              <li
+                key={`${entry.attackerId}-${entry.victimId}`}
+                className={`lobby-wins-row ${playerColorClass(entry.attackerColor)} ${attackerInRoom ? 'in-room' : 'away'}`}
+                style={playerColorStyle(entry.attackerColor)}
+              >
+                <span className="lobby-wins-rank">#{index + 1}</span>
+                <div className="lobby-wins-meta lobby-elim-pair-meta">
+                  <strong className="lobby-wins-name">
+                    {entry.attackerName}
+                    <span className="lobby-elim-vs"> → </span>
+                    {entry.victimName}
+                  </strong>
+                  <small>
+                    {attackerInRoom ? 'Attacker in room' : 'Career total'}
+                  </small>
+                </div>
+                <em className="lobby-wins-count">×{entry.count}</em>
+              </li>
+            )
+          })}
+        </ol>
+      )}
+    </aside>
+  )
+}
+
 function MatchAwardCard({
   title,
   award,
@@ -252,7 +338,11 @@ function MatchAwardCard({
     >
       <span className="motm-eyebrow">{title}</span>
       <div className="motm-body">
-        <span className="motm-avatar">{award.player.name[0].toUpperCase()}</span>
+        <PlayerAvatar
+          name={award.player.name}
+          photoUrl={award.player.photoUrl}
+          className="motm-avatar"
+        />
         <div>
           <strong>{award.player.name}</strong>
           <small>Total {formatAwardScore(award.score)} pts</small>
@@ -314,7 +404,32 @@ function App() {
   const [loginPin, setLoginPin] = useState('')
   const [loginError, setLoginError] = useState('')
   const [profileSaveMsg, setProfileSaveMsg] = useState('')
+  const [liveMatchNotices, setLiveMatchNotices] = useState<LiveMatchNotice[]>([])
+  const [dismissedMatchIds, setDismissedMatchIds] = useState<string[]>(() =>
+    loadDismissedMatchIds(),
+  )
+  const [matchNoticeOpen, setMatchNoticeOpen] = useState(false)
+  const [seatTossDismissedCount, setSeatTossDismissedCount] = useState<number | null>(null)
+  const [stopMatchConfirmOpen, setStopMatchConfirmOpen] = useState(false)
+  const [colorEditPlayerId, setColorEditPlayerId] = useState<string | null>(null)
+  const [cropImage, setCropImage] = useState<HTMLImageElement | null>(null)
+  const photoInputRef = useRef<HTMLInputElement>(null)
   const [careerBoard, setCareerBoard] = useState<CareerBoardEntry[] | null>(null)
+  const [matchHistory, setMatchHistory] = useState<MatchHistoryEntry[]>([])
+  const [matchHistoryOpen, setMatchHistoryOpen] = useState(false)
+  const [matchHistoryLoading, setMatchHistoryLoading] = useState(false)
+  const [historyExpandedId, setHistoryExpandedId] = useState<string | null>(null)
+  const [historyApplyEntry, setHistoryApplyEntry] =
+    useState<MatchHistoryEntry | null>(null)
+  const [historyApplyBusy, setHistoryApplyBusy] = useState(false)
+  const [historyApplyMsg, setHistoryApplyMsg] = useState('')
+  const [adminEditOpen, setAdminEditOpen] = useState(false)
+  const [adminEditTargetId, setAdminEditTargetId] = useState('')
+  const [adminEditDraft, setAdminEditDraft] = useState<
+    Partial<Record<CareerStatKey, string>>
+  >({})
+  const [adminEditMsg, setAdminEditMsg] = useState('')
+  const [adminEditBusy, setAdminEditBusy] = useState(false)
   const [colorClaims, setColorClaims] = useState<Record<string, string>>({})
   const [rolling, setRolling] = useState(false)
   const [diceFace, setDiceFace] = useState(1)
@@ -338,9 +453,14 @@ function App() {
   const [motmBreakdownTabId, setMotmBreakdownTabId] = useState<string | null>(null)
   const [elimBoardOpen, setElimBoardOpen] = useState(false)
   /** Client-side watch flow: pending host approve, or actively watching. */
-  const [watchRole, setWatchRole] = useState<'pending' | 'watching' | null>(null)
-  const watchRoleRef = useRef<'pending' | 'watching' | null>(null)
+  const [watchRole, setWatchRole] = useState<
+    'pending' | 'watching' | 'join-pending' | null
+  >(null)
+  const watchRoleRef = useRef<'pending' | 'watching' | 'join-pending' | null>(
+    null,
+  )
   watchRoleRef.current = watchRole
+  const wasSeatPlayerRef = useRef(false)
   const rollSyncRef = useRef<Promise<unknown> | null>(null)
   const moveInFlightRef = useRef(false)
   const powerResolveInFlightRef = useRef(false)
@@ -415,6 +535,20 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!profile) {
+      setLiveMatchNotices([])
+      setMatchNoticeOpen(false)
+      return
+    }
+    return watchLiveMatches(setLiveMatchNotices)
+  }, [profile?.accountId])
+
+  useEffect(() => {
+    if (!room || room.status !== 'finished') return
+    void clearLiveMatch(room.id)
+  }, [room?.id, room?.status])
+
+  useEffect(() => {
     if (!profile || !room || room.status !== 'lobby') {
       setCareerBoard(null)
       return
@@ -432,66 +566,35 @@ function App() {
     if (!room || room.status !== 'finished' || !room.game) return
     if (!isCareerEligibleMatch(room)) return
 
+    let cancelled = false
+    const finishedRoom = room
+
     // Team Power: no career win points — match result only.
     const winnerIds =
-      isTeamMode(room.gameMode)
+      isTeamMode(finishedRoom.gameMode)
         ? []
-        : room.game.winnerIds[0]
-          ? [room.game.winnerIds[0]]
+        : finishedRoom.game.winnerIds[0]
+          ? [finishedRoom.game.winnerIds[0]]
           : []
-    const motmPlayer = computeMotm(room, [
-      ...room.players,
-      ...(room.departedPlayers ?? []),
-    ])?.player
-    const motmId = motmPlayer?.id
-
-    if (winnerIds.some((id) => isLoginAccountId(id))) {
-      void recordMatchWins(room.id, winnerIds).then((recorded) => {
-        if (!recorded) return
-        setCareerBoard((prev) => {
-          if (!prev) return prev
-          return [...prev]
-            .map((entry) =>
-              winnerIds.includes(entry.accountId)
-                ? { ...entry, wins: entry.wins + 1 }
-                : entry,
-            )
-            .sort((a, b) => b.wins - a.wins || a.name.localeCompare(b.name))
-        })
-      })
-    }
-
-    if (motmId && isLoginAccountId(motmId)) {
-      void recordMatchMotm(room.id, motmId).then((recorded) => {
-        if (!recorded) return
-        setCareerBoard((prev) => {
-          if (!prev) return prev
-          return [...prev].map((entry) =>
-            entry.accountId === motmId
-              ? { ...entry, motm: entry.motm + 1 }
-              : entry,
-          )
-        })
-      })
-    }
-
     const awardPool = [
-      ...room.players.filter((player) => !player.isBot),
-      ...(room.departedPlayers ?? []).filter((player) => !player.isBot),
+      ...finishedRoom.players.filter((player) => !player.isBot),
+      ...(finishedRoom.departedPlayers ?? []).filter((player) => !player.isBot),
     ]
-    const worstId = computeWorstPlayer(room, awardPool)?.player.id ?? null
-    const secondId = room.game.winnerIds[1] ?? null
-    const thirdId = room.game.winnerIds[2] ?? null
+    const motmPlayer = computeMotm(finishedRoom, awardPool)?.player
+    const motmId = motmPlayer?.id
+    const worstId = computeWorstPlayer(finishedRoom, awardPool)?.player.id ?? null
+    const secondId = finishedRoom.game.winnerIds[1] ?? null
+    const thirdId = finishedRoom.game.winnerIds[2] ?? null
     const motmById = new Map(
-      computeMotmStandings(room, awardPool).map((entry) => [
+      computeMotmStandings(finishedRoom, awardPool).map((entry) => [
         entry.player.id,
         entry.score,
       ]),
     )
-    const deltas = [...room.players, ...(room.departedPlayers ?? [])]
-      .filter((player) => isLoginAccountId(player.id) && !player.isBot)
+    const deltas = [...finishedRoom.players, ...(finishedRoom.departedPlayers ?? [])]
+      .filter((player) => isCareerAccountId(player.id) && !player.isBot)
       .map((player) => {
-        const stats = readPlayerStats(room, player.id)
+        const stats = readPlayerStats(finishedRoom, player.id)
         return {
           accountId: player.id,
           eliminations: stats.captures,
@@ -500,70 +603,44 @@ function App() {
           motmPoints: motmById.get(player.id) ?? 0,
           negativePowers: stats.negativePowers ?? 0,
           superPowers: stats.superPowers ?? 0,
-          plus3: stats.captures * 3,
-          finishTimeMs: room.game?.finishTimesMs?.[player.id] ?? 0,
+          plus3: stats.plus3 ?? 0,
+          finishTimeMs: finishedRoom.game?.finishTimesMs?.[player.id] ?? 0,
+          elimPairs: Object.fromEntries(
+            Object.entries(stats.eliminatedPlayers ?? {}).filter(([victimId]) =>
+              isCareerAccountId(victimId),
+            ),
+          ),
         }
       })
 
-    void recordMatchCareerExtras(room.id, {
-      worstId,
-      secondId,
-      thirdId,
-      deltas,
-    }).then((recorded) => {
-      if (!recorded) return
-      setCareerBoard((prev) => {
-        if (!prev) return prev
-        return prev.map((entry) => {
-          let next = {
-            ...entry,
-            worst: entry.worst ?? 0,
-            second: entry.second ?? 0,
-            third: entry.third ?? 0,
-            eliminations: entry.eliminations ?? 0,
-            timesEliminated: entry.timesEliminated ?? 0,
-            sixes: entry.sixes ?? 0,
-            matchesPlayed: entry.matchesPlayed ?? 0,
-            motmPoints: entry.motmPoints ?? 0,
-            negativePowers: entry.negativePowers ?? 0,
-            superPowers: entry.superPowers ?? 0,
-            plus3: entry.plus3 ?? 0,
-            bestFinishMs: entry.bestFinishMs ?? 0,
-          }
-          if (entry.accountId === worstId) {
-            next = { ...next, worst: next.worst + 1 }
-          }
-          if (entry.accountId === secondId) {
-            next = { ...next, second: next.second + 1 }
-          }
-          if (entry.accountId === thirdId) {
-            next = { ...next, third: next.third + 1 }
-          }
-          const delta = deltas.find((item) => item.accountId === entry.accountId)
-          if (delta) {
-            next = {
-              ...next,
-              eliminations: next.eliminations + delta.eliminations,
-              timesEliminated: next.timesEliminated + delta.timesEliminated,
-              sixes: next.sixes + delta.sixes,
-              matchesPlayed: next.matchesPlayed + 1,
-              motmPoints:
-                Math.round((next.motmPoints + delta.motmPoints) * 10) / 10,
-              negativePowers: next.negativePowers + delta.negativePowers,
-              superPowers: next.superPowers + delta.superPowers,
-              plus3: next.plus3 + delta.plus3,
-              bestFinishMs:
-                delta.finishTimeMs > 0 &&
-                (next.bestFinishMs <= 0 ||
-                  delta.finishTimeMs < next.bestFinishMs)
-                  ? delta.finishTimeMs
-                  : next.bestFinishMs,
-            }
-          }
-          return next
-        })
-      })
-    })
+    void (async () => {
+      const tasks: Array<Promise<boolean>> = []
+      if (winnerIds.some((id) => isCareerAccountId(id))) {
+        tasks.push(recordMatchWins(finishedRoom.id, winnerIds))
+      }
+      if (motmId && isCareerAccountId(motmId)) {
+        tasks.push(recordMatchMotm(finishedRoom.id, motmId))
+      }
+      tasks.push(
+        recordMatchCareerExtras(finishedRoom.id, {
+          worstId,
+          secondId,
+          thirdId,
+          deltas,
+        }),
+      )
+      await Promise.all(tasks)
+      if (cancelled) return
+
+      // Refresh career “most” boards from cloud, then archive leaders + results.
+      const board = await finalizeEligibleMatchHistory(finishedRoom)
+      if (cancelled || !board) return
+      setCareerBoard(board)
+    })()
+
+    return () => {
+      cancelled = true
+    }
   }, [room?.id, room?.status, room?.game?.winnerIds, room?.winningTeamId])
 
   useEffect(() => {
@@ -651,38 +728,81 @@ function App() {
   useEffect(() => {
     if (!roomId) return
     localStorage.setItem('ludo-room', roomId)
+
+    const exitToHome = (message?: string) => {
+      if (message) setError(message)
+      setOptimisticRoom(null)
+      localStorage.removeItem('ludo-room')
+      setRoomId(null)
+      setRoom(null)
+      setWatchRole(null)
+      wasSeatPlayerRef.current = false
+    }
+
+    const restoreRoomNotice = (kickedRoomId: string) => {
+      setDismissedMatchIds((prev) => {
+        const next = prev.filter((id) => id !== kickedRoomId)
+        saveDismissedMatchIds(next)
+        return next
+      })
+    }
+
     return watchRoom(
       roomId,
       userId,
       (nextRoom) => {
         setRoom(nextRoom)
         if (!nextRoom) {
-          setOptimisticRoom(null)
-          localStorage.removeItem('ludo-room')
-          setRoomId(null)
-          setWatchRole(null)
+          exitToHome()
           return
         }
         const asPlayer = nextRoom.players.some((player) => player.id === userId)
         if (asPlayer) {
+          wasSeatPlayerRef.current = true
           setWatchRole(null)
           return
         }
+
         const asWatcher = (nextRoom.spectators ?? []).some(
           (entry) => entry.id === userId,
         )
-        const asPending = (nextRoom.spectatorRequests ?? []).some(
+        const asPendingWatch = (nextRoom.spectatorRequests ?? []).some(
           (entry) => entry.id === userId,
         )
-        if (asWatcher) setWatchRole('watching')
-        else if (asPending) setWatchRole('pending')
-        else if (watchRoleRef.current) {
-          setError('The host ended your watch session.')
-          setOptimisticRoom(null)
-          localStorage.removeItem('ludo-room')
-          setRoomId(null)
-          setRoom(null)
-          setWatchRole(null)
+        const asPendingJoin = (nextRoom.joinRequests ?? []).some(
+          (entry) => entry.id === userId,
+        )
+
+        if (asWatcher) {
+          wasSeatPlayerRef.current = false
+          setWatchRole('watching')
+          return
+        }
+        if (asPendingWatch) {
+          wasSeatPlayerRef.current = false
+          setWatchRole('pending')
+          return
+        }
+        if (asPendingJoin) {
+          wasSeatPlayerRef.current = false
+          setWatchRole('join-pending')
+          return
+        }
+
+        if (wasSeatPlayerRef.current) {
+          restoreRoomNotice(nextRoom.id)
+          exitToHome('The host removed you from the room.')
+          return
+        }
+
+        if (watchRoleRef.current === 'watching' || watchRoleRef.current === 'pending') {
+          exitToHome('The host ended your watch session.')
+          return
+        }
+        if (watchRoleRef.current === 'join-pending') {
+          restoreRoomNotice(nextRoom.id)
+          exitToHome('The host declined your join request.')
+          return
         }
       },
       setError,
@@ -692,12 +812,19 @@ function App() {
         }
       },
       () => {
-        setError('The host declined your watch request.')
-        setOptimisticRoom(null)
-        localStorage.removeItem('ludo-room')
-        setRoomId(null)
-        setRoom(null)
-        setWatchRole(null)
+        exitToHome('The host declined your watch request.')
+      },
+      (reason) => {
+        restoreRoomNotice(roomId)
+        exitToHome(
+          reason === 'removed'
+            ? 'The host removed you from the room.'
+            : 'You were removed from the room.',
+        )
+      },
+      () => {
+        restoreRoomNotice(roomId)
+        exitToHome('The host declined your join request.')
       },
     )
   }, [roomId, userId, scheduleRemoteMove])
@@ -1042,6 +1169,71 @@ function App() {
     })()
   }
 
+  const openAdminCareerEditor = () => {
+    setAdminEditMsg('')
+    setAdminEditBusy(false)
+    setAdminEditOpen(true)
+    void (async () => {
+      const board = await fetchCareerBoard()
+      setCareerBoard(board)
+      const first = board[0]
+      const targetId = adminEditTargetId || first?.accountId || ''
+      setAdminEditTargetId(targetId)
+      const entry = board.find((row) => row.accountId === targetId) ?? first
+      if (!entry) {
+        setAdminEditDraft({})
+        return
+      }
+      const draft: Partial<Record<CareerStatKey, string>> = {}
+      for (const key of Object.keys(CAREER_STAT_EDIT_LABELS) as CareerStatKey[]) {
+        draft[key] = String(entry[key] ?? 0)
+      }
+      setAdminEditDraft(draft)
+    })()
+  }
+
+  const loadAdminEditTarget = (accountId: string) => {
+    setAdminEditTargetId(accountId)
+    setAdminEditMsg('')
+    const entry = careerBoard?.find((row) => row.accountId === accountId)
+    if (!entry) return
+    const draft: Partial<Record<CareerStatKey, string>> = {}
+    for (const key of Object.keys(CAREER_STAT_EDIT_LABELS) as CareerStatKey[]) {
+      draft[key] = String(entry[key] ?? 0)
+    }
+    setAdminEditDraft(draft)
+  }
+
+  const saveAdminCareerStats = () => {
+    if (!profile || !isAdminAccountId(profile.accountId) || !adminEditTargetId) return
+    setAdminEditBusy(true)
+    setAdminEditMsg('')
+    void (async () => {
+      try {
+        const stats: Partial<Record<CareerStatKey, number>> = {}
+        for (const key of Object.keys(CAREER_STAT_EDIT_LABELS) as CareerStatKey[]) {
+          const raw = adminEditDraft[key]
+          if (raw === undefined || raw === '') continue
+          const value = Number(raw)
+          if (!Number.isFinite(value)) {
+            throw new Error(`Invalid value for ${CAREER_STAT_EDIT_LABELS[key]}.`)
+          }
+          stats[key] = value
+        }
+        await adminSetCareerStats(profile.accountId, adminEditTargetId, stats)
+        const board = await fetchCareerBoard()
+        setCareerBoard(board)
+        setAdminEditMsg('Saved.')
+      } catch (reason) {
+        setAdminEditMsg(
+          reason instanceof Error ? reason.message : 'Failed to save career stats.',
+        )
+      } finally {
+        setAdminEditBusy(false)
+      }
+    })()
+  }
+
   const logoutProfile = async () => {
     if (profile) {
       try {
@@ -1096,6 +1288,42 @@ function App() {
   const roomColorOptions = profile?.color
     ? { color: profile.color, lockColor: true as const }
     : undefined
+  const roomProfileOptions = {
+    ...roomColorOptions,
+    ...(profile?.photoUrl ? { photoUrl: profile.photoUrl } : {}),
+  }
+
+  const applyProfilePhoto = async (dataUrl: string) => {
+    if (!profile) return
+    const updated: UserProfile = { ...profile, photoUrl: dataUrl }
+    await saveProfileAsync(updated)
+    setProfile(updated)
+    setCropImage(null)
+    if (room && room.players.some((player) => player.id === userId)) {
+      await setOwnPhoto(room.id, userId, dataUrl)
+    }
+  }
+
+  const removeProfilePhoto = () => {
+    if (!profile) return
+    void perform(async () => {
+      const updated: UserProfile = { ...profile }
+      delete updated.photoUrl
+      await saveProfileAsync(updated)
+      setProfile(updated)
+      if (room && room.players.some((player) => player.id === userId)) {
+        await setOwnPhoto(room.id, userId, '')
+      }
+    })
+  }
+
+  const onProfilePhotoFile = (file: File | undefined) => {
+    if (!file) return
+    void perform(async () => {
+      const image = await loadImageFromFile(file)
+      setCropImage(image)
+    })
+  }
 
   const copyCode = () => void navigator.clipboard.writeText(room?.code ?? '')
   const playButtonSound = (event: MouseEvent<HTMLElement>) => {
@@ -1318,6 +1546,58 @@ function App() {
     setRoom(null)
   }
 
+  const leaveAndExitRoom = () => {
+    if (!room) {
+      exitRoom()
+      return
+    }
+    const asPlayer = room.players.some((player) => player.id === userId)
+    void perform(async () => {
+      if (asPlayer) await leaveRoom(room.id, userId)
+      else await leaveSpectate(room.id, userId)
+      exitRoom()
+    })
+  }
+
+  const openMatchHistory = () => {
+    setMatchHistoryOpen(true)
+    setMatchHistoryLoading(true)
+    setHistoryApplyMsg('')
+    void fetchMatchHistory()
+      .then((entries) => setMatchHistory(entries))
+      .finally(() => setMatchHistoryLoading(false))
+  }
+
+  const confirmApplyHistoryMosts = () => {
+    const entry = historyApplyEntry
+    if (!entry || !extraCtrl || historyApplyBusy) return
+    setHistoryApplyBusy(true)
+    setHistoryApplyMsg('')
+    void (async () => {
+      try {
+        const written = await applyHistoryMostLeaders(entry.mostLeaders ?? {})
+        if (written <= 0) {
+          setHistoryApplyMsg('No most-leader values to apply.')
+        } else {
+          const board = await fetchCareerBoard()
+          setCareerBoard(board)
+          setHistoryApplyMsg(
+            `Applied most leaders from ${entry.code} to ${written} player${written === 1 ? '' : 's'}.`,
+          )
+        }
+        setHistoryApplyEntry(null)
+      } catch (reason) {
+        setHistoryApplyMsg(
+          reason instanceof Error
+            ? reason.message
+            : 'Failed to apply history mosts.',
+        )
+      } finally {
+        setHistoryApplyBusy(false)
+      }
+    })()
+  }
+
   const openLeaveFlow = () => {
     if (!room) return
     if (watchRole || !(room.players.some((player) => player.id === userId))) {
@@ -1376,6 +1656,46 @@ function App() {
 
   if (!roomId || !room) {
     const canPlay = Boolean(name.trim()) && (!profile || Boolean(profile.color))
+    const visibleMatchNotices = liveMatchNotices.filter(
+      (notice) =>
+        !dismissedMatchIds.includes(notice.roomId) &&
+        notice.hostId !== profile?.accountId,
+    )
+    const dismissMatchNotice = (roomIdToDismiss: string) => {
+      setDismissedMatchIds((prev) => {
+        const next = [...prev, roomIdToDismiss]
+        saveDismissedMatchIds(next)
+        return next
+      })
+    }
+    const joinMatchFromNotice = (notice: LiveMatchNotice) => {
+      void perform(async () => {
+        rememberName()
+        setJoinCode(notice.code)
+        setMatchNoticeOpen(false)
+        if (notice.status === 'playing') {
+          const { room: watched, status } = await requestSpectate(
+            userId,
+            name,
+            notice.code,
+          )
+          setWatchRole(status === 'watching' ? 'watching' : 'pending')
+          setRoom(watched)
+          setRoomId(watched.id)
+          return
+        }
+        const { room: pendingRoom } = await requestJoin(
+          userId,
+          name,
+          notice.code,
+          roomProfileOptions,
+        )
+        wasSeatPlayerRef.current = false
+        setWatchRole('join-pending')
+        setRoom(pendingRoom)
+        setRoomId(pendingRoom.id)
+      })
+    }
     return (
       <main className="home-screen" onClickCapture={playButtonSound}>
         <section className="hero-panel">
@@ -1383,12 +1703,104 @@ function App() {
             <div className="brand"><span className="brand-mark">L</span> Ludo Live</div>
             <div className="home-topbar-actions">
               {profile ? (
+                <div className="match-notice-wrap">
+                  <button
+                    type="button"
+                    className={`match-notice-bell ${visibleMatchNotices.length > 0 ? 'has-unread' : ''}`}
+                    aria-label={
+                      visibleMatchNotices.length > 0
+                        ? `${visibleMatchNotices.length} open room notification${visibleMatchNotices.length === 1 ? '' : 's'}`
+                        : 'Room notifications'
+                    }
+                    aria-expanded={matchNoticeOpen}
+                    onClick={() => setMatchNoticeOpen((open) => !open)}
+                  >
+                    <span aria-hidden="true">🔔</span>
+                    {visibleMatchNotices.length > 0 ? (
+                      <em className="match-notice-badge">
+                        {visibleMatchNotices.length > 9
+                          ? '9+'
+                          : visibleMatchNotices.length}
+                      </em>
+                    ) : null}
+                  </button>
+                  {matchNoticeOpen ? (
+                    <div className="match-notice-panel" role="dialog" aria-label="Live matches">
+                      <div className="match-notice-panel-head">
+                        <strong>Open rooms</strong>
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => setMatchNoticeOpen(false)}
+                        >
+                          Close
+                        </button>
+                      </div>
+                      {visibleMatchNotices.length === 0 ? (
+                        <p className="match-notice-empty">No open rooms right now.</p>
+                      ) : (
+                        <ul className="match-notice-list">
+                          {visibleMatchNotices.map((notice) => (
+                            <li key={notice.roomId} className="match-notice-item">
+                              <div className="match-notice-copy">
+                                <strong>
+                                  {notice.status === 'playing'
+                                    ? `${notice.hostName} started a match`
+                                    : `${notice.hostName} opened a room`}
+                                </strong>
+                                <small>
+                                  {gameModeLabel(notice.gameMode)} ·{' '}
+                                  {notice.playerCount}/{notice.maxPlayers} · code{' '}
+                                  <em>{notice.code}</em>
+                                </small>
+                              </div>
+                              <div className="match-notice-actions">
+                                <button
+                                  type="button"
+                                  className="match-notice-join"
+                                  disabled={busy || !canPlay}
+                                  onClick={() => joinMatchFromNotice(notice)}
+                                >
+                                  {notice.status === 'playing' ? 'Watch match' : 'Ask to join'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="text-button"
+                                  onClick={() => dismissMatchNotice(notice.roomId)}
+                                >
+                                  Dismiss
+                                </button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {profile ? (
                 <div className="profile-chip">
-                  <span
-                    className="profile-chip-swatch"
-                    style={{ background: profile.color ? resolveColorHex(profile.color) : '#64748b' }}
+                  <PlayerAvatar
+                    name={profile.name}
+                    photoUrl={profile.photoUrl}
+                    className="profile-chip-avatar"
+                    style={
+                      profile.photoUrl
+                        ? undefined
+                        : { background: profile.color ? resolveColorHex(profile.color) : '#64748b' }
+                    }
                   />
                   <strong>{profile.name}</strong>
+                  {isAdminAccountId(profile.accountId) ? (
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={openAdminCareerEditor}
+                    >
+                      Edit most stats
+                    </button>
+                  ) : null}
                   <button type="button" className="text-button" onClick={() => void logoutProfile()}>
                     Log out
                   </button>
@@ -1435,6 +1847,55 @@ function App() {
             </label>
             {profile ? (
               <div className="color-picker-block">
+                <span className="color-picker-label">Profile photo</span>
+                <div className="profile-photo-row">
+                  <PlayerAvatar
+                    name={profile.name}
+                    photoUrl={profile.photoUrl}
+                    className="profile-photo-preview"
+                    style={
+                      profile.photoUrl
+                        ? undefined
+                        : {
+                            background: profile.color
+                              ? resolveColorHex(profile.color)
+                              : '#64748b',
+                          }
+                    }
+                  />
+                  <div className="profile-photo-actions">
+                    <input
+                      ref={photoInputRef}
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={(event) => {
+                        const file = event.target.files?.[0]
+                        event.target.value = ''
+                        onProfilePhotoFile(file)
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="secondary-button profile-photo-button"
+                      disabled={busy}
+                      onClick={() => photoInputRef.current?.click()}
+                    >
+                      {profile.photoUrl ? 'Change photo' : 'Upload photo'}
+                    </button>
+                    {profile.photoUrl ? (
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={busy}
+                        onClick={removeProfilePhoto}
+                      >
+                        Remove
+                      </button>
+                    ) : null}
+                    <p className="color-hint">Cropped square · saved ≤400KB</p>
+                  </div>
+                </div>
                 <span className="color-picker-label">Your color</span>
                 <div className="color-swatches">
                   {PLAYER_COLORS.map((color) => {
@@ -1513,13 +1974,21 @@ function App() {
                 onClick={() => perform(async () => {
                   rememberName()
                   if (seatCode.length === 4) {
-                    const claimed = await claimSeat(userId, name, joinCode, seatCode)
+                    const claimed = await claimSeat(
+                      userId,
+                      name,
+                      joinCode,
+                      seatCode,
+                      roomProfileOptions.photoUrl
+                        ? { photoUrl: roomProfileOptions.photoUrl }
+                        : undefined,
+                    )
                     setWatchRole(null)
                     setRoom(claimed)
                     setRoomId(claimed.id)
                     return
                   }
-                  const joined = await joinRoom(userId, name, joinCode, roomColorOptions)
+                  const joined = await joinRoom(userId, name, joinCode, roomProfileOptions)
                   setWatchRole(null)
                   setRoom(joined)
                   setRoomId(joined.id)
@@ -1567,7 +2036,7 @@ function App() {
                       onClick={() => setGameMode('power')}
                     >
                       <strong>Power</strong>
-                      <span>+10 surge, rockets, springs & more</span>
+                      <span>+10 surge, rockets, +3 & more</span>
                     </button>
                     <button
                       type="button"
@@ -1583,7 +2052,7 @@ function App() {
                       onClick={() => setGameMode('race')}
                     >
                       <strong>Race</strong>
-                      <span>4 tokens, no captures — first home wins</span>
+                      <span>No captures · pick tokens · boosts & hazards</span>
                     </button>
                     <button
                       type="button"
@@ -1622,7 +2091,7 @@ function App() {
                     </select>
                   </label>
                 ) : null}
-                {gameMode === 'quick' ? (
+                {gameMode === 'quick' || gameMode === 'race' ? (
                   <label>
                     Tokens per player
                     <select
@@ -1692,9 +2161,11 @@ function App() {
                       maxPlayers,
                       gameMode,
                       {
-                        ...roomColorOptions,
+                        ...roomProfileOptions,
                         ...(gameMode === 'blitz' ? { blitzDurationMs } : {}),
-                        ...(gameMode === 'quick' ? { quickTokens } : {}),
+                        ...(gameMode === 'quick' || gameMode === 'race'
+                          ? { quickTokens }
+                          : {}),
                         ...(gameMode === 'team' ? { teamSize, teamAssign } : {}),
                       },
                     )
@@ -1745,6 +2216,96 @@ function App() {
             </div>
           </div>
         ) : null}
+
+        {adminEditOpen && profile && isAdminAccountId(profile.accountId) ? (
+          <div
+            className="confirm-overlay"
+            onClick={() => !adminEditBusy && setAdminEditOpen(false)}
+          >
+            <div
+              className="confirm-card admin-career-modal"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h2>Edit career / most stats</h2>
+              <p>Set absolute values for any login player. Changes apply to all “most” boards.</p>
+              <label className="admin-career-player">
+                Player
+                <select
+                  value={adminEditTargetId}
+                  disabled={adminEditBusy}
+                  onChange={(event) => loadAdminEditTarget(event.target.value)}
+                >
+                  {Object.values(CAREER_LOGIN_ACCOUNTS).map((account) => (
+                    <option key={account.accountId} value={account.accountId}>
+                      {careerBoard?.find((row) => row.accountId === account.accountId)?.name
+                        ?? account.defaultName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="admin-career-grid">
+                {(Object.keys(CAREER_STAT_EDIT_LABELS) as CareerStatKey[]).map((key) => (
+                  <label key={key} className="admin-career-field">
+                    {CAREER_STAT_EDIT_LABELS[key]}
+                    <input
+                      type="number"
+                      min={0}
+                      step={key === 'motmPoints' ? 0.1 : 1}
+                      disabled={adminEditBusy}
+                      value={adminEditDraft[key] ?? ''}
+                      onChange={(event) =>
+                        setAdminEditDraft((prev) => ({
+                          ...prev,
+                          [key]: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+              {adminEditMsg ? (
+                <p className={adminEditMsg === 'Saved.' ? 'admin-career-ok' : 'error'}>
+                  {adminEditMsg}
+                </p>
+              ) : null}
+              <div className="confirm-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  disabled={adminEditBusy}
+                  onClick={() => setAdminEditOpen(false)}
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  disabled={adminEditBusy || !adminEditTargetId}
+                  onClick={saveAdminCareerStats}
+                >
+                  {adminEditBusy ? 'Saving…' : 'Save stats'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {cropImage ? (
+          <ProfilePhotoCropper
+            image={cropImage}
+            busy={busy}
+            onCancel={() => {
+              revokeImageObjectUrl(cropImage)
+              setCropImage(null)
+            }}
+            onApply={async (dataUrl) => {
+              const ok = await perform(async () => {
+                await applyProfilePhoto(dataUrl)
+                revokeImageObjectUrl(cropImage)
+              })
+              if (!ok) return
+            }}
+          />
+        ) : null}
       </main>
     )
   }
@@ -1760,6 +2321,12 @@ function App() {
     !isSpectator &&
     ((viewRoom.spectatorRequests ?? []).some((entry) => entry.id === userId) ||
       watchRole === 'pending')
+  const isPendingJoin =
+    !isSeatPlayer &&
+    !isSpectator &&
+    !isPendingWatch &&
+    ((viewRoom.joinRequests ?? []).some((entry) => entry.id === userId) ||
+      watchRole === 'join-pending')
   const isPowerMode = hasPowerBoard(viewRoom.gameMode)
   const isQuickMode = (viewRoom.gameMode ?? 'classic') === 'quick'
   const isRaceMode = (viewRoom.gameMode ?? 'classic') === 'race'
@@ -1767,7 +2334,11 @@ function App() {
   const blitzScores = isBlitz && viewRoom.game ? rankBlitzPlayers(viewRoom) : []
 
   const currentPlayer = viewRoom.game ? viewRoom.players[viewRoom.game.turnIndex] : null
-  const isMyTurn = !isSpectator && !isPendingWatch && canControlSeat(currentPlayer, userId)
+  const isMyTurn =
+    !isSpectator &&
+    !isPendingWatch &&
+    !isPendingJoin &&
+    canControlSeat(currentPlayer, userId)
   const myTeam = isTeamMode(viewRoom.gameMode)
     ? teamOfPlayer(viewRoom, userId)
     : null
@@ -1836,7 +2407,7 @@ function App() {
         first.attackerName.localeCompare(second.attackerName),
     )
 
-  const topEliminations = matchEliminations.slice(0, 5)
+  const topEliminations = matchEliminations.slice(0, 8)
 
   const awardPool =
     finalRanking.filter((player) => !player.leftEarly).length > 0
@@ -1870,7 +2441,7 @@ function App() {
       ? 'Rolling dice…'
       : viewRoom.game?.lastAction
 
-  if (isPendingWatch) {
+  if (isPendingWatch || isPendingJoin) {
     return (
       <main className="room-screen" onClickCapture={playButtonSound}>
         <header className="room-header">
@@ -1884,10 +2455,14 @@ function App() {
         </header>
         <section className="lobby">
           <div className="lobby-card">
-            <span className="eyebrow">WATCH REQUEST</span>
+            <span className="eyebrow">
+              {isPendingJoin ? 'JOIN REQUEST' : 'WATCH REQUEST'}
+            </span>
             <h1>Waiting for the host</h1>
             <p>
-              You asked to watch room <strong>{room.code}</strong>. The host will accept or decline.
+              {isPendingJoin
+                ? <>You asked to join room <strong>{room.code}</strong>. The host will accept or decline.</>
+                : <>You asked to watch room <strong>{room.code}</strong>. The host will accept or decline.</>}
             </p>
             {error ? <p className="error">{error}</p> : null}
             <button
@@ -1908,7 +2483,7 @@ function App() {
             onClick={() => !busy && setLeaveConfirmOpen(false)}
           >
             <div className="confirm-card" onClick={(event) => event.stopPropagation()}>
-              <h2>Cancel watch request?</h2>
+              <h2>{isPendingJoin ? 'Cancel join request?' : 'Cancel watch request?'}</h2>
               <div className="confirm-actions">
                 <button className="cancel-button" disabled={busy} onClick={() => setLeaveConfirmOpen(false)}>
                   Stay
@@ -2037,6 +2612,16 @@ function App() {
           <button className="sound-toggle" onClick={toggleSound} title={soundOn ? 'Mute sounds' : 'Enable sounds'}>
             {soundOn ? '🔊' : '🔇'}
           </button>
+          {room.status === 'playing' && room.hostId === userId ? (
+            <button
+              type="button"
+              className="text-button stop-match-button"
+              disabled={busy}
+              onClick={() => setStopMatchConfirmOpen(true)}
+            >
+              Stop match
+            </button>
+          ) : null}
           <button className="text-button" onClick={openLeaveFlow}>
             {isSpectator ? 'Stop watching' : 'Leave'}
           </button>
@@ -2098,7 +2683,7 @@ function App() {
                   )}
                 </>
               ) : null}
-              {room.gameMode === 'quick' ? (
+              {room.gameMode === 'quick' || room.gameMode === 'race' ? (
                 <>
                   {' '}
                   ·{' '}
@@ -2139,7 +2724,15 @@ function App() {
                     style={playerColorStyle(player.color)}
                     key={player.id}
                   >
-                    <span>{player.isBot ? '🤖' : player.name.slice(0, 1).toUpperCase()}</span>
+                    {player.isBot ? (
+                      <span className="avatar">🤖</span>
+                    ) : (
+                      <PlayerAvatar
+                        name={player.name}
+                        photoUrl={player.photoUrl}
+                        className="avatar"
+                      />
+                    )}
                     <div className="player-slot-copy">
                       <strong>{player.name}</strong>
                       {player.isBot && <em>Bot</em>}
@@ -2377,7 +2970,58 @@ function App() {
               </div>
             ) : null}
             {room.hostId === userId ? (
-              <button
+              <>
+                {room.players.length >= room.maxPlayers &&
+                !room.seatToss?.locked ? (
+                  <button
+                    type="button"
+                    className="secondary-button seat-toss-button"
+                    disabled={busy || (room.seatToss?.count ?? 0) >= 3}
+                    onClick={() =>
+                      void perform(async () => {
+                        await runSeatToss(room.id, userId)
+                        setSeatTossDismissedCount(null)
+                      })
+                    }
+                  >
+                    {(room.seatToss?.count ?? 0) === 0
+                      ? 'Toss positions'
+                      : (room.seatToss?.count ?? 0) < 3
+                        ? `Toss again (${room.seatToss!.count}/3)`
+                        : '3 tosses done'}
+                  </button>
+                ) : null}
+                {room.seatToss?.count === 3 && !room.seatToss.locked ? (
+                  <button
+                    type="button"
+                    className="start-button seat-toss-button"
+                    disabled={busy}
+                    onClick={() =>
+                      void perform(async () => {
+                        await confirmSeatToss(room.id, userId)
+                        setSeatTossDismissedCount(null)
+                      })
+                    }
+                  >
+                    Use toss 3 positions
+                  </button>
+                ) : null}
+                {room.seatToss?.current &&
+                seatTossDismissedCount === room.seatToss.count ? (
+                  <button
+                    type="button"
+                    className="text-button seat-toss-button"
+                    onClick={() => setSeatTossDismissedCount(null)}
+                  >
+                    Show toss results
+                  </button>
+                ) : null}
+                {room.seatToss?.locked ? (
+                  <p className="lobby-hint seat-toss-locked-hint">
+                    Positions locked from toss 3. Start when ready.
+                  </p>
+                ) : null}
+                <button
                 className="start-button"
                 disabled={busy || room.players.length < 2}
                 onClick={() => perform(async () => {
@@ -2398,9 +3042,11 @@ function App() {
                       'manual',
                     )
                   }
-                  await startRoom(room.id, userId)
+                  const started = await startRoom(room.id, userId)
+                  void publishLiveMatch(started)
                 })}
               >Start game ({room.players.length}/{room.maxPlayers})</button>
+              </>
             ) : isSpectator ? (
               <p className="waiting-text">Watching lobby — waiting for the host to start…</p>
             ) : (
@@ -2408,6 +3054,43 @@ function App() {
             )}
             {room.hostId === userId ? (
               <div className="watch-host-panel">
+                <p className="power-rules-title"><strong>Join requests</strong></p>
+                {(room.joinRequests ?? []).length > 0 ? (
+                  <ul className="watch-request-list">
+                    {(room.joinRequests ?? []).map((request) => (
+                      <li key={request.id}>
+                        <strong>{request.name}</strong>
+                        <span>wants to join</span>
+                        <button
+                          type="button"
+                          className="slot-action"
+                          disabled={busy}
+                          onClick={() =>
+                            void perform(async () => {
+                              await approveJoin(room.id, userId, request.id)
+                            })
+                          }
+                        >
+                          Accept
+                        </button>
+                        <button
+                          type="button"
+                          className="slot-action danger"
+                          disabled={busy}
+                          onClick={() =>
+                            void perform(async () => {
+                              await denyJoin(room.id, userId, request.id)
+                            })
+                          }
+                        >
+                          Decline
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="lobby-hint">No join requests right now.</p>
+                )}
                 <p className="power-rules-title"><strong>Watchers</strong></p>
                 <label className="lobby-blitz-duration">
                   Who can watch
@@ -2489,6 +3172,25 @@ function App() {
             {room.hostId === userId && (
               <p className="lobby-hint">Fill empty seats with bots or share the room code for friends.</p>
             )}
+            {room.hostId === userId ? (
+              <button
+                type="button"
+                className="secondary-button match-history-button"
+                disabled={busy || matchHistoryLoading}
+                onClick={openMatchHistory}
+              >
+                {matchHistoryLoading ? 'Loading history…' : 'Match history'}
+              </button>
+            ) : null}
+            {profile && isAdminAccountId(profile.accountId) ? (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={openAdminCareerEditor}
+              >
+                Edit most stats
+              </button>
+            ) : null}
             {error && <p className="error">{error}</p>}
           </div>
           {profile ? (
@@ -2581,11 +3283,16 @@ function App() {
                 formatCount={(value) => `${value}`}
               />
               <CareerLobbyBoard
-                title="Most −ve powers (←2 / ←3 / −5)"
+                title="Most Oonjaal"
                 board={careerBoard}
                 roomPlayers={room.players}
                 statKey="negativePowers"
                 formatCount={(value) => `${value}`}
+              />
+              <CareerElimPairsBoard
+                board={careerBoard}
+                roomPlayers={room.players}
+                limit={8}
               />
               <CareerLobbyBoard
                 title="Most Super ⚡"
@@ -2595,7 +3302,7 @@ function App() {
                 formatCount={(value) => `${value}`}
               />
               <CareerLobbyBoard
-                title="Most +3 (elim MotM)"
+                title="Most +3"
                 board={careerBoard}
                 roomPlayers={room.players}
                 statKey="plus3"
@@ -2631,8 +3338,12 @@ function App() {
                   style={playerColorStyle(player.color)}
                 >
                   <div className="player-row-main">
-                    <span className="avatar">{player.name[0].toUpperCase()}</span>
-                    <div>
+                    <PlayerAvatar
+                      name={player.name}
+                      photoUrl={player.photoUrl}
+                      className="avatar"
+                    />
+                    <div className="player-row-copy">
                       <strong>
                         {player.name}
                         {teamIndex >= 0 ? (
@@ -2669,55 +3380,134 @@ function App() {
                         {hasShield ? ' · Shield' : ''}
                       </small>
                     </div>
-                    {isHost &&
-                      !player.isBot &&
-                      viewRoom.status === 'playing' ? (
-                      <button
-                        type="button"
-                        className={`slot-action player-autoplay ${player.autoPlay ? 'active' : ''}`}
-                        disabled={busy}
-                        title={
-                          player.autoPlay
-                            ? player.id === userId
-                              ? 'Cancel your autoplay — you play manually again'
-                              : 'Cancel autoplay — they play manually again'
-                            : player.id === userId
-                              ? 'Put yourself on autoplay'
-                              : 'Autoplay for them while they are away'
-                        }
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          void perform(async () => {
-                            await setPlayerAutoPlay(
-                              room.id,
-                              userId,
-                              player.id,
-                              !player.autoPlay,
-                            )
-                          })
-                        }}
-                      >
-                        {player.autoPlay ? 'Cancel auto' : 'Autoplay'}
-                      </button>
-                    ) : null}
-                    {isHost && player.id !== userId ? (
-                      <button
-                        type="button"
-                        className="slot-action player-remove"
-                        disabled={busy}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          setRemoveConfirm({
-                            id: player.id,
-                            name: player.name,
-                            kind: 'player',
-                          })
-                        }}
-                      >
-                        Remove
-                      </button>
-                    ) : null}
                   </div>
+                  {isHost &&
+                  (viewRoom.status === 'playing' || player.id !== userId) ? (
+                    <div className="player-row-actions">
+                      {viewRoom.status === 'playing' ? (
+                        <button
+                          type="button"
+                          className={`slot-action player-color-edit ${colorEditPlayerId === player.id ? 'active' : ''}`}
+                          disabled={busy}
+                          title="Change this player's color"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setColorEditPlayerId((current) =>
+                              current === player.id ? null : player.id,
+                            )
+                          }}
+                        >
+                          Color
+                        </button>
+                      ) : null}
+                      {!player.isBot && viewRoom.status === 'playing' ? (
+                        <button
+                          type="button"
+                          className={`slot-action player-autoplay ${player.autoPlay ? 'active' : ''}`}
+                          disabled={busy}
+                          title={
+                            player.autoPlay
+                              ? player.id === userId
+                                ? 'Cancel your autoplay — you play manually again'
+                                : 'Cancel autoplay — they play manually again'
+                              : player.id === userId
+                                ? 'Put yourself on autoplay'
+                                : 'Autoplay for them while they are away'
+                          }
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void perform(async () => {
+                              await setPlayerAutoPlay(
+                                room.id,
+                                userId,
+                                player.id,
+                                !player.autoPlay,
+                              )
+                            })
+                          }}
+                        >
+                          {player.autoPlay ? 'Cancel auto' : 'Autoplay'}
+                        </button>
+                      ) : null}
+                      {player.id !== userId ? (
+                        <button
+                          type="button"
+                          className="slot-action player-remove"
+                          disabled={busy}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setRemoveConfirm({
+                              id: player.id,
+                              name: player.name,
+                              kind: 'player',
+                            })
+                          }}
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {isHost &&
+                  viewRoom.status === 'playing' &&
+                  colorEditPlayerId === player.id ? (
+                    <div
+                      className="player-color-picker"
+                      role="group"
+                      aria-label={`Color for ${player.name}`}
+                    >
+                      {PLAYER_COLORS.map((color) => {
+                        let takenBy: string | null = null
+                        try {
+                          const key = normalizeColorKey(color)
+                          const owner = viewRoom.players.find((entry) => {
+                            if (entry.id === player.id) return false
+                            try {
+                              return normalizeColorKey(entry.color) === key
+                            } catch {
+                              return entry.color === key
+                            }
+                          })
+                          takenBy = owner?.name ?? null
+                        } catch {
+                          takenBy = null
+                        }
+                        const selected =
+                          (() => {
+                            try {
+                              return normalizeColorKey(player.color) === normalizeColorKey(color)
+                            } catch {
+                              return player.color === color
+                            }
+                          })()
+                        return (
+                          <button
+                            key={color}
+                            type="button"
+                            className={`color-swatch ${selected ? 'selected' : ''}`}
+                            style={{ background: PLAYER_COLOR_HEX[color] }}
+                            disabled={busy}
+                            title={
+                              takenBy
+                                ? `${color} (swap with ${takenBy})`
+                                : color
+                            }
+                            onClick={() =>
+                              void perform(async () => {
+                                await setPlayerColor(
+                                  room.id,
+                                  userId,
+                                  player.id,
+                                  color,
+                                )
+                                setColorEditPlayerId(null)
+                              })
+                            }
+                          />
+                        )
+                      })}
+                    </div>
+                  ) : null}
                   {canPickRollFor(player.id) ? (
                     <FaceStrip
                       compact
@@ -2745,7 +3535,13 @@ function App() {
                         style={playerColorStyle(player.color)}
                       >
                         <span className="reclaim-avatar">
-                          {player.isBot ? '🤖' : player.name[0]?.toUpperCase() ?? '?'}
+                          {player.isBot ? (
+                            '🤖'
+                          ) : player.photoUrl ? (
+                            <img src={player.photoUrl} alt="" draggable={false} />
+                          ) : (
+                            player.name[0]?.toUpperCase() ?? '?'
+                          )}
                         </span>
                         <div className="reclaim-copy">
                           <strong>{player.name}</strong>
@@ -3076,19 +3872,28 @@ function App() {
               ) : isRaceMode ? (
                 <>
                   <p className="power-rules-title">
-                    <strong>Race mode:</strong> Quick-style power board, pure race to home.
+                    <strong>Race mode:</strong> pure race to home with boosts and hazards.
                   </p>
-                  <p>Each player has 4 tokens.</p>
-                  <p>No eliminations — landing on another token does nothing; share the cell and keep racing.</p>
+                  <p>
+                    Each player has {viewRoom.quickTokens ?? 3} token
+                    {(viewRoom.quickTokens ?? 3) === 1 ? '' : 's'} (host picks before start).
+                  </p>
+                  <p>No eliminations from landing on rivals — share the cell and keep racing.</p>
                   <p>Roll 6 to leave the yard.</p>
-                  <p>No TNT or −5 tiles. Two Super (⚡) tiles leap halfway around the board onto a safe star (max 3 uses per player).</p>
-                  <p>Ice does not push rivals. Roll 6 still grants an extra turn.</p>
-                  <p>Three consecutive 6s lose the turn.</p>
+                  <p>
+                    <strong>Boosts:</strong> Rocket, +3, x2, Flame, +10, Super ⚡
+                    (halfway leap onto a safe star; max 3 Super uses per player).
+                  </p>
+                  <p>
+                    <strong>Hazards:</strong> ←2 / ←3 / −5, Ice (you slide back 3),
+                    Yard (YRD → your start entry) and TNT (you blast to the yard).
+                  </p>
+                  <p>Three consecutive 6s lose the turn. Exact roll needed to finish a token.</p>
                   <p>
                     Roll within {TURN_ROLL_TIMEOUT_MS / 1000}s or an auto-roll is made. Move within{' '}
                     {TURN_MOVE_TIMEOUT_MS / 1000}s or an auto-move is made. Host can skip either wait.
                   </p>
-                  <p>First to get all tokens home wins. Reach home with an exact roll.</p>
+                  <p>First to get all tokens home wins.</p>
                 </>
               ) : isQuickMode ? (
                 <>
@@ -3234,9 +4039,11 @@ function App() {
                       style={playerColorStyle(player.color)}
                     >
                       <div className="match-stats-player">
-                        <span className="avatar">
-                          {player.name[0].toUpperCase()}
-                        </span>
+                        <PlayerAvatar
+                          name={player.name}
+                          photoUrl={player.photoUrl}
+                          className="avatar"
+                        />
                         <strong>{player.name}</strong>
                       </div>
                       <div className="match-stats-grid match-stats-grid--elim">
@@ -3562,7 +4369,13 @@ function App() {
                       onChange={() => setNewHostId(player.id)}
                     />
                     <span className="host-option-avatar">
-                      {player.isBot ? '🤖' : player.name[0].toUpperCase()}
+                      {player.isBot ? (
+                        '🤖'
+                      ) : player.photoUrl ? (
+                        <img src={player.photoUrl} alt="" draggable={false} />
+                      ) : (
+                        player.name[0].toUpperCase()
+                      )}
                     </span>
                     <span className="host-option-copy">
                       <strong>{player.name}</strong>
@@ -3590,6 +4403,371 @@ function App() {
           </div>
         </div>
       )}
+
+      {matchHistoryOpen ? (
+        <div
+          className="confirm-overlay match-history-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Match history"
+          onClick={() => setMatchHistoryOpen(false)}
+        >
+          <div
+            className="confirm-card match-history-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="match-history-head">
+              <h2>Match history</h2>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setMatchHistoryOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <p className="match-history-lead">
+              Eligible matches (≥3 login players). Each entry stores results and
+              the career “most …” leaders after that game.
+            </p>
+            {matchHistoryLoading ? (
+              <p className="match-history-empty">Loading…</p>
+            ) : matchHistory.length === 0 ? (
+              <p className="match-history-empty">No eligible match history yet.</p>
+            ) : (
+              <ul className="match-history-list">
+                {matchHistory.map((entry) => {
+                  const expanded = historyExpandedId === entry.roomId
+                  const when = entry.finishedAt
+                    ? new Date(entry.finishedAt).toLocaleString()
+                    : '—'
+                  return (
+                    <li key={entry.roomId} className="match-history-item">
+                      <button
+                        type="button"
+                        className="match-history-summary"
+                        onClick={() =>
+                          setHistoryExpandedId((current) =>
+                            current === entry.roomId ? null : entry.roomId,
+                          )
+                        }
+                      >
+                        <strong>
+                          {entry.gameModeLabel} · {entry.code}
+                        </strong>
+                        <small>
+                          {when} · host {entry.hostName} ·{' '}
+                          {entry.loginPlayerCount} login players
+                        </small>
+                        <span className="match-history-toggle">
+                          {expanded ? 'Hide' : 'Details'}
+                        </span>
+                      </button>
+                      {expanded ? (
+                        <div className="match-history-details">
+                          <div className="match-history-awards">
+                            <p>
+                              <span>Winner</span>
+                              <strong>
+                                {entry.winner?.name ?? '—'}
+                              </strong>
+                            </p>
+                            <p>
+                              <span>MotM</span>
+                              <strong>{entry.motm?.name ?? '—'}</strong>
+                            </p>
+                            <p>
+                              <span>Worst</span>
+                              <strong>{entry.worst?.name ?? '—'}</strong>
+                            </p>
+                          </div>
+                          {entry.ranking.length > 0 ? (
+                            <ol className="match-history-ranking">
+                              {entry.ranking.map((player) => (
+                                <li key={`${entry.roomId}-${player.accountId}`}>
+                                  #{player.place} {player.name}
+                                </li>
+                              ))}
+                            </ol>
+                          ) : null}
+                          <h3>Most leaders (after this match)</h3>
+                          <ul className="match-history-most">
+                            {(
+                              Object.keys(MOST_HISTORY_LABELS) as Array<
+                                keyof typeof MOST_HISTORY_LABELS
+                              >
+                            ).map((key) => {
+                              const leader = entry.mostLeaders?.[key]
+                              return (
+                                <li key={`${entry.roomId}-most-${key}`}>
+                                  <span>{MOST_HISTORY_LABELS[key]}</span>
+                                  <strong>
+                                    {leader
+                                      ? `${leader.name} · ${formatMostLeaderValue(key, leader.value ?? 0)}`
+                                      : '—'}
+                                  </strong>
+                                </li>
+                              )
+                            })}
+                          </ul>
+                          {extraCtrl ? (
+                            <button
+                              type="button"
+                              className="secondary-button match-history-apply"
+                              disabled={historyApplyBusy}
+                              onClick={() => {
+                                setHistoryApplyMsg('')
+                                setHistoryApplyEntry(entry)
+                              }}
+                            >
+                              Apply to most boards
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+            {historyApplyMsg ? (
+              <p
+                className={
+                  historyApplyMsg.startsWith('Applied')
+                    ? 'match-history-apply-ok'
+                    : 'error'
+                }
+              >
+                {historyApplyMsg}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {historyApplyEntry ? (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm apply most leaders"
+          onClick={() => !historyApplyBusy && setHistoryApplyEntry(null)}
+        >
+          <div
+            className="confirm-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>Apply most leaders?</h2>
+            <p>
+              Write the “most …” leader values from match{' '}
+              <strong>{historyApplyEntry.code}</strong> (
+              {historyApplyEntry.gameModeLabel}) onto the live career most
+              boards. Each listed leader’s stat will be set to the value stored
+              in this history entry.
+            </p>
+            <ul className="match-history-apply-preview">
+              {(
+                Object.keys(MOST_HISTORY_LABELS) as Array<
+                  keyof typeof MOST_HISTORY_LABELS
+                >
+              )
+                .filter((key) => {
+                  const leader = historyApplyEntry.mostLeaders?.[key]
+                  return Boolean(
+                    leader &&
+                      typeof leader.value === 'number' &&
+                      leader.value > 0,
+                  )
+                })
+                .map((key) => {
+                  const leader = historyApplyEntry.mostLeaders![key]!
+                  return (
+                    <li key={`apply-preview-${key}`}>
+                      {MOST_HISTORY_LABELS[key]}:{' '}
+                      <strong>
+                        {leader.name} ·{' '}
+                        {formatMostLeaderValue(key, leader.value ?? 0)}
+                      </strong>
+                    </li>
+                  )
+                })}
+            </ul>
+            <div className="confirm-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={historyApplyBusy}
+                onClick={() => setHistoryApplyEntry(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={historyApplyBusy}
+                onClick={confirmApplyHistoryMosts}
+              >
+                {historyApplyBusy ? 'Applying…' : 'Confirm apply'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {stopMatchConfirmOpen && room.status === 'playing' ? (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Stop match confirmation"
+          onClick={() => !busy && setStopMatchConfirmOpen(false)}
+        >
+          <div
+            className="confirm-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="confirm-icon" aria-hidden="true">
+              ■
+            </div>
+            <h2>Stop this match?</h2>
+            <p>
+              The game ends now. Winners are ranked from the current board
+              {isBlitzMode(room.gameMode)
+                ? ' (Blitz points).'
+                : ' (finishers first, then tokens home / progress).'}
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="cancel-button"
+                disabled={busy}
+                onClick={() => setStopMatchConfirmOpen(false)}
+              >
+                Keep playing
+              </button>
+              <button
+                className="danger-button"
+                disabled={busy}
+                onClick={() =>
+                  void perform(async () => {
+                    await stopMatch(room.id, userId)
+                    setStopMatchConfirmOpen(false)
+                  })
+                }
+              >
+                Stop & show results
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {room.status === 'lobby' &&
+      room.seatToss?.current &&
+      seatTossDismissedCount !== room.seatToss.count ? (
+        <div
+          className="confirm-overlay seat-toss-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Position toss"
+          onClick={() => setSeatTossDismissedCount(room.seatToss!.count)}
+        >
+          <div
+            className="confirm-card seat-toss-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="seat-toss-head">
+              <h2>
+                Position toss {room.seatToss.count}/3
+                {room.seatToss.locked ? ' · locked' : ''}
+              </h2>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setSeatTossDismissedCount(room.seatToss!.count)}
+              >
+                Close
+              </button>
+            </div>
+            <p className="seat-toss-lead">
+              {room.seatToss.locked
+                ? 'Final board seats from toss 3.'
+                : room.seatToss.count < 3
+                  ? 'Preview only — host must finish all 3 tosses before locking seats.'
+                  : 'Toss 3 complete — host can lock these as final positions.'}
+            </p>
+            <ol className="seat-toss-list">
+              {room.seatToss.current.seatOrder.map((playerId, seat) => {
+                const player =
+                  room.players.find((entry) => entry.id === playerId) ??
+                  (room.departedPlayers ?? []).find(
+                    (entry) => entry.id === playerId,
+                  )
+                if (!player) return null
+                return (
+                  <li
+                    key={`toss-${seat}-${playerId}`}
+                    className={`seat-toss-row ${playerColorClass(player.color)}`}
+                    style={playerColorStyle(player.color)}
+                  >
+                    <span className="seat-toss-pos">Seat {seat + 1}</span>
+                    <PlayerAvatar
+                      name={player.name}
+                      photoUrl={player.photoUrl}
+                      className="avatar"
+                    />
+                    <strong>{player.name}</strong>
+                    {player.isBot ? <small>BOT</small> : null}
+                  </li>
+                )
+              })}
+            </ol>
+            {room.hostId === userId ? (
+              <div className="seat-toss-actions">
+                {room.seatToss.count < 3 && !room.seatToss.locked ? (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() =>
+                      void perform(async () => {
+                        await runSeatToss(room.id, userId)
+                        setSeatTossDismissedCount(null)
+                      })
+                    }
+                  >
+                    Toss again ({room.seatToss.count}/3)
+                  </button>
+                ) : null}
+                {room.seatToss.count === 3 && !room.seatToss.locked ? (
+                  <button
+                    type="button"
+                    className="start-button seat-toss-confirm"
+                    disabled={busy}
+                    onClick={() =>
+                      void perform(async () => {
+                        await confirmSeatToss(room.id, userId)
+                        setSeatTossDismissedCount(null)
+                      })
+                    }
+                  >
+                    Use these positions
+                  </button>
+                ) : null}
+                {room.seatToss.locked ? (
+                  <p className="lobby-hint">Positions locked. You can start the game.</p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="lobby-hint">
+                {room.seatToss.locked
+                  ? 'Host locked these seats.'
+                  : room.seatToss.count < 3
+                    ? 'Waiting for host to finish 3 tosses…'
+                    : 'Waiting for host to lock positions…'}
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       {leaveConfirmOpen && (
         <div
@@ -3638,9 +4816,13 @@ function App() {
             <span className="results-eyebrow">GAME COMPLETE</span>
             <h1>Final standings</h1>
             <p className="results-subtitle">
-              {isBlitzMode(room.gameMode)
-                ? 'Time expired — ranked by Blitz points!'
-                : 'A champion has conquered the board!'}
+              {room.game?.lastAction?.includes('stopped the match')
+                ? isBlitzMode(room.gameMode)
+                  ? 'Host stopped the match — ranked by Blitz points.'
+                  : 'Host stopped the match — ranked from the current board.'
+                : isBlitzMode(room.gameMode)
+                  ? 'Time expired — ranked by Blitz points!'
+                  : 'A champion has conquered the board!'}
             </p>
 
             <div className="podium">
@@ -3651,7 +4833,11 @@ function App() {
                   key={player.id}
                 >
                   <span className="medal">{player.leftEarly ? '🚪' : ['🥇', '🥈', '🥉'][index]}</span>
-                  <span className="podium-avatar">{player.name[0].toUpperCase()}</span>
+                  <PlayerAvatar
+                    name={player.name}
+                    photoUrl={player.photoUrl}
+                    className="podium-avatar"
+                  />
                   <strong>{player.name}</strong>
                   <small>
                     {player.leftEarly
@@ -3676,7 +4862,11 @@ function App() {
                     key={player.id}
                   >
                     <span className="result-position">#{index + 4}</span>
-                    <span className="avatar">{player.name[0].toUpperCase()}</span>
+                    <PlayerAvatar
+                      name={player.name}
+                      photoUrl={player.photoUrl}
+                      className="avatar"
+                    />
                     <strong>{player.name}</strong>
                     <small>
                       {player.leftEarly
@@ -3728,7 +4918,11 @@ function App() {
                       style={playerColorStyle(player.color)}
                     >
                       <div className="match-stats-player">
-                        <span className="avatar">{player.name[0].toUpperCase()}</span>
+                        <PlayerAvatar
+                          name={player.name}
+                          photoUrl={player.photoUrl}
+                          className="avatar"
+                        />
                         <strong>{player.name}</strong>
                       </div>
                       <div className="match-stats-grid match-stats-grid--elim">
@@ -3747,10 +4941,28 @@ function App() {
               </div>
             </div>
 
-            <button className="results-button" onClick={exitRoom}>Back to home</button>
+            <button className="results-button" onClick={leaveAndExitRoom}>Back to home</button>
           </div>
         </div>
       )}
+
+      {cropImage ? (
+        <ProfilePhotoCropper
+          image={cropImage}
+          busy={busy}
+          onCancel={() => {
+            revokeImageObjectUrl(cropImage)
+            setCropImage(null)
+          }}
+          onApply={async (dataUrl) => {
+            const ok = await perform(async () => {
+              await applyProfilePhoto(dataUrl)
+              revokeImageObjectUrl(cropImage)
+            })
+            if (!ok) return
+          }}
+        />
+      ) : null}
     </main>
   )
 }

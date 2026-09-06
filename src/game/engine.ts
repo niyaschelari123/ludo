@@ -12,6 +12,7 @@ import {
   applyPowerUp,
   generatePowerTiles,
   generateQuickPowerTiles,
+  generateRacePowerTiles,
   generateTeamPowerTiles,
   powerUpAtCell,
 } from "./powerUps";
@@ -23,6 +24,7 @@ import {
   isBlitzMode,
   returnsCaptureToStart,
   usesQuickPowerBoard,
+  usesRacePowerBoard,
   usesTeamPowerBoard,
   normalizeBlitzDurationMs,
 } from "./types";
@@ -57,7 +59,9 @@ export function tokensPerPlayer(
   gameMode: GameMode | null | undefined,
   override?: number | null,
 ) {
-  if (gameMode === "quick") return normalizeQuickTokenCount(override);
+  if (gameMode === "quick" || gameMode === "race") {
+    return normalizeQuickTokenCount(override);
+  }
   if (gameMode === "team") return TEAM_TOKENS_PER_PLAYER;
   return TOKENS_PER_PLAYER;
 }
@@ -123,6 +127,7 @@ function emptyPlayerStats(): PlayerStats {
     eliminatedPlayers: {},
     negativePowers: 0,
     superPowers: 0,
+    plus3: 0,
   };
 }
 
@@ -137,6 +142,7 @@ export function ensurePlayerStats(
     game.stats[playerId].eliminatedPlayers ??= {};
     game.stats[playerId].negativePowers ??= 0;
     game.stats[playerId].superPowers ??= 0;
+    game.stats[playerId].plus3 ??= 0;
   }
   return game.stats[playerId];
 }
@@ -194,11 +200,13 @@ export function createGame(
     activeMove: null,
     powerTiles: usesTeamPowerBoard(gameMode)
       ? generateTeamPowerTiles(boardPlayerCount)
-      : usesQuickPowerBoard(gameMode)
-        ? generateQuickPowerTiles(boardPlayerCount)
-        : gameMode === "power"
-          ? generatePowerTiles(boardPlayerCount)
-          : {},
+      : usesRacePowerBoard(gameMode)
+        ? generateRacePowerTiles(boardPlayerCount)
+        : usesQuickPowerBoard(gameMode)
+          ? generateQuickPowerTiles(boardPlayerCount)
+          : gameMode === "power"
+            ? generatePowerTiles(boardPlayerCount)
+            : {},
     shieldBuff: {},
     superUses: {},
     pendingExtraTurn: null,

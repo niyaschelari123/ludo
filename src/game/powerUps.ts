@@ -36,6 +36,7 @@ export const ACTIVE_POWER_TYPES: PowerUpType[] = [
   "tnt",
   "ice",
   "super",
+  "yard",
 ];
 
 export const POWER_UP_ICONS: Record<PowerUpType, string> = {
@@ -43,7 +44,7 @@ export const POWER_UP_ICONS: Record<PowerUpType, string> = {
   half: "+10",
   tnt: "TNT",
   rocket: "🚀",
-  spring: "↗",
+  spring: "+3",
   shield: "🛡",
   flame: "🔥",
   x2: "x2",
@@ -70,8 +71,8 @@ export const POWER_UP_INFO: {
   },
   {
     type: "spring",
-    label: "Spring",
-    description: "Bounce 2 extra steps ahead",
+    label: "+3",
+    description: "Surges your token 3 steps forward",
   },
   {
     type: "x2",
@@ -125,6 +126,11 @@ export const POWER_UP_INFO: {
     label: "Ice",
     description: "Pushes rivals on this cell back 3 steps (does not eliminate)",
   },
+  {
+    type: "yard",
+    label: "Yard",
+    description: "Sends your token back to your colored start (entry) — not into the nest",
+  },
 ];
 
 export function powerInfoForMode(
@@ -132,35 +138,49 @@ export function powerInfoForMode(
   playerCount?: number,
 ) {
   if (mode === "race") {
-    return POWER_UP_INFO.filter(
-      (entry) => entry.type !== "tnt" && entry.type !== "back5",
-    ).map((entry) =>
-      entry.type === "ice"
-        ? {
+    return POWER_UP_INFO.filter((entry) => entry.type !== "shield").map(
+      (entry) => {
+        if (entry.type === "ice") {
+          return {
             ...entry,
-            description: "No rival push in Race — slide only",
-          }
-        : entry.type === "shield"
-          ? {
-              ...entry,
-              description: "Unused in Race (no captures)",
-            }
-          : entry,
+            description: "Slides your token 3 steps backward (no rival push in Race)",
+          };
+        }
+        if (entry.type === "tnt") {
+          return {
+            ...entry,
+            description: "Blasts your token back to the yard (no captures in Race)",
+          };
+        }
+        if (entry.type === "yard") {
+          return {
+            ...entry,
+            description:
+              "Sends your token back to your colored start (entry) — not into the nest",
+          };
+        }
+        return entry;
+      },
     );
   }
   if (mode === "quick" || mode === "blitz") {
     return POWER_UP_INFO.filter(
-      (entry) => entry.type !== "tnt" && entry.type !== "back5",
+      (entry) =>
+        entry.type !== "tnt" &&
+        entry.type !== "back5" &&
+        entry.type !== "yard",
     );
   }
   if (mode === "team") {
-    return POWER_UP_INFO;
+    return POWER_UP_INFO.filter((entry) => entry.type !== "yard");
   }
   // Classic Power: Super only on 5-player boards (upper-path leaps).
   if (mode === "power" && playerCount === 5) {
-    return POWER_UP_INFO;
+    return POWER_UP_INFO.filter((entry) => entry.type !== "yard");
   }
-  return POWER_UP_INFO.filter((entry) => entry.type !== "super");
+  return POWER_UP_INFO.filter(
+    (entry) => entry.type !== "super" && entry.type !== "yard",
+  );
 }
 
 export function powerUpLabel(type: PowerUpType) {
@@ -195,6 +215,22 @@ const COMMON_CYCLE: PowerUpType[] = [
   "flame",
 ];
 
+/**
+ * Race mode: identical relative layout on every seat path so early boosts/hazards
+ * are the same for all players (no rotated-cycle advantage).
+ * Offsets skip start (0) and star (8).
+ */
+const RACE_SEAT_POWERS: Array<{ offset: number; type: PowerUpType }> = [
+  { offset: 2, type: "back2" },
+  { offset: 3, type: "plus10" },
+  { offset: 4, type: "rocket" },
+  { offset: 6, type: "ice" },
+  { offset: 7, type: "super" },
+  { offset: 9, type: "yard" },
+  { offset: 10, type: "spring" },
+  { offset: 11, type: "tnt" },
+];
+
 function spacedSeats(
   playerCount: number,
   count: number,
@@ -218,6 +254,7 @@ function isPowerBlockedCell(cell: number): boolean {
 export function sanitizePowerTiles(
   tiles: Record<number, PowerUpType>,
   playerCount: number,
+  options?: { relocateFivePlayerLayout?: boolean },
 ): void {
   const length = playerCount * CELLS_PER_PLAYER;
   const displaced: Array<{ from: number; type: PowerUpType }> = [];
@@ -239,8 +276,9 @@ export function sanitizePowerTiles(
     }
   }
 
-  // Live + old rooms: snap 5p Super tiles onto upper L/R (near ←2 → top).
-  if (playerCount === 5) {
+  // Classic / Team 5p layout snaps Super/shield to fixed seats — skip for Race
+  // so equal per-seat placements stay intact.
+  if (playerCount === 5 && options?.relocateFivePlayerLayout !== false) {
     relocateFivePlayerSupers(tiles, length);
     relocateFivePlayerShields(tiles, length);
   }
@@ -517,6 +555,27 @@ export function generateTeamPowerTiles(
   return tiles;
 }
 
+/**
+ * Race: same boost/hazard sequence on every seat path (fair early game).
+ */
+export function generateRacePowerTiles(
+  playerCount: number,
+): Record<number, PowerUpType> {
+  const tiles: Record<number, PowerUpType> = {};
+  const length = playerCount * CELLS_PER_PLAYER;
+
+  for (let seat = 0; seat < playerCount; seat += 1) {
+    for (const { offset, type } of RACE_SEAT_POWERS) {
+      const cell = (seat * CELLS_PER_PLAYER + offset) % length;
+      if (isPowerBlockedCell(cell)) continue;
+      tiles[cell] = type;
+    }
+  }
+
+  sanitizePowerTiles(tiles, playerCount, { relocateFivePlayerLayout: false });
+  return tiles;
+}
+
 export function powerTilesList(
   tiles: Record<number, PowerUpType> | undefined,
 ): PowerTile[] {
@@ -646,7 +705,12 @@ export function applyPowerUp(
   switch (type) {
     case "tnt": {
       if (!allowsCaptures(room.gameMode)) {
-        return `${player.name} triggered TNT — no effect in Race`;
+        // Race: TNT is a self-hazard (no captures to blast rivals).
+        const stats = ensurePlayerStats(game, player.id);
+        stats.negativePowers = (stats.negativePowers ?? 0) + 1;
+        token.progress = eliminatedProgress(room);
+        recordEliminated(game, player.id);
+        return `${player.name} triggered TNT and was blasted to the yard`;
       }
       let blasted = 0;
       for (const opponent of opponentsOnCell(
@@ -689,9 +753,12 @@ export function applyPowerUp(
       advanceToken(token, bonus, room);
       return `${player.name} hit a rocket and surged x3`;
     }
-    case "spring":
-      advanceToken(token, 2, room);
-      return `${player.name} bounced on a spring`;
+    case "spring": {
+      const stats = ensurePlayerStats(game, player.id);
+      stats.plus3 = (stats.plus3 ?? 0) + 1;
+      advanceToken(token, 3, room);
+      return `${player.name} surged +3`;
+    }
     case "shield":
       if (game.shieldBuff[player.id]) {
         return `${player.name} already has shield protection`;
@@ -713,7 +780,10 @@ export function applyPowerUp(
       return `${player.name} landed on a power star`;
     case "ice": {
       if (!allowsCaptures(room.gameMode)) {
-        return `${player.name} slid over ice`;
+        const stats = ensurePlayerStats(game, player.id);
+        stats.negativePowers = (stats.negativePowers ?? 0) + 1;
+        retreatToken(token, 3, room);
+        return `${player.name} slipped on ice and slid back 3`;
       }
       let frozen = 0;
       const floor = retreatFloor(room);
@@ -774,9 +844,13 @@ export function applyPowerUp(
       retreatToken(token, 5, room);
       return `${player.name} slid back 5 steps`;
     }
-    case "yard":
-      // Legacy tile — no longer generated; treat as a harmless pass.
-      return `${player.name} passed an old yard tile`;
+    case "yard": {
+      const stats = ensurePlayerStats(game, player.id);
+      stats.negativePowers = (stats.negativePowers ?? 0) + 1;
+      // Entry / start square (progress 0) — not the nest (−1).
+      token.progress = 0;
+      return `${player.name} was sent back to the start entry`;
+    }
     default:
       return `${player.name} triggered a power tile`;
   }

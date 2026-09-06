@@ -12,10 +12,12 @@ import { createServer } from 'node:http'
 import { Server, type Socket } from 'socket.io'
 import {
   approveSpectate,
+  approveJoin,
   claimPlayerColor,
   claimSeat,
   createRoom,
   denySpectate,
+  denyJoin,
   getRoom,
   handleMoveTimeout,
   handlePowerTimeout,
@@ -24,12 +26,14 @@ import {
   leaveRoom,
   leaveSpectate,
   listColorClaims,
+  listLiveMatchNotices,
   markDisconnected,
   movePawn,
   releasePlayerColor,
   removePlayer,
   removeSpectator,
   requestSpectate,
+  requestJoin,
   resolvePendingPower,
   rollDice,
   roomViewFor,
@@ -45,8 +49,13 @@ import {
   setBlitzDuration,
   extendBlitzTime,
   reduceBlitzTime,
+  stopMatchByHost,
+  setPlayerColorByHost,
+  setOwnPhoto,
   setTeams,
   setQuickTokens,
+  runSeatToss,
+  confirmSeatToss,
 } from './roomManager.js'
 import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.js'
 import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
@@ -99,8 +108,13 @@ function emitStateToRoom(room: Room) {
     })
 }
 
+function broadcastLiveMatches() {
+  io.emit('liveMatchesUpdate', listLiveMatchNotices())
+}
+
 function broadcastState(room: Room) {
   emitStateToRoom(room)
+  broadcastLiveMatches()
   if (
     room.status === 'playing' &&
     (room.game?.phase === 'roll' || room.game?.phase === 'move')
@@ -129,6 +143,7 @@ function broadcastState(room: Room) {
         stopBotTurn(room.id)
         stopBlitzTimer(room.id)
         emitStateToRoom(ended)
+        broadcastLiveMatches()
         return
       }
     }
@@ -149,6 +164,7 @@ function handleBlitzTimeout(roomId: string) {
     stopBotTurn(roomId)
     stopBlitzTimer(roomId)
     emitStateToRoom(room)
+    broadcastLiveMatches()
   } catch (error) {
     console.error(`Blitz timeout failed in room ${roomId}:`, error)
   }
@@ -289,6 +305,27 @@ function bindSession(socket: Socket, userId: string, roomId: string) {
   socket.join(roomId)
 }
 
+function emitToUser(userId: string, event: string, payload: unknown) {
+  for (const [socketId, session] of sessions.entries()) {
+    if (session.userId !== userId) continue
+    io.to(socketId).emit(event, payload)
+  }
+}
+
+function detachUserFromRoom(userId: string, roomId: string) {
+  for (const [socketId, session] of sessions.entries()) {
+    if (session.userId !== userId || session.roomId !== roomId) continue
+    const peer = io.sockets.sockets.get(socketId)
+    peer?.leave(roomId)
+    sessions.delete(socketId)
+  }
+}
+
+function kickUserFromRoom(userId: string, roomId: string, reason: string) {
+  emitToUser(userId, 'playerKicked', { roomId, reason })
+  detachUserFromRoom(userId, roomId)
+}
+
 function ackError(callback: Ack<unknown> | undefined, error: unknown) {
   if (!callback) return
   const message = error instanceof Error ? error.message : 'Request failed.'
@@ -304,6 +341,20 @@ function ackRoom(
 }
 
 io.on('connection', (socket) => {
+  // Home-screen live match bells for any connected client.
+  socket.emit('liveMatchesUpdate', listLiveMatchNotices())
+
+  socket.on(
+    'listLiveMatches',
+    (_payload: unknown, callback?: Ack<{ notices: ReturnType<typeof listLiveMatchNotices> }>) => {
+      try {
+        callback?.({ ok: true, data: { notices: listLiveMatchNotices() } })
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
   socket.on(
     'listColorClaims',
     (_payload: unknown, callback?: Ack<{ claims: Record<string, string> }>) => {
@@ -362,6 +413,7 @@ io.on('connection', (socket) => {
         teamSize?: 2 | 3
         teamAssign?: 'random' | 'manual'
         quickTokens?: number
+        photoUrl?: string
       },
       callback?: Ack<{ room: Room }>,
     ) => {
@@ -377,6 +429,7 @@ io.on('connection', (socket) => {
           payload.teamSize,
           payload.teamAssign,
           payload.quickTokens,
+          payload.photoUrl,
         )
         bindSession(socket, payload.userId, room.id)
         ackRoom(callback, room, payload.userId)
@@ -496,6 +549,76 @@ io.on('connection', (socket) => {
     },
   )
 
+  socket.on(
+    'stopMatch',
+    (
+      payload: { roomId: string; userId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = stopMatchByHost(payload.roomId, payload.userId)
+        stopTurnTimer(room.id)
+        stopPowerTimer(room.id)
+        stopBotTurn(room.id)
+        stopBlitzTimer(room.id)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'setPlayerColor',
+    (
+      payload: {
+        roomId: string
+        userId: string
+        playerId: string
+        color: string
+      },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = setPlayerColorByHost(
+          payload.roomId,
+          payload.userId,
+          payload.playerId,
+          payload.color,
+        )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'setOwnPhoto',
+    (
+      payload: {
+        roomId: string
+        userId: string
+        photoUrl?: string | null
+      },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = setOwnPhoto(
+          payload.roomId,
+          payload.userId,
+          payload.photoUrl,
+        )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
   // --- joinRoom: enter an existing lobby by six-character code ---
   socket.on(
     'joinRoom',
@@ -506,6 +629,7 @@ io.on('connection', (socket) => {
         code: string
         color?: string
         lockColor?: boolean
+        photoUrl?: string
       },
       callback?: Ack<{ room: Room }>,
     ) => {
@@ -516,6 +640,7 @@ io.on('connection', (socket) => {
           payload.code,
           payload.color,
           payload.lockColor,
+          payload.photoUrl,
         )
         bindSession(socket, payload.userId, room.id)
         ackRoom(callback, room, payload.userId)
@@ -535,6 +660,7 @@ io.on('connection', (socket) => {
         name: string
         roomCode: string
         seatCode: string
+        photoUrl?: string
       },
       callback?: Ack<{ room: Room }>,
     ) => {
@@ -544,6 +670,7 @@ io.on('connection', (socket) => {
           payload.name,
           payload.roomCode,
           payload.seatCode,
+          payload.photoUrl,
         )
         bindSession(socket, payload.userId, room.id)
         ackRoom(callback, room, payload.userId)
@@ -572,6 +699,86 @@ io.on('connection', (socket) => {
           data: { room: roomViewFor(room, payload.userId), status },
         })
         broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'requestJoin',
+    (
+      payload: {
+        userId: string
+        name: string
+        code: string
+        color?: string
+        lockColor?: boolean
+        photoUrl?: string
+      },
+      callback?: Ack<{ room: Room; status: 'pending' }>,
+    ) => {
+      try {
+        const { room, status } = requestJoin(
+          payload.userId,
+          payload.name,
+          payload.code,
+          {
+            color: payload.color,
+            lockColor: payload.lockColor,
+            photoUrl: payload.photoUrl,
+          },
+        )
+        bindSession(socket, payload.userId, room.id)
+        callback?.({
+          ok: true,
+          data: { room: roomViewFor(room, payload.userId), status },
+        })
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'approveJoin',
+    (
+      payload: { roomId: string; userId: string; targetUserId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = approveJoin(
+          payload.roomId,
+          payload.userId,
+          payload.targetUserId,
+        )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'denyJoin',
+    (
+      payload: { roomId: string; userId: string; targetUserId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = denyJoin(
+          payload.roomId,
+          payload.userId,
+          payload.targetUserId,
+        )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+        emitToUser(payload.targetUserId, 'joinDenied', {
+          roomId: payload.roomId,
+        })
+        detachUserFromRoom(payload.targetUserId, payload.roomId)
       } catch (error) {
         ackError(callback, error)
       }
@@ -748,6 +955,32 @@ io.on('connection', (socket) => {
     },
   )
 
+  socket.on(
+    'runSeatToss',
+    (payload: { roomId: string; userId: string }, callback?: Ack<{ room: Room }>) => {
+      try {
+        const room = runSeatToss(payload.roomId, payload.userId)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'confirmSeatToss',
+    (payload: { roomId: string; userId: string }, callback?: Ack<{ room: Room }>) => {
+      try {
+        const room = confirmSeatToss(payload.roomId, payload.userId)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
   // --- rollDice: roll on the server and advance to move phase ---
   socket.on(
     'rollDice',
@@ -862,6 +1095,7 @@ io.on('connection', (socket) => {
           data: { room: room ? roomViewFor(room, payload.userId) : null },
         })
         if (room) broadcastState(room)
+        else broadcastLiveMatches()
       } catch (error) {
         ackError(callback, error)
       }
@@ -923,6 +1157,7 @@ io.on('connection', (socket) => {
           payload.targetUserId,
         )
         ackRoom(callback, room, payload.userId)
+        kickUserFromRoom(payload.targetUserId, payload.roomId, 'removed')
         broadcastState(room)
       } catch (error) {
         ackError(callback, error)

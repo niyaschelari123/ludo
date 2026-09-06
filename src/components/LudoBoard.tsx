@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { playEnter, playStep } from '../audio'
 import {
   allSeatPlayers,
@@ -742,6 +742,35 @@ export function LudoBoard({
         : getPolygonBoardGeometry(boardCount, homeLengthForBoard(boardCount)),
     [boardCount, isSquare],
   )
+  const boardSize = geometry?.size ?? SIZE
+  const [hoveredStackKey, setHoveredStackKey] = useState<string | null>(null)
+  const stackHoverClearRef = useRef<number | null>(null)
+
+  const clearStackHoverSoon = () => {
+    if (stackHoverClearRef.current != null) {
+      window.clearTimeout(stackHoverClearRef.current)
+    }
+    stackHoverClearRef.current = window.setTimeout(() => {
+      setHoveredStackKey(null)
+      stackHoverClearRef.current = null
+    }, 80)
+  }
+
+  const keepStackHover = (key: string) => {
+    if (stackHoverClearRef.current != null) {
+      window.clearTimeout(stackHoverClearRef.current)
+      stackHoverClearRef.current = null
+    }
+    setHoveredStackKey(key)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (stackHoverClearRef.current != null) {
+        window.clearTimeout(stackHoverClearRef.current)
+      }
+    }
+  }, [])
   const [animatedProgress, setAnimatedProgress] = useState<number | null>(null)
   const moveAnimationKey = movingToken
     ? `${movingToken.playerId}:${movingToken.id}:${movingToken.fromProgress}:${movingToken.dice}:${movingToken.startedAt ?? ''}`
@@ -825,11 +854,20 @@ export function LudoBoard({
     positionGroups.set(key, group)
   })
 
+  const hoveredStack =
+    hoveredStackKey != null
+      ? positionGroups.get(hoveredStackKey) ?? null
+      : null
+  const showStackPeek =
+    hoveredStack != null &&
+    hoveredStack.length > 2 &&
+    !hoveredStack.every((entry) => entry.isFinished)
+
   return (
     <div className={`board-wrap ${isSquare ? 'square' : 'radial'} ${largeNgon ? 'large-ngon-board' : ''}`}>
       <svg
         className="ludo-board"
-        viewBox={`0 0 ${geometry?.size ?? SIZE} ${geometry?.size ?? SIZE}`}
+        viewBox={`0 0 ${boardSize} ${boardSize}`}
         role="img"
         aria-label={`${boardCount} player Ludo board`}
       >
@@ -881,6 +919,7 @@ export function LudoBoard({
             // Finished tokens already have per-token slots inside their color wedge —
             // never fan them out or they'll spill onto neighboring sectors.
             const stacked = !isFinished && group.length > 1
+            const crowded = !isFinished && group.length > 2
             const inYard = originalToken.progress === -1
             const shielded = Boolean(room.game?.shieldBuff?.[player.id])
             const tokenRadius = tokenDisplayRadius(
@@ -922,6 +961,12 @@ export function LudoBoard({
                   transform: `translate(${position.x + offsetX}px, ${position.y + offsetY}px)`,
                 }}
                 onClick={() => canSelect && onMove(originalToken.id)}
+                onMouseEnter={() => {
+                  if (crowded) keepStackHover(groupKey)
+                }}
+                onMouseLeave={() => {
+                  if (crowded) clearStackHoverSoon()
+                }}
                 role={canSelect ? 'button' : undefined}
               >
                 <TokenDisc
@@ -934,6 +979,45 @@ export function LudoBoard({
             )
           })}
       </svg>
+
+      {showStackPeek && hoveredStack ? (
+        <div
+          className="stack-peek"
+          style={{
+            left: `${(hoveredStack[0].position.x / boardSize) * 100}%`,
+            top: `${(hoveredStack[0].position.y / boardSize) * 100}%`,
+          }}
+          aria-hidden="true"
+        >
+          <div className="stack-peek-card">
+            <ul className="stack-peek-list">
+              {(() => {
+                const counts = new Map<string, { color: string; count: number }>()
+                for (const { player } of hoveredStack) {
+                  const key = player.id
+                  const existing = counts.get(key)
+                  if (existing) existing.count += 1
+                  else counts.set(key, { color: player.color, count: 1 })
+                }
+                return [...counts.entries()].map(([playerId, entry]) => (
+                  <li key={`peek-${playerId}`} className="stack-peek-item">
+                    <svg
+                      className="stack-peek-token"
+                      viewBox="-14 -16 28 34"
+                      width="22"
+                      height="26"
+                      aria-hidden="true"
+                    >
+                      <TokenDisc color={entry.color} radius={11} />
+                    </svg>
+                    <span className="stack-peek-count">×{entry.count}</span>
+                  </li>
+                ))
+              })()}
+            </ul>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

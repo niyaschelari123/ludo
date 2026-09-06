@@ -1,5 +1,6 @@
 import { getGuestPlayerId } from './playerId'
 import { fetchCloudProfile, pushCloudProfile } from './profileCloud'
+import { sanitizePhotoDataUrl } from './profilePhoto'
 
 export const PROFILE_STORAGE_KEY = 'ludo-profile'
 
@@ -12,7 +13,19 @@ export const LOGIN_ACCOUNTS = {
   '1958': { accountId: 'acct:suhail', defaultName: 'Suhail' },
   '9368': { accountId: 'acct:vishnu', defaultName: 'Vishnu' },
   '7695': { accountId: 'acct:vivek', defaultName: 'Vivek' },
+  /** Admin — can edit career “most” stats; excluded from leaderboards. */
+  '5071': { accountId: 'acct:admin', defaultName: 'Admin' },
 } as const
+
+export const ADMIN_ACCOUNT_ID = LOGIN_ACCOUNTS['5071'].accountId
+export const ADMIN_PIN = '5071' as const
+
+/** Login accounts that appear on career / most boards (excludes admin). */
+export const CAREER_LOGIN_ACCOUNTS = Object.fromEntries(
+  Object.entries(LOGIN_ACCOUNTS).filter(
+    ([, account]) => account.accountId !== ADMIN_ACCOUNT_ID,
+  ),
+) as Omit<typeof LOGIN_ACCOUNTS, typeof ADMIN_PIN>
 
 /**
  * Starting career wins (seeded into Firestore when missing).
@@ -51,6 +64,8 @@ export type UserProfile = {
   accountId: string
   name: string
   color: string
+  /** Cropped square JPEG/PNG data URL (≤400KB). */
+  photoUrl?: string
 }
 
 export function isLoginPin(value: string): value is LoginPin {
@@ -61,6 +76,15 @@ export function isLoginAccountId(id: string | null | undefined): boolean {
   return Boolean(id && id.startsWith('acct:'))
 }
 
+export function isAdminAccountId(id: string | null | undefined): boolean {
+  return id === ADMIN_ACCOUNT_ID
+}
+
+/** Login humans that count toward career eligibility / boards (not admin). */
+export function isCareerAccountId(id: string | null | undefined): boolean {
+  return isLoginAccountId(id) && !isAdminAccountId(id)
+}
+
 export function loadProfile(): UserProfile | null {
   try {
     const raw = localStorage.getItem(PROFILE_STORAGE_KEY)
@@ -68,11 +92,18 @@ export function loadProfile(): UserProfile | null {
     const parsed = JSON.parse(raw) as Partial<UserProfile>
     if (!parsed.pin || !isLoginPin(parsed.pin)) return null
     const account = LOGIN_ACCOUNTS[parsed.pin]
+    let photoUrl: string | undefined
+    try {
+      photoUrl = sanitizePhotoDataUrl(parsed.photoUrl)
+    } catch {
+      photoUrl = undefined
+    }
     return {
       pin: parsed.pin,
       accountId: account.accountId,
       name: (parsed.name ?? account.defaultName).trim().slice(0, 18) || account.defaultName,
       color: typeof parsed.color === 'string' && parsed.color ? parsed.color : '',
+      ...(photoUrl ? { photoUrl } : {}),
     }
   } catch {
     return null
@@ -110,11 +141,14 @@ export async function loginWithPin(pin: string): Promise<UserProfile> {
   let name =
     sameAccount && existing.name ? existing.name : account.defaultName
   let color = sameAccount ? existing.color : ''
+  let photoUrl = sameAccount ? existing.photoUrl : undefined
 
   const remote = await fetchCloudProfile(account.accountId)
   if (remote) {
     if (remote.name) name = remote.name
     if (remote.color) color = remote.color
+    if (remote.photoUrl) photoUrl = remote.photoUrl
+    else if (remote.photoUrl === '') photoUrl = undefined
   }
 
   const profile: UserProfile = {
@@ -122,6 +156,7 @@ export async function loginWithPin(pin: string): Promise<UserProfile> {
     accountId: account.accountId,
     name,
     color,
+    ...(photoUrl ? { photoUrl } : {}),
   }
   saveProfile(profile)
   return profile
@@ -141,11 +176,26 @@ export async function hydrateProfileFromCloud(
     ...profile,
     name: remote.name || profile.name,
     color: remote.color || profile.color,
+    ...(remote.photoUrl
+      ? { photoUrl: remote.photoUrl }
+      : remote.photoUrl === ''
+        ? { photoUrl: undefined }
+        : {}),
   }
-  if (next.name === profile.name && next.color === profile.color) return profile
+  const photoChanged =
+    (next.photoUrl ?? '') !== (profile.photoUrl ?? '')
+  if (
+    next.name === profile.name &&
+    next.color === profile.color &&
+    !photoChanged
+  ) {
+    return profile
+  }
 
   // Avoid a redundant cloud write loop — write local only, then push once.
-  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(next))
+  const stored = { ...next }
+  if (!stored.photoUrl) delete stored.photoUrl
+  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(stored))
   localStorage.setItem('ludo-name', next.name)
   void pushCloudProfile(next)
   return next

@@ -2,22 +2,40 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // PIN login stays client-side. Profiles store display name, color, and wins.
+    // PIN login stays client-side. Profiles store display name, color, career stats.
     match /profiles/{accountId} {
       allow read: if request.auth != null;
 
       allow create, update: if request.auth != null
         && request.resource.data.accountId is string
-        && request.resource.data.keys().hasOnly(['accountId', 'name', 'color', 'updatedAt', 'wins'])
+        && request.resource.data.keys().hasOnly([
+          'accountId', 'name', 'color', 'photoUrl', 'updatedAt',
+          'wins', 'motm', 'worst', 'second', 'third',
+          'eliminations', 'timesEliminated', 'sixes', 'matchesPlayed',
+          'motmPoints', 'negativePowers', 'superPowers', 'plus3', 'bestFinishMs',
+          'elimPairs'
+        ])
         && (
           !('name' in request.resource.data)
           || (request.resource.data.name is string && request.resource.data.name.size() <= 18)
         )
         && (!('color' in request.resource.data) || request.resource.data.color is string)
-        && (
-          !('wins' in request.resource.data)
-          || (request.resource.data.wins is number && request.resource.data.wins >= 0)
-        );
+        && (!('photoUrl' in request.resource.data) || request.resource.data.photoUrl is string)
+        && (!('wins' in request.resource.data) || (request.resource.data.wins is number && request.resource.data.wins >= 0))
+        && (!('motm' in request.resource.data) || (request.resource.data.motm is number && request.resource.data.motm >= 0))
+        && (!('worst' in request.resource.data) || (request.resource.data.worst is number && request.resource.data.worst >= 0))
+        && (!('second' in request.resource.data) || (request.resource.data.second is number && request.resource.data.second >= 0))
+        && (!('third' in request.resource.data) || (request.resource.data.third is number && request.resource.data.third >= 0))
+        && (!('eliminations' in request.resource.data) || (request.resource.data.eliminations is number && request.resource.data.eliminations >= 0))
+        && (!('timesEliminated' in request.resource.data) || (request.resource.data.timesEliminated is number && request.resource.data.timesEliminated >= 0))
+        && (!('sixes' in request.resource.data) || (request.resource.data.sixes is number && request.resource.data.sixes >= 0))
+        && (!('matchesPlayed' in request.resource.data) || (request.resource.data.matchesPlayed is number && request.resource.data.matchesPlayed >= 0))
+        && (!('motmPoints' in request.resource.data) || (request.resource.data.motmPoints is number && request.resource.data.motmPoints >= 0))
+        && (!('negativePowers' in request.resource.data) || (request.resource.data.negativePowers is number && request.resource.data.negativePowers >= 0))
+        && (!('superPowers' in request.resource.data) || (request.resource.data.superPowers is number && request.resource.data.superPowers >= 0))
+        && (!('plus3' in request.resource.data) || (request.resource.data.plus3 is number && request.resource.data.plus3 >= 0))
+        && (!('bestFinishMs' in request.resource.data) || (request.resource.data.bestFinishMs is number && request.resource.data.bestFinishMs >= 0))
+        && (!('elimPairs' in request.resource.data) || request.resource.data.elimPairs is map);
 
       allow delete: if false;
     }
@@ -29,6 +47,29 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['roomId', 'winnerId', 'recordedAt'])
         && request.resource.data.roomId is string
         && request.resource.data.winnerId is string;
+      allow update, delete: if false;
+    }
+
+    // Live match bells on the home screen for logged-in players.
+    match /liveMatches/{roomId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null
+        && request.resource.data.roomId is string
+        && request.resource.data.code is string
+        && request.resource.data.hostId is string
+        && request.resource.data.hostName is string
+        && request.resource.data.gameMode is string
+        && request.resource.data.startedAt is number;
+      allow delete: if request.auth != null;
+    }
+
+    // Eligible match archives (≥3 login players) for host history + most snapshots.
+    match /matchHistory/{roomId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.roomId is string
+        && request.resource.data.code is string
+        && request.resource.data.finishedAt is number;
       allow update, delete: if false;
     }
 

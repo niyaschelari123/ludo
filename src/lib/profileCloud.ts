@@ -14,11 +14,15 @@ import { signInAnonymously } from 'firebase/auth'
 import { auth, db, isFirebaseConfigured } from '../firebase'
 import type { UserProfile } from './profile'
 import {
+  ADMIN_ACCOUNT_ID,
+  CAREER_LOGIN_ACCOUNTS,
   INITIAL_ACCOUNT_MOTM,
   INITIAL_ACCOUNT_WINS,
-  LOGIN_ACCOUNTS,
+  isAdminAccountId,
+  isCareerAccountId,
   isLoginAccountId,
 } from './profile'
+import { sanitizePhotoDataUrl } from './profilePhoto'
 import type { Room } from '../game/types'
 
 export type CareerBoardEntry = {
@@ -43,14 +47,16 @@ export type CareerBoardEntry = {
   matchesPlayed: number
   /** Sum of MotM award scores across matches. */
   motmPoints: number
-  /** Career landings on ←2 / ←3 / −5 tiles. */
+  /** Career landings on ←2 / ←3 / −5 tiles (Oonjaal). */
   negativePowers: number
   /** Career Super (⚡) leaps used. */
   superPowers: number
-  /** Career MotM elimination points (captures × 3). */
+  /** Career landings on the +3 power tile. */
   plus3: number
   /** Best (lowest) all-tokens-home finish time in ms; 0 = none. */
   bestFinishMs: number
+  /** Career eliminations of each rival login account (victimId → count). */
+  elimPairs: Record<string, number>
 }
 
 export type CareerStatKey =
@@ -127,6 +133,7 @@ export type CloudProfile = {
   accountId: string
   name: string
   color: string
+  photoUrl?: string
   wins: number
   motm: number
   worst?: number
@@ -141,6 +148,8 @@ export type CloudProfile = {
   superPowers?: number
   plus3?: number
   bestFinishMs?: number
+  /** victimAccountId → career elimination count. */
+  elimPairs?: Record<string, number>
 }
 
 function readStatCount(
@@ -164,6 +173,84 @@ function readWins(data: Partial<CloudProfile> | undefined, accountId: string) {
 
 function readMotm(data: Partial<CloudProfile> | undefined, accountId: string) {
   return readStatCount(data, 'motm', accountId)
+}
+
+function readElimPairs(
+  data: Partial<CloudProfile> | undefined,
+): Record<string, number> {
+  const raw = data?.elimPairs
+  if (!raw || typeof raw !== 'object') return {}
+  const out: Record<string, number> = {}
+  for (const [victimId, count] of Object.entries(raw)) {
+    if (!isCareerAccountId(victimId)) continue
+    const n = Number(count)
+    if (!Number.isFinite(n) || n <= 0) continue
+    out[victimId] = Math.floor(n)
+  }
+  return out
+}
+
+function mergeElimPairs(
+  base: Record<string, number>,
+  delta: Record<string, number>,
+): Record<string, number> {
+  const next = { ...base }
+  for (const [victimId, count] of Object.entries(delta)) {
+    if (!isCareerAccountId(victimId)) continue
+    const n = Math.max(0, Math.floor(Number(count)))
+    if (n <= 0) continue
+    next[victimId] = (next[victimId] ?? 0) + n
+  }
+  return next
+}
+
+function sanitizeElimPairDelta(
+  pairs: Record<string, number> | undefined,
+): Record<string, number> {
+  if (!pairs) return {}
+  return mergeElimPairs({}, pairs)
+}
+
+export type ElimPairLeader = {
+  attackerId: string
+  attackerName: string
+  attackerColor: string
+  victimId: string
+  victimName: string
+  victimColor: string
+  count: number
+}
+
+/** Top career “A eliminated B” pairs across all login players. */
+export function buildElimPairLeaders(
+  board: CareerBoardEntry[],
+  limit = 8,
+): ElimPairLeader[] {
+  const byId = new Map(board.map((entry) => [entry.accountId, entry]))
+  const pairs: ElimPairLeader[] = []
+  for (const attacker of board) {
+    for (const [victimId, count] of Object.entries(attacker.elimPairs ?? {})) {
+      if (!isCareerAccountId(victimId) || count <= 0) continue
+      const victim = byId.get(victimId)
+      pairs.push({
+        attackerId: attacker.accountId,
+        attackerName: attacker.name,
+        attackerColor: attacker.color || '#64748b',
+        victimId,
+        victimName: victim?.name ?? victimId.replace(/^acct:/, ''),
+        victimColor: victim?.color || '#64748b',
+        count,
+      })
+    }
+  }
+  return pairs
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        a.attackerName.localeCompare(b.attackerName) ||
+        a.victimName.localeCompare(b.victimName),
+    )
+    .slice(0, Math.max(0, limit))
 }
 
 function readCareerStats(
@@ -193,7 +280,7 @@ export function countLoginPlayersInMatch(room: Room): number {
   const ids = new Set<string>()
   for (const player of [...room.players, ...(room.departedPlayers ?? [])]) {
     if (player.isBot) continue
-    if (!isLoginAccountId(player.id)) continue
+    if (!isCareerAccountId(player.id)) continue
     ids.add(player.id)
   }
   return ids.size
@@ -241,6 +328,16 @@ export async function fetchCloudProfile(
       accountId,
       name: typeof data.name === 'string' ? data.name.trim().slice(0, 18) : '',
       color: typeof data.color === 'string' ? data.color : '',
+      ...(typeof data.photoUrl === 'string'
+        ? (() => {
+            try {
+              const photoUrl = sanitizePhotoDataUrl(data.photoUrl)
+              return photoUrl ? { photoUrl } : { photoUrl: '' }
+            } catch {
+              return { photoUrl: '' }
+            }
+          })()
+        : {}),
       ...stats,
     }
   } catch (error) {
@@ -268,6 +365,7 @@ export async function pushCloudProfile(
         accountId: profile.accountId,
         name: profile.name.trim().slice(0, 18),
         color: profile.color || '',
+        photoUrl: profile.photoUrl || '',
         updatedAt: serverTimestamp(),
       },
       { merge: true },
@@ -293,13 +391,14 @@ export async function fetchAccountWins(
 /**
  * Career standings for login accounts (all of them by default).
  * Uses Firestore name/color/wins/motm when present; falls back to defaults.
+ * Admin is excluded unless explicitly requested in `accountIds`.
  */
 export async function fetchCareerBoard(
   accountIds?: string[],
 ): Promise<CareerBoardEntry[]> {
-  const defaults = Object.values(LOGIN_ACCOUNTS)
+  const defaults = Object.values(CAREER_LOGIN_ACCOUNTS)
   const wanted = accountIds?.length
-    ? [...new Set(accountIds.filter(isLoginAccountId))]
+    ? [...new Set(accountIds.filter(isCareerAccountId))]
     : defaults.map((account) => account.accountId)
 
   const byId = new Map(
@@ -310,11 +409,12 @@ export async function fetchCareerBoard(
         name: account.defaultName,
         color: '',
         ...emptyCareerStats(account.accountId),
+        elimPairs: {},
       } satisfies CareerBoardEntry,
     ]),
   )
 
-  const ids = wanted.filter((id) => byId.has(id) || isLoginAccountId(id))
+  const ids = wanted.filter((id) => byId.has(id) || isCareerAccountId(id))
   for (const id of ids) {
     if (!byId.has(id)) {
       byId.set(id, {
@@ -322,6 +422,7 @@ export async function fetchCareerBoard(
         name: id.replace(/^acct:/, ''),
         color: '',
         ...emptyCareerStats(id),
+        elimPairs: {},
       })
     }
   }
@@ -361,6 +462,7 @@ export async function fetchCareerBoard(
             ? data.color
             : (prev?.color ?? ''),
         ...readCareerStats(data, accountId),
+        elimPairs: readElimPairs(data),
       })
     })
     await Promise.all(
@@ -489,6 +591,8 @@ export type MatchCareerExtras = {
     superPowers: number
     plus3: number
     finishTimeMs: number
+    /** victimAccountId → eliminations this match. */
+    elimPairs?: Record<string, number>
   }>
 }
 
@@ -503,13 +607,13 @@ export async function recordMatchCareerExtras(
   if (!isFirebaseConfigured || !db || !roomId) return false
 
   const worstId =
-    extras.worstId && isLoginAccountId(extras.worstId) ? extras.worstId : null
+    extras.worstId && isCareerAccountId(extras.worstId) ? extras.worstId : null
   const secondId =
-    extras.secondId && isLoginAccountId(extras.secondId) ? extras.secondId : null
+    extras.secondId && isCareerAccountId(extras.secondId) ? extras.secondId : null
   const thirdId =
-    extras.thirdId && isLoginAccountId(extras.thirdId) ? extras.thirdId : null
+    extras.thirdId && isCareerAccountId(extras.thirdId) ? extras.thirdId : null
   const deltas = extras.deltas
-    .filter((entry) => isLoginAccountId(entry.accountId))
+    .filter((entry) => isCareerAccountId(entry.accountId))
     .map((entry) => ({
       accountId: entry.accountId,
       eliminations: Math.max(0, Math.floor(entry.eliminations)),
@@ -520,6 +624,7 @@ export async function recordMatchCareerExtras(
       superPowers: Math.max(0, Math.floor(entry.superPowers)),
       plus3: Math.max(0, Math.floor(entry.plus3)),
       finishTimeMs: Math.max(0, Math.floor(entry.finishTimeMs)),
+      elimPairs: sanitizeElimPairDelta(entry.elimPairs),
     }))
 
   if (!worstId && !secondId && !thirdId && deltas.length === 0) return false
@@ -549,6 +654,7 @@ export async function recordMatchCareerExtras(
             accountId,
             profileRef,
             stats: readCareerStats(data, accountId),
+            elimPairs: readElimPairs(data),
           }
         }),
       )
@@ -564,6 +670,7 @@ export async function recordMatchCareerExtras(
 
       for (const entry of profiles) {
         const next = { ...entry.stats }
+        let nextElimPairs = { ...entry.elimPairs }
         if (entry.accountId === worstId) next.worst += 1
         if (entry.accountId === secondId) next.second += 1
         if (entry.accountId === thirdId) next.third += 1
@@ -585,6 +692,7 @@ export async function recordMatchCareerExtras(
           ) {
             next.bestFinishMs = delta.finishTimeMs
           }
+          nextElimPairs = mergeElimPairs(nextElimPairs, delta.elimPairs)
         }
         tx.set(
           entry.profileRef,
@@ -602,6 +710,7 @@ export async function recordMatchCareerExtras(
             superPowers: next.superPowers,
             plus3: next.plus3,
             bestFinishMs: next.bestFinishMs,
+            elimPairs: nextElimPairs,
             updatedAt: serverTimestamp(),
           },
           { merge: true },
@@ -626,7 +735,7 @@ export async function recordMatchWins(
   if (!isFirebaseConfigured || !db) return false
   if (!roomId) return false
   const unique = [
-    ...new Set(winnerAccountIds.filter((id) => isLoginAccountId(id))),
+    ...new Set(winnerAccountIds.filter((id) => isCareerAccountId(id))),
   ]
   if (unique.length === 0) return false
 
@@ -688,7 +797,7 @@ export async function recordMatchWin(roomId: string, winnerAccountId: string) {
  */
 export async function recordMatchMotm(roomId: string, motmAccountId: string) {
   if (!isFirebaseConfigured || !db) return false
-  if (!isLoginAccountId(motmAccountId) || !roomId) return false
+  if (!isCareerAccountId(motmAccountId) || !roomId) return false
 
   try {
     await ensureAnonymousAuth()
@@ -727,4 +836,109 @@ export async function recordMatchMotm(roomId: string, motmAccountId: string) {
     console.warn('Failed to record match MotM', error)
     return false
   }
+}
+
+export const CAREER_STAT_EDIT_LABELS: Record<CareerStatKey, string> = {
+  wins: 'Wins',
+  motm: 'MotM awards',
+  worst: 'Worst awards',
+  second: '2nd places',
+  third: '3rd places',
+  eliminations: 'Eliminations',
+  timesEliminated: 'Times eliminated',
+  sixes: 'Sixes',
+  matchesPlayed: 'Matches played',
+  motmPoints: 'MotM points',
+  negativePowers: 'Oonjaal',
+  superPowers: 'Super ⚡',
+  plus3: '+3 landings',
+  bestFinishMs: 'Best finish (ms)',
+}
+
+/**
+ * Admin-only: set absolute career “most” values for a login player.
+ * Client-gated by admin PIN login; Firestore still requires auth.
+ */
+export async function adminSetCareerStats(
+  adminAccountId: string,
+  targetAccountId: string,
+  stats: Partial<Pick<CareerBoardEntry, CareerStatKey>>,
+): Promise<void> {
+  if (!isAdminAccountId(adminAccountId)) {
+    throw new Error('Only the admin account can edit career stats.')
+  }
+  await writeCareerStatPatch(targetAccountId, stats)
+}
+
+async function writeCareerStatPatch(
+  targetAccountId: string,
+  stats: Partial<Pick<CareerBoardEntry, CareerStatKey>>,
+): Promise<void> {
+  if (!isCareerAccountId(targetAccountId) || targetAccountId === ADMIN_ACCOUNT_ID) {
+    throw new Error('Invalid player account.')
+  }
+  if (!isFirebaseConfigured || !db) {
+    throw new Error('Firebase is not configured.')
+  }
+
+  const patch: Record<string, unknown> = {
+    accountId: targetAccountId,
+    updatedAt: serverTimestamp(),
+  }
+  for (const key of CAREER_STAT_KEYS) {
+    if (!(key in stats) || stats[key] === undefined) continue
+    const raw = Number(stats[key])
+    if (!Number.isFinite(raw)) continue
+    if (key === 'motmPoints') {
+      patch[key] = roundCareerPoints(raw)
+    } else if (key === 'bestFinishMs') {
+      patch[key] = Math.max(0, Math.floor(raw))
+    } else {
+      patch[key] = Math.max(0, Math.floor(raw))
+    }
+  }
+
+  if (Object.keys(patch).length <= 2) return
+
+  await ensureAnonymousAuth()
+  await setDoc(doc(db, 'profiles', profileDocId(targetAccountId)), patch, {
+    merge: true,
+  })
+}
+
+type HistoryPersonLike = {
+  accountId: string
+  value?: number
+}
+
+/**
+ * Write each history most-leader’s stored value onto their career profile
+ * (one category at a time). Used by ludo_admin match-history restore.
+ */
+export async function applyHistoryMostLeaders(
+  mostLeaders: Partial<Record<CareerStatKey, HistoryPersonLike | null | undefined>>,
+): Promise<number> {
+  const byAccount = new Map<
+    string,
+    Partial<Pick<CareerBoardEntry, CareerStatKey>>
+  >()
+
+  for (const key of CAREER_STAT_KEYS) {
+    const leader = mostLeaders[key]
+    if (!leader?.accountId || !isCareerAccountId(leader.accountId)) continue
+    if (typeof leader.value !== 'number' || !Number.isFinite(leader.value)) continue
+    if (leader.value < 0) continue
+    if (key !== 'bestFinishMs' && leader.value <= 0) continue
+
+    const patch = byAccount.get(leader.accountId) ?? {}
+    patch[key] = leader.value
+    byAccount.set(leader.accountId, patch)
+  }
+
+  let written = 0
+  for (const [accountId, stats] of byAccount) {
+    await writeCareerStatPatch(accountId, stats)
+    written += 1
+  }
+  return written
 }

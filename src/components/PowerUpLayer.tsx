@@ -50,6 +50,7 @@ function PowerMarker({
     type === 'tnt' ||
     type === 'x2' ||
     type === 'x3' ||
+    type === 'spring' ||
     type === 'back2' ||
     type === 'back3' ||
     type === 'back5' ||
@@ -97,7 +98,9 @@ export function PowerUpLayer({
 }) {
   if (!hasPowerBoard(room.gameMode) || !room.game?.powerTiles) return null
 
-  sanitizePowerTiles(room.game.powerTiles, getBoardPlayerCount(room))
+  sanitizePowerTiles(room.game.powerTiles, getBoardPlayerCount(room), {
+    relocateFivePlayerLayout: room.gameMode !== 'race',
+  })
 
   const count = boardSeatCount(room)
   const isSquare = count === 4

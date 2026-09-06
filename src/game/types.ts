@@ -33,6 +33,16 @@ export interface SpectatorRequest {
   requestedAt: number;
 }
 
+/** Lobby seat request waiting for host approval (notification joins). */
+export interface JoinRequest {
+  id: string;
+  name: string;
+  requestedAt: number;
+  color?: string;
+  lockColor?: boolean;
+  photoUrl?: string;
+}
+
 export interface Team {
   id: string;
   memberIds: string[];
@@ -92,11 +102,18 @@ export function hasPowerBoard(mode: GameMode | null | undefined): boolean {
   );
 }
 
-/** Quick-style board: no TNT / −5, includes Super tiles. */
+/** Quick / Blitz board: no TNT / −5, includes Super tiles. Race uses its own dense board. */
 export function usesQuickPowerBoard(
   mode: GameMode | null | undefined,
 ): boolean {
-  return mode === "quick" || mode === "race" || mode === "blitz";
+  return mode === "quick" || mode === "blitz";
+}
+
+/** Race: dense hazard + boost power board. */
+export function usesRacePowerBoard(
+  mode: GameMode | null | undefined,
+): boolean {
+  return mode === "race";
 }
 
 /** Team: full Power set + Super leaps (TNT, −5, Super). */
@@ -147,7 +164,7 @@ export type PowerUpType =
   | "back2"
   | "back3"
   | "back5"
-  | "yard" // legacy; no longer generated
+  | "yard"
   | "tnt";
 
 export interface PowerTile {
@@ -160,6 +177,8 @@ export interface Player {
   name: string;
   /** Named preset or #rrggbb hex. */
   color: string;
+  /** Optional square profile photo (data URL). */
+  photoUrl?: string;
   seat: number;
   connected: boolean;
   isBot?: boolean;
@@ -335,6 +354,8 @@ export interface PlayerStats {
   negativePowers?: number;
   /** Successful Super (⚡) leaps this match. */
   superPowers?: number;
+  /** Landings on the +3 (spring) power tile this match. */
+  plus3?: number;
 }
 
 export interface GameState {
@@ -393,7 +414,7 @@ export interface Room {
   gameMode: GameMode;
   /** Blitz only: selected match length in ms (from BLITZ_DURATION_OPTIONS). */
   blitzDurationMs?: number | null;
-  /** Quick only: how many tokens each player starts with (1–4). */
+  /** Quick / Race: how many tokens each player starts with (1–4). */
   quickTokens?: number | null;
   /** Team mode: 2 or 3 players per team. */
   teamSize?: TeamSize | null;
@@ -403,10 +424,14 @@ export interface Room {
   teams?: Team[] | null;
   /** Team mode: set when a full team finishes. */
   winningTeamId?: string | null;
+  /** Lobby seat toss (3 rolls; lock only after 3rd). */
+  seatToss?: SeatTossState | null;
   /** Who may watch without playing. Default request. */
   spectatorAccess?: SpectatorAccess;
   spectators?: Spectator[];
   spectatorRequests?: SpectatorRequest[];
+  /** Players asking to sit (host must accept). */
+  joinRequests?: JoinRequest[];
   status: RoomStatus;
   players: Player[];
   departedPlayers: DepartedPlayer[];
@@ -414,3 +439,18 @@ export interface Room {
   createdAt: number;
   updatedAt: number;
 }
+
+/** One random seat assignment: playerId at index = seat number. */
+export type SeatTossResult = {
+  seatOrder: string[];
+};
+
+export type SeatTossState = {
+  /** Tosses run so far (1–3). */
+  count: number;
+  /** Latest toss shown in the shared popup. */
+  current: SeatTossResult | null;
+  history: SeatTossResult[];
+  /** Host confirmed the 3rd toss — seats applied. */
+  locked: boolean;
+};

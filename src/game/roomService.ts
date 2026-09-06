@@ -17,6 +17,7 @@ export async function createRoom(
     teamSize?: 2 | 3
     teamAssign?: 'random' | 'manual'
     quickTokens?: number
+    photoUrl?: string
   },
 ) {
   const { room } = await emitAck<{ room: Room }>('createRoom', {
@@ -25,10 +26,11 @@ export async function createRoom(
     maxPlayers,
     gameMode,
     ...(options?.color ? { color: options.color, lockColor: options.lockColor } : {}),
+    ...(options?.photoUrl ? { photoUrl: options.photoUrl } : {}),
     ...(gameMode === 'blitz'
       ? { blitzDurationMs: options?.blitzDurationMs }
       : {}),
-    ...(gameMode === 'quick'
+    ...(gameMode === 'quick' || gameMode === 'race'
       ? { quickTokens: options?.quickTokens ?? 3 }
       : {}),
     ...(gameMode === 'team'
@@ -98,17 +100,70 @@ export async function reduceBlitzTime(roomId: string, userId: string) {
   return room
 }
 
+export async function stopMatch(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room }>('stopMatch', {
+    roomId,
+    userId,
+  })
+  return room
+}
+
+export async function setPlayerColor(
+  roomId: string,
+  userId: string,
+  playerId: string,
+  color: string,
+) {
+  const { room } = await emitAck<{ room: Room }>('setPlayerColor', {
+    roomId,
+    userId,
+    playerId,
+    color,
+  })
+  return room
+}
+
+export async function setOwnPhoto(
+  roomId: string,
+  userId: string,
+  photoUrl?: string | null,
+) {
+  const { room } = await emitAck<{ room: Room }>('setOwnPhoto', {
+    roomId,
+    userId,
+    photoUrl: photoUrl ?? '',
+  })
+  return room
+}
+
+export async function runSeatToss(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room }>('runSeatToss', {
+    roomId,
+    userId,
+  })
+  return room
+}
+
+export async function confirmSeatToss(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room }>('confirmSeatToss', {
+    roomId,
+    userId,
+  })
+  return room
+}
+
 export async function joinRoom(
   userId: string,
   name: string,
   code: string,
-  options?: { color?: string; lockColor?: boolean },
+  options?: { color?: string; lockColor?: boolean; photoUrl?: string },
 ) {
   const { room } = await emitAck<{ room: Room }>('joinRoom', {
     userId,
     name,
     code,
     ...(options?.color ? { color: options.color, lockColor: options.lockColor } : {}),
+    ...(options?.photoUrl ? { photoUrl: options.photoUrl } : {}),
   })
   return room
 }
@@ -119,12 +174,14 @@ export async function claimSeat(
   name: string,
   roomCode: string,
   seatCode: string,
+  options?: { photoUrl?: string },
 ) {
   const { room } = await emitAck<{ room: Room }>('claimSeat', {
     userId,
     name,
     roomCode,
     seatCode,
+    ...(options?.photoUrl ? { photoUrl: options.photoUrl } : {}),
   })
   return room
 }
@@ -138,6 +195,47 @@ export async function requestSpectate(
     'requestSpectate',
     { userId, name, code },
   )
+}
+
+export async function requestJoin(
+  userId: string,
+  name: string,
+  code: string,
+  options?: { color?: string; lockColor?: boolean; photoUrl?: string },
+) {
+  return emitAck<{ room: Room; status: 'pending' }>('requestJoin', {
+    userId,
+    name,
+    code,
+    ...(options?.color ? { color: options.color, lockColor: options.lockColor } : {}),
+    ...(options?.photoUrl ? { photoUrl: options.photoUrl } : {}),
+  })
+}
+
+export async function approveJoin(
+  roomId: string,
+  userId: string,
+  targetUserId: string,
+) {
+  const { room } = await emitAck<{ room: Room }>('approveJoin', {
+    roomId,
+    userId,
+    targetUserId,
+  })
+  return room
+}
+
+export async function denyJoin(
+  roomId: string,
+  userId: string,
+  targetUserId: string,
+) {
+  const { room } = await emitAck<{ room: Room }>('denyJoin', {
+    roomId,
+    userId,
+    targetUserId,
+  })
+  return room
 }
 
 export async function approveSpectate(
@@ -311,6 +409,8 @@ export function watchRoom(
   onError: (message: string) => void,
   onMoveStart?: (move: ActiveMove) => void,
   onSpectateDenied?: () => void,
+  onPlayerKicked?: (reason: string) => void,
+  onJoinDenied?: () => void,
 ) {
   const socket = getSocket()
 
@@ -332,6 +432,16 @@ export function watchRoom(
     onSpectateDenied?.()
   }
 
+  const handleJoinDenied = (payload: { roomId?: string }) => {
+    if (payload.roomId && payload.roomId !== roomId) return
+    onJoinDenied?.()
+  }
+
+  const handlePlayerKicked = (payload: { roomId?: string; reason?: string }) => {
+    if (payload.roomId && payload.roomId !== roomId) return
+    onPlayerKicked?.(payload.reason ?? 'removed')
+  }
+
   const handleConnectError = (error: Error) => onError(error.message)
   const handleSocketError = (payload: { message?: string }) => {
     onError(payload.message ?? 'Connection error.')
@@ -341,6 +451,8 @@ export function watchRoom(
   socket.on('moveStart', handleMoveStart)
   socket.on('playerDisconnect', handleDisconnect)
   socket.on('spectateDenied', handleSpectateDenied)
+  socket.on('joinDenied', handleJoinDenied)
+  socket.on('playerKicked', handlePlayerKicked)
   socket.on('connect_error', handleConnectError)
   socket.on('error', handleSocketError)
 
@@ -360,6 +472,8 @@ export function watchRoom(
     socket.off('moveStart', handleMoveStart)
     socket.off('playerDisconnect', handleDisconnect)
     socket.off('spectateDenied', handleSpectateDenied)
+    socket.off('joinDenied', handleJoinDenied)
+    socket.off('playerKicked', handlePlayerKicked)
     socket.off('connect_error', handleConnectError)
     socket.off('error', handleSocketError)
   }
@@ -381,7 +495,8 @@ export async function setSlotBot(
 }
 
 export async function startRoom(roomId: string, userId: string) {
-  await emitAck('startRoom', { roomId, userId })
+  const { room } = await emitAck<{ room: Room }>('startRoom', { roomId, userId })
+  return room
 }
 
 /**

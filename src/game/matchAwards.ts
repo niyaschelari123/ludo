@@ -1,6 +1,7 @@
 import { finishedProgress } from './engine'
 import type { Player, PlayerStats, Room } from './types'
 import { isBlitzMode } from './types'
+import { isTeamMode } from './teams'
 
 export type MotmBreakdown = {
   eliminations: number
@@ -35,6 +36,7 @@ function emptyStats(): PlayerStats {
     eliminatedPlayers: {},
     negativePowers: 0,
     superPowers: 0,
+    plus3: 0,
   }
 }
 
@@ -49,6 +51,7 @@ export function readPlayerStats(
     eliminatedPlayers: stats.eliminatedPlayers ?? {},
     negativePowers: stats.negativePowers ?? 0,
     superPowers: stats.superPowers ?? 0,
+    plus3: stats.plus3 ?? 0,
   }
 }
 
@@ -378,6 +381,104 @@ export function finalizeBlitzGame(room: Room) {
   game.lastAction = lead
     ? `Time's up! ${lead.player.name} wins with ${lead.breakdown.total} pts`
     : `Time's up!`
+  room.updatedAt = Date.now()
+  return room
+}
+
+function raceStandingScore(room: Room, playerId: string) {
+  const game = room.game!
+  const finish = finishedProgress(room)
+  const tokens = game.tokens.filter((token) => token.playerId === playerId)
+  const home = tokens.filter((token) => token.progress >= finish).length
+  const progressSum = tokens.reduce(
+    (sum, token) => sum + Math.max(0, token.progress),
+    0,
+  )
+  const stats = readPlayerStats(room, playerId)
+  return {
+    home,
+    progressSum,
+    captures: stats.captures,
+    eliminated: stats.eliminated,
+  }
+}
+
+/**
+ * Host stopped mid-match: lock standings from the current board.
+ * Blitz → point ranking. Other modes → keep finish order, then race progress.
+ */
+export function finalizeHostStoppedGame(room: Room, hostName = 'Host') {
+  const game = room.game
+  if (!game || room.status !== 'playing') return room
+  if (room.status === 'finished') return room
+
+  if (isBlitzMode(room.gameMode)) {
+    finalizeBlitzGame(room)
+    const lead = room.players.find((player) => player.id === game.winnerIds[0])
+    game.lastAction = lead
+      ? `${hostName} stopped the match — ${lead.name} leads with standings`
+      : `${hostName} stopped the match`
+    room.updatedAt = Date.now()
+    return room
+  }
+
+  const alreadyFinished = game.winnerIds.filter((id) =>
+    room.players.some((player) => player.id === id),
+  )
+  const remaining = room.players.filter(
+    (player) => !alreadyFinished.includes(player.id),
+  )
+  remaining.sort((first, second) => {
+    const a = raceStandingScore(room, first.id)
+    const b = raceStandingScore(room, second.id)
+    return (
+      b.home - a.home ||
+      b.progressSum - a.progressSum ||
+      b.captures - a.captures ||
+      a.eliminated - b.eliminated ||
+      first.name.localeCompare(second.name)
+    )
+  })
+
+  game.winnerIds = [...alreadyFinished, ...remaining.map((player) => player.id)]
+
+  if (isTeamMode(room.gameMode) && room.teams?.length) {
+    const teamRank = [...room.teams].sort((first, second) => {
+      const scoreTeam = (memberIds: string[]) => {
+        let home = 0
+        let progressSum = 0
+        let placeSum = 0
+        for (const id of memberIds) {
+          const standing = raceStandingScore(room, id)
+          home += standing.home
+          progressSum += standing.progressSum
+          const place = game.winnerIds.indexOf(id)
+          placeSum += place === -1 ? 99 : place
+        }
+        return { home, progressSum, placeSum }
+      }
+      const a = scoreTeam(first.memberIds)
+      const b = scoreTeam(second.memberIds)
+      return (
+        a.placeSum - b.placeSum ||
+        b.home - a.home ||
+        b.progressSum - a.progressSum
+      )
+    })
+    room.winningTeamId = teamRank[0]?.id ?? null
+  }
+
+  game.phase = 'roll'
+  game.dice = null
+  game.turnDeadline = null
+  game.pendingPower = null
+  game.activeMove = null
+  room.status = 'finished'
+  const champion =
+    room.players.find((player) => player.id === game.winnerIds[0]) ?? null
+  game.lastAction = champion
+    ? `${hostName} stopped the match — ${champion.name} is #1 on current standings`
+    : `${hostName} stopped the match`
   room.updatedAt = Date.now()
   return room
 }
