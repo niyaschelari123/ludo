@@ -1,5 +1,4 @@
 import { getGuestPlayerId } from './playerId'
-import { fetchCloudProfile, pushCloudProfile } from './profileCloud'
 import { sanitizePhotoDataUrl } from './profilePhoto'
 
 export const PROFILE_STORAGE_KEY = 'ludo-profile'
@@ -114,13 +113,17 @@ export function loadProfile(): UserProfile | null {
 export function saveProfile(profile: UserProfile) {
   localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile))
   localStorage.setItem('ludo-name', profile.name)
-  void pushCloudProfile(profile)
+  // Lazy import so the Socket server can load login helpers without Firebase.
+  void import('./profileCloud').then(({ pushCloudProfile }) => {
+    void pushCloudProfile(profile)
+  })
 }
 
 /** Same as saveProfile, but waits for Firestore so the Save button can confirm. */
 export async function saveProfileAsync(profile: UserProfile) {
   localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile))
   localStorage.setItem('ludo-name', profile.name)
+  const { pushCloudProfile } = await import('./profileCloud')
   await pushCloudProfile(profile, { throwOnError: true })
 }
 
@@ -143,6 +146,7 @@ export async function loginWithPin(pin: string): Promise<UserProfile> {
   let color = sameAccount ? existing.color : ''
   let photoUrl = sameAccount ? existing.photoUrl : undefined
 
+  const { fetchCloudProfile } = await import('./profileCloud')
   const remote = await fetchCloudProfile(account.accountId)
   if (remote) {
     if (remote.name) name = remote.name
@@ -169,6 +173,7 @@ export async function hydrateProfileFromCloud(
   profile: UserProfile | null = loadProfile(),
 ): Promise<UserProfile | null> {
   if (!profile) return null
+  const { fetchCloudProfile, pushCloudProfile } = await import('./profileCloud')
   const remote = await fetchCloudProfile(profile.accountId)
   if (!remote) return profile
 
