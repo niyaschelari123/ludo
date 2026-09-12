@@ -11,6 +11,7 @@ import {
 import { signInAnonymously } from 'firebase/auth'
 import { auth, db, isFirebaseConfigured } from '../firebase'
 import {
+  CAREER_STAT_KEY_LIST,
   countLoginPlayersInMatch,
   fetchCareerBoard,
   formatCareerFinishTime,
@@ -37,6 +38,13 @@ export type MatchHistoryMostLeaders = Partial<
   Record<CareerStatKey, HistoryPerson | null>
 >
 
+/** Full career “most” stats for one login player after a match. */
+export type MatchHistoryCareerSnapshot = {
+  accountId: string
+  name: string
+  color: string
+} & Pick<CareerBoardEntry, CareerStatKey>
+
 export type MatchHistoryEntry = {
   roomId: string
   code: string
@@ -57,6 +65,8 @@ export type MatchHistoryEntry = {
   worst: HistoryPerson | null
   /** Career “most …” leaders after this match’s stats were applied. */
   mostLeaders: MatchHistoryMostLeaders
+  /** Full board snapshot (all login players’ most stats) after this match. */
+  careerSnapshot: MatchHistoryCareerSnapshot[]
 }
 
 export const MOST_HISTORY_LABELS: Record<CareerStatKey, string> = {
@@ -119,6 +129,32 @@ export function buildMostLeaders(
   return leaders
 }
 
+/** Snapshot every login player’s career most-stats after the match. */
+export function buildCareerSnapshot(
+  board: CareerBoardEntry[],
+): MatchHistoryCareerSnapshot[] {
+  return board
+    .filter((entry) => isCareerAccountId(entry.accountId))
+    .map((entry) => {
+      const stats = {} as Pick<CareerBoardEntry, CareerStatKey>
+      for (const key of CAREER_STAT_KEY_LIST) {
+        const raw = entry[key]
+        stats[key] =
+          typeof raw === 'number' && Number.isFinite(raw) && raw >= 0
+            ? key === 'motmPoints'
+              ? Math.round(raw * 10) / 10
+              : Math.floor(raw)
+            : 0
+      }
+      return {
+        accountId: entry.accountId,
+        name: entry.name,
+        color: entry.color || '#64748b',
+        ...stats,
+      }
+    })
+}
+
 export function formatMostLeaderValue(key: CareerStatKey, value: number) {
   if (key === 'bestFinishMs') return formatCareerFinishTime(value)
   if (key === 'motmPoints') {
@@ -139,7 +175,7 @@ export function formatMostLeaderValue(key: CareerStatKey, value: number) {
 
 /**
  * Idempotent: one history doc per room. Call after career stats are recorded
- * so mostLeaders reflect the updated career boards.
+ * so mostLeaders / careerSnapshot reflect the updated career boards.
  */
 export async function recordMatchHistory(
   room: Room,
@@ -219,6 +255,7 @@ export async function recordMatchHistory(
           }
         : null,
       mostLeaders: buildMostLeaders(careerBoard),
+      careerSnapshot: buildCareerSnapshot(careerBoard),
       recordedAt: serverTimestamp(),
     }
 
@@ -232,6 +269,46 @@ export async function recordMatchHistory(
     console.warn('Failed to record match history', error)
     return false
   }
+}
+
+function readCareerSnapshot(
+  raw: unknown,
+): MatchHistoryCareerSnapshot[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null
+      const data = item as Partial<MatchHistoryCareerSnapshot>
+      if (
+        typeof data.accountId !== 'string' ||
+        !isCareerAccountId(data.accountId)
+      ) {
+        return null
+      }
+      const stats = {} as Pick<CareerBoardEntry, CareerStatKey>
+      for (const key of CAREER_STAT_KEY_LIST) {
+        const value = data[key]
+        stats[key] =
+          typeof value === 'number' && Number.isFinite(value) && value >= 0
+            ? key === 'motmPoints'
+              ? Math.round(value * 10) / 10
+              : Math.floor(value)
+            : 0
+      }
+      return {
+        accountId: data.accountId,
+        name:
+          typeof data.name === 'string' && data.name.trim()
+            ? data.name.trim().slice(0, 18)
+            : data.accountId.replace(/^acct:/, ''),
+        color:
+          typeof data.color === 'string' && data.color
+            ? data.color
+            : '#64748b',
+        ...stats,
+      } satisfies MatchHistoryCareerSnapshot
+    })
+    .filter((entry): entry is MatchHistoryCareerSnapshot => entry != null)
 }
 
 /** Latest eligible match histories (newest first). */
@@ -265,6 +342,7 @@ export async function fetchMatchHistory(
         motm: data.motm ?? null,
         worst: data.worst ?? null,
         mostLeaders: (data.mostLeaders ?? {}) as MatchHistoryMostLeaders,
+        careerSnapshot: readCareerSnapshot(data.careerSnapshot),
       }
     })
   } catch (error) {

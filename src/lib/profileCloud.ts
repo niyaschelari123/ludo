@@ -92,6 +92,9 @@ const CAREER_STAT_KEYS: CareerStatKey[] = [
   'bestFinishMs',
 ]
 
+/** Exported for match-history snapshots / restore. */
+export const CAREER_STAT_KEY_LIST: CareerStatKey[] = CAREER_STAT_KEYS
+
 function roundCareerPoints(value: number) {
   return Math.round(Math.max(0, value) * 10) / 10
 }
@@ -557,7 +560,9 @@ export function formatCareerFinishTime(ms: number) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
-/** Each career win is worth this many Ultimate points (on top of MotM points). */
+/** Each MotM award is worth this many Ultimate points. */
+export const ULTIMATE_MOTM_POINTS = 40
+/** Each career win is worth this many Ultimate points. */
 export const ULTIMATE_WIN_POINTS = 50
 /** Each Worst of the Match award subtracts this many Ultimate points. */
 export const ULTIMATE_WORST_PENALTY = 10
@@ -565,18 +570,18 @@ export const ULTIMATE_WORST_PENALTY = 10
 /** Combined career score for Ultimate ranking. */
 export function ultimateScore(entry: CareerBoardEntry) {
   return (
-    (entry.motmPoints ?? 0) +
+    (entry.motm ?? 0) * ULTIMATE_MOTM_POINTS +
     (entry.wins ?? 0) * ULTIMATE_WIN_POINTS -
     (entry.worst ?? 0) * ULTIMATE_WORST_PENALTY
   )
 }
 
-/** Ultimate: highest MotM points + wins combined. */
+/** Ultimate: MotM count × 40 + wins − worst. */
 export function sortUltimateBoard(board: CareerBoardEntry[]): CareerBoardEntry[] {
   return [...board].sort(
     (a, b) =>
       ultimateScore(b) - ultimateScore(a) ||
-      (b.motmPoints ?? 0) - (a.motmPoints ?? 0) ||
+      (b.motm ?? 0) - (a.motm ?? 0) ||
       (b.wins ?? 0) - (a.wins ?? 0) ||
       a.name.localeCompare(b.name),
   )
@@ -944,6 +949,30 @@ export async function applyHistoryMostLeaders(
   let written = 0
   for (const [accountId, stats] of byAccount) {
     await writeCareerStatPatch(accountId, stats)
+    written += 1
+  }
+  return written
+}
+
+/**
+ * Replace live career “most” stats with a full post-match snapshot (all players).
+ */
+export async function applyHistoryCareerSnapshot(
+  snapshot: Array<
+    { accountId: string } & Partial<Pick<CareerBoardEntry, CareerStatKey>>
+  >,
+): Promise<number> {
+  let written = 0
+  for (const entry of snapshot) {
+    if (!isCareerAccountId(entry.accountId)) continue
+    const stats: Partial<Pick<CareerBoardEntry, CareerStatKey>> = {}
+    for (const key of CAREER_STAT_KEYS) {
+      const raw = entry[key]
+      if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) continue
+      stats[key] = raw
+    }
+    if (Object.keys(stats).length === 0) continue
+    await writeCareerStatPatch(entry.accountId, stats)
     written += 1
   }
   return written

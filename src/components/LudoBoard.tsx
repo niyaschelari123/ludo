@@ -854,6 +854,17 @@ export function LudoBoard({
     positionGroups.set(key, group)
   })
 
+  // Paint local player's tokens last so they sit on top of mixed stacks on
+  // this client only (each player sees their own pieces as the top layer).
+  const tokensToPaint = [...displayedTokens].sort((a, b) => {
+    const aOwn = a.originalToken.playerId === userId ? 1 : 0
+    const bOwn = b.originalToken.playerId === userId ? 1 : 0
+    if (aOwn !== bOwn) return aOwn - bOwn
+    if (a.isMoving !== b.isMoving) return Number(a.isMoving) - Number(b.isMoving)
+    if (a.canSelect !== b.canSelect) return Number(a.canSelect) - Number(b.canSelect)
+    return 0
+  })
+
   const hoveredStack =
     hoveredStackKey != null
       ? positionGroups.get(hoveredStackKey) ?? null
@@ -900,7 +911,7 @@ export function LudoBoard({
           <PolygonPlayerLabels room={room} geometry={geometry} />
         ) : null}
 
-        {displayedTokens.map(
+        {tokensToPaint.map(
           ({
             originalToken,
             player,
@@ -920,6 +931,10 @@ export function LudoBoard({
             // never fan them out or they'll spill onto neighboring sectors.
             const stacked = !isFinished && group.length > 1
             const crowded = !isFinished && group.length > 2
+            const stackHasMine = group.some(
+              (entry) => entry.originalToken.playerId === userId,
+            )
+            const isMine = originalToken.playerId === userId
             const inYard = originalToken.progress === -1
             const shielded = Boolean(room.game?.shieldBuff?.[player.id])
             const tokenRadius = tokenDisplayRadius(
@@ -959,6 +974,9 @@ export function LudoBoard({
                 className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''} ${shielded ? 'shielded' : ''}`}
                 style={{
                   transform: `translate(${position.x + offsetX}px, ${position.y + offsetY}px)`,
+                  // Let taps reach your token when opponents overlap the same cell
+                  pointerEvents:
+                    stacked && stackHasMine && !isMine ? 'none' : undefined,
                 }}
                 onClick={() => canSelect && onMove(originalToken.id)}
                 onMouseEnter={() => {

@@ -78,6 +78,7 @@ import {
 import { loadImageFromFile, revokeImageObjectUrl } from './lib/profilePhoto'
 import {
   adminSetCareerStats,
+  applyHistoryCareerSnapshot,
   applyHistoryMostLeaders,
   buildElimPairLeaders,
   CAREER_STAT_EDIT_LABELS,
@@ -91,6 +92,7 @@ import {
   sortCareerBoardAscending,
   sortUltimateBoard,
   ultimateScore,
+  ULTIMATE_MOTM_POINTS,
   ULTIMATE_WIN_POINTS,
   ULTIMATE_WORST_PENALTY,
   type CareerBoardEntry,
@@ -155,31 +157,56 @@ type RemoveConfirmTarget = {
   seat?: number
 }
 
+type AutoPlayConfirmTarget = {
+  id: string
+  name: string
+  enable: boolean
+  isSelf: boolean
+}
+
 function FaceStrip({
-  selected,
+  queue = [],
   onPick,
+  onRemoveAt,
   compact = false,
 }: {
-  selected?: number
+  queue?: number[]
   onPick: (value: number) => void
+  onRemoveAt?: (index: number) => void
   compact?: boolean
 }) {
   return (
     <div
-      className={`face-strip ${compact ? 'face-strip--compact' : ''}`}
+      className={`face-strip-wrap ${compact ? 'face-strip-wrap--compact' : ''}`}
       aria-hidden="true"
       onClick={(event) => event.stopPropagation()}
     >
-      {[1, 2, 3, 4, 5, 6].map((value) => (
-        <button
-          key={value}
-          type="button"
-          className={`face-strip-btn ${selected === value ? 'on' : ''}`}
-          onClick={() => onPick(value)}
-        >
-          {value}
-        </button>
-      ))}
+      <div className={`face-strip ${compact ? 'face-strip--compact' : ''}`}>
+        {[1, 2, 3, 4, 5, 6].map((value) => (
+          <button
+            key={value}
+            type="button"
+            className="face-strip-btn"
+            onClick={() => onPick(value)}
+          >
+            {value}
+          </button>
+        ))}
+      </div>
+      {queue.length > 0 ? (
+        <div className="roll-queue" title="Upcoming forced rolls (click to remove)">
+          {queue.map((value, index) => (
+            <button
+              key={`${index}-${value}`}
+              type="button"
+              className="roll-queue-item"
+              onClick={() => onRemoveAt?.(index)}
+            >
+              {value}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -446,6 +473,7 @@ function App() {
   const [hostLeaveOpen, setHostLeaveOpen] = useState(false)
   const [newHostId, setNewHostId] = useState('')
   const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmTarget | null>(null)
+  const [autoPlayConfirm, setAutoPlayConfirm] = useState<AutoPlayConfirmTarget | null>(null)
   const [turnSecondsLeft, setTurnSecondsLeft] = useState<number | null>(null)
   const [blitzSecondsLeft, setBlitzSecondsLeft] = useState<number | null>(null)
   const [blitzBreakdownOpen, setBlitzBreakdownOpen] = useState(false)
@@ -484,18 +512,28 @@ function App() {
       return false
     }
   }, [])
-  const [rollPicks, setRollPicks] = useState<Record<string, number>>({})
+  const [rollPicks, setRollPicks] = useState<Record<string, number[]>>({})
+  const prevRollPhaseRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!extraCtrl || !displayRoom?.game) return
+    if (!extraCtrl || !displayRoom?.game) {
+      prevRollPhaseRef.current = displayRoom?.game?.phase ?? null
+      return
+    }
     const game = displayRoom.game
-    if (game.phase === 'roll') return
+    const prevPhase = prevRollPhaseRef.current
+    prevRollPhaseRef.current = game.phase
+    // Only dequeue when a roll just finished — keep the rest of the queue visible.
+    if (prevPhase !== 'roll' || game.phase === 'roll') return
     const rollerId = displayRoom.players[game.turnIndex]?.id
     if (!rollerId) return
     setRollPicks((prev) => {
-      if (prev[rollerId] === undefined) return prev
+      const queue = prev[rollerId]
+      if (!queue?.length) return prev
+      const nextQueue = queue.slice(1)
       const next = { ...prev }
-      delete next[rollerId]
+      if (nextQueue.length === 0) delete next[rollerId]
+      else next[rollerId] = nextQueue
       return next
     })
   }, [
@@ -507,7 +545,10 @@ function App() {
 
   const pickForPlayer = useCallback(
     async (playerId: string, value: number) => {
-      setRollPicks((prev) => ({ ...prev, [playerId]: value }))
+      setRollPicks((prev) => ({
+        ...prev,
+        [playerId]: [...(prev[playerId] ?? []), value],
+      }))
       const baseRoom = optimisticRoom ?? room
       if (!baseRoom) return
       try {
@@ -517,6 +558,33 @@ function App() {
       }
     },
     [optimisticRoom, room, userId],
+  )
+
+  const removePickForPlayer = useCallback(
+    async (playerId: string, index: number) => {
+      const baseRoom = optimisticRoom ?? room
+      const queue = rollPicks[playerId] ?? []
+      const nextQueue = queue.filter((_, entryIndex) => entryIndex !== index)
+      setRollPicks((prev) => {
+        const current = prev[playerId] ?? []
+        const updated = current.filter((_, entryIndex) => entryIndex !== index)
+        const next = { ...prev }
+        if (updated.length === 0) delete next[playerId]
+        else next[playerId] = updated
+        return next
+      })
+      if (!baseRoom) return
+      try {
+        await rollDice(baseRoom.id, userId, undefined, {
+          k: 3,
+          t: playerId,
+          queue: nextQueue,
+        })
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'Something went wrong.')
+      }
+    },
+    [optimisticRoom, room, rollPicks, userId],
   )
 
   useEffect(() => watchColorClaims(setColorClaims), [])
@@ -1542,6 +1610,7 @@ function App() {
     setLeaveConfirmOpen(false)
     setHostLeaveOpen(false)
     setRemoveConfirm(null)
+    setAutoPlayConfirm(null)
     setWatchRole(null)
     setRoomId(null)
     setRoom(null)
@@ -1576,14 +1645,20 @@ function App() {
     setHistoryApplyMsg('')
     void (async () => {
       try {
-        const written = await applyHistoryMostLeaders(entry.mostLeaders ?? {})
+        const snapshot = entry.careerSnapshot ?? []
+        const written =
+          snapshot.length > 0
+            ? await applyHistoryCareerSnapshot(snapshot)
+            : await applyHistoryMostLeaders(entry.mostLeaders ?? {})
         if (written <= 0) {
-          setHistoryApplyMsg('No most-leader values to apply.')
+          setHistoryApplyMsg('No career values to apply from this history.')
         } else {
           const board = await fetchCareerBoard()
           setCareerBoard(board)
           setHistoryApplyMsg(
-            `Applied most leaders from ${entry.code} to ${written} player${written === 1 ? '' : 's'}.`,
+            snapshot.length > 0
+              ? `Replaced most values from ${entry.code} for ${written} player${written === 1 ? '' : 's'}.`
+              : `Applied most leaders from ${entry.code} to ${written} player${written === 1 ? '' : 's'} (old history — leaders only).`,
           )
         }
         setHistoryApplyEntry(null)
@@ -1645,6 +1720,15 @@ function App() {
       }
     })
     if (succeeded) setRemoveConfirm(null)
+  }
+
+  const confirmAutoPlay = async () => {
+    if (!room || !autoPlayConfirm) return
+    const target = autoPlayConfirm
+    const succeeded = await perform(() =>
+      setPlayerAutoPlay(room.id, userId, target.id, target.enable),
+    )
+    if (succeeded) setAutoPlayConfirm(null)
   }
 
   if (roomId && !room) {
@@ -2364,8 +2448,6 @@ function App() {
   const canPickRollFor = (playerId: string) => {
     if (!extraCtrl || viewRoom.status !== 'playing' || !viewRoom.game) return false
     if (viewRoom.game.winnerIds.includes(playerId)) return false
-    const turnPlayer = viewRoom.players[viewRoom.game.turnIndex]
-    if (turnPlayer?.id === playerId && viewRoom.game.phase !== 'roll') return false
     return true
   }
   const activeRanking = viewRoom.game
@@ -3217,7 +3299,7 @@ function App() {
                 sortEntries={sortUltimateBoard}
                 formatCount={(value) => `${formatCareerMotmPoints(value)} pts`}
                 formatEntry={(entry) => {
-                  const points = entry.motmPoints ?? 0
+                  const motm = entry.motm ?? 0
                   const wins = entry.wins ?? 0
                   const worst = entry.worst ?? 0
                   const total = ultimateScore(entry)
@@ -3225,7 +3307,7 @@ function App() {
                     worst > 0
                       ? ` − ${worst}×${ULTIMATE_WORST_PENALTY}`
                       : ''
-                  return `${formatCareerMotmPoints(total)} (${formatCareerMotmPoints(points)} pts + ${wins}×${ULTIMATE_WIN_POINTS}${worstBit})`
+                  return `${formatCareerMotmPoints(total)} (${motm}×${ULTIMATE_MOTM_POINTS} + ${wins}×${ULTIMATE_WIN_POINTS}${worstBit})`
                 }}
               />
             </div>
@@ -3422,13 +3504,11 @@ function App() {
                           }
                           onClick={(event) => {
                             event.stopPropagation()
-                            void perform(async () => {
-                              await setPlayerAutoPlay(
-                                room.id,
-                                userId,
-                                player.id,
-                                !player.autoPlay,
-                              )
+                            setAutoPlayConfirm({
+                              id: player.id,
+                              name: player.name,
+                              enable: !player.autoPlay,
+                              isSelf: player.id === userId,
                             })
                           }}
                         >
@@ -3517,8 +3597,11 @@ function App() {
                   {canPickRollFor(player.id) ? (
                     <FaceStrip
                       compact
-                      selected={rollPicks[player.id]}
+                      queue={rollPicks[player.id] ?? []}
                       onPick={(value) => void pickForPlayer(player.id, value)}
+                      onRemoveAt={(index) =>
+                        void removePickForPlayer(player.id, index)
+                      }
                     />
                   ) : null}
                 </div>
@@ -4340,6 +4423,58 @@ function App() {
         </div>
       )}
 
+      {autoPlayConfirm && (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Autoplay confirmation"
+          onClick={() => !busy && setAutoPlayConfirm(null)}
+        >
+          <div className="confirm-card" onClick={(event) => event.stopPropagation()}>
+            <div className="confirm-icon">!</div>
+            <h2>
+              {autoPlayConfirm.enable
+                ? autoPlayConfirm.isSelf
+                  ? 'Turn on autoplay?'
+                  : `Autoplay for ${autoPlayConfirm.name}?`
+                : autoPlayConfirm.isSelf
+                  ? 'Cancel your autoplay?'
+                  : `Cancel autoplay for ${autoPlayConfirm.name}?`}
+            </h2>
+            <p>
+              {autoPlayConfirm.enable
+                ? autoPlayConfirm.isSelf
+                  ? 'The server will roll and move for you until you cancel autoplay.'
+                  : 'The server will roll and move for them until autoplay is cancelled.'
+                : autoPlayConfirm.isSelf
+                  ? 'You will play manually again on your turns.'
+                  : 'They will need to play manually again on their turns.'}
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="cancel-button"
+                disabled={busy}
+                onClick={() => setAutoPlayConfirm(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void confirmAutoPlay()}
+              >
+                {busy
+                  ? 'Updating…'
+                  : autoPlayConfirm.enable
+                    ? 'Enable autoplay'
+                    : 'Cancel autoplay'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {hostLeaveOpen && room && (
         <div
           className="confirm-overlay"
@@ -4434,7 +4569,7 @@ function App() {
             </div>
             <p className="match-history-lead">
               Eligible matches (≥3 login players). Each entry stores results and
-              the career “most …” leaders after that game.
+              a full career “most …” snapshot after that game.
             </p>
             {matchHistoryLoading ? (
               <p className="match-history-empty">Loading…</p>
@@ -4526,7 +4661,7 @@ function App() {
                                 setHistoryApplyEntry(entry)
                               }}
                             >
-                              Apply to most boards
+                              Replace most values
                             </button>
                           ) : null}
                         </div>
@@ -4539,6 +4674,7 @@ function App() {
             {historyApplyMsg ? (
               <p
                 className={
+                  historyApplyMsg.startsWith('Replaced') ||
                   historyApplyMsg.startsWith('Applied')
                     ? 'match-history-apply-ok'
                     : 'error'
@@ -4556,48 +4692,68 @@ function App() {
           className="confirm-overlay"
           role="dialog"
           aria-modal="true"
-          aria-label="Confirm apply most leaders"
+          aria-label="Confirm replace most values"
           onClick={() => !historyApplyBusy && setHistoryApplyEntry(null)}
         >
           <div
             className="confirm-card"
             onClick={(event) => event.stopPropagation()}
           >
-            <h2>Apply most leaders?</h2>
-            <p>
-              Write the “most …” leader values from match{' '}
-              <strong>{historyApplyEntry.code}</strong> (
-              {historyApplyEntry.gameModeLabel}) onto the live career most
-              boards. Each listed leader’s stat will be set to the value stored
-              in this history entry.
-            </p>
-            <ul className="match-history-apply-preview">
-              {(
-                Object.keys(MOST_HISTORY_LABELS) as Array<
-                  keyof typeof MOST_HISTORY_LABELS
-                >
-              )
-                .filter((key) => {
-                  const leader = historyApplyEntry.mostLeaders?.[key]
-                  return Boolean(
-                    leader &&
-                      typeof leader.value === 'number' &&
-                      leader.value > 0,
-                  )
-                })
-                .map((key) => {
-                  const leader = historyApplyEntry.mostLeaders![key]!
-                  return (
-                    <li key={`apply-preview-${key}`}>
-                      {MOST_HISTORY_LABELS[key]}:{' '}
-                      <strong>
-                        {leader.name} ·{' '}
-                        {formatMostLeaderValue(key, leader.value ?? 0)}
-                      </strong>
+            <h2>Replace most values?</h2>
+            {(historyApplyEntry.careerSnapshot?.length ?? 0) > 0 ? (
+              <>
+                <p>
+                  Overwrite live career “most …” stats with the full snapshot
+                  from match <strong>{historyApplyEntry.code}</strong> (
+                  {historyApplyEntry.gameModeLabel}) —{' '}
+                  {historyApplyEntry.careerSnapshot.length} players.
+                </p>
+                <ul className="match-history-apply-preview">
+                  {historyApplyEntry.careerSnapshot.map((player) => (
+                    <li key={`snap-${player.accountId}`}>
+                      <strong>{player.name}</strong>
+                      {` · wins ${player.wins} · MotM ${player.motm} · elims ${player.eliminations} · pts ${player.motmPoints}`}
                     </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <>
+                <p>
+                  This older history has leaders only (no full snapshot). It will
+                  set each listed leader’s value from match{' '}
+                  <strong>{historyApplyEntry.code}</strong> (
+                  {historyApplyEntry.gameModeLabel}).
+                </p>
+                <ul className="match-history-apply-preview">
+                  {(
+                    Object.keys(MOST_HISTORY_LABELS) as Array<
+                      keyof typeof MOST_HISTORY_LABELS
+                    >
                   )
-                })}
-            </ul>
+                    .filter((key) => {
+                      const leader = historyApplyEntry.mostLeaders?.[key]
+                      return Boolean(
+                        leader &&
+                          typeof leader.value === 'number' &&
+                          leader.value > 0,
+                      )
+                    })
+                    .map((key) => {
+                      const leader = historyApplyEntry.mostLeaders![key]!
+                      return (
+                        <li key={`apply-preview-${key}`}>
+                          {MOST_HISTORY_LABELS[key]}:{' '}
+                          <strong>
+                            {leader.name} ·{' '}
+                            {formatMostLeaderValue(key, leader.value ?? 0)}
+                          </strong>
+                        </li>
+                      )
+                    })}
+                </ul>
+              </>
+            )}
             <div className="confirm-actions">
               <button
                 type="button"
@@ -4612,7 +4768,7 @@ function App() {
                 disabled={historyApplyBusy}
                 onClick={confirmApplyHistoryMosts}
               >
-                {historyApplyBusy ? 'Applying…' : 'Confirm apply'}
+                {historyApplyBusy ? 'Replacing…' : 'Confirm replace'}
               </button>
             </div>
           </div>

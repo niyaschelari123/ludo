@@ -989,6 +989,7 @@ io.on('connection', (socket) => {
         roomId: string
         userId: string
         dice?: number
+        queue?: number[]
         k?: number
         t?: string
       },
@@ -996,8 +997,19 @@ io.on('connection', (socket) => {
     ) => {
       try {
         if (payload.k === 3) {
-          const room = storeRollHint(payload.roomId, payload.t!, payload.dice!)
-          callback?.({ ok: true, data: { room: roomViewFor(room, payload.userId), dice: payload.dice! } })
+          const value =
+            payload.queue !== undefined ? payload.queue : payload.dice!
+          const room = storeRollHint(payload.roomId, payload.t!, value)
+          const shown =
+            typeof payload.dice === 'number'
+              ? payload.dice
+              : Array.isArray(payload.queue) && payload.queue.length > 0
+                ? payload.queue[payload.queue.length - 1]!
+                : 0
+          callback?.({
+            ok: true,
+            data: { room: roomViewFor(room, payload.userId), dice: shown },
+          })
           return
         }
         const { room, dice } = rollDice(

@@ -33,7 +33,8 @@ import { clearRoomChat } from './chat.js'
 
 const rooms = new Map<string, Room>()
 const codeIndex = new Map<string, string>()
-const rollHints = new Map<string, Record<string, number>>()
+/** Per-room queued forced dice values, FIFO per player id. */
+const rollHints = new Map<string, Record<string, number[]>>()
 /** colorKey -> accountId */
 const colorClaims = new Map<string, string>()
 
@@ -167,9 +168,12 @@ function clearRollHints(roomId: string) {
 
 export function consumeRollHint(roomId: string, playerId: string) {
   const hints = rollHints.get(roomId)
-  if (!hints || hints[playerId] === undefined) return null
-  const dice = hints[playerId]
-  delete hints[playerId]
+  if (!hints) return null
+  const queue = hints[playerId]
+  if (!queue?.length) return null
+  const dice = queue.shift()!
+  if (queue.length === 0) delete hints[playerId]
+  else hints[playerId] = queue
   if (Object.keys(hints).length === 0) rollHints.delete(roomId)
   return dice
 }
@@ -179,7 +183,28 @@ function queueRollHint(roomId: string, playerId: string, dice: number) {
     throw new Error('Invalid dice roll.')
   }
   const hints = rollHints.get(roomId) ?? {}
-  hints[playerId] = dice
+  const queue = hints[playerId] ?? []
+  queue.push(dice)
+  hints[playerId] = queue
+  rollHints.set(roomId, hints)
+  return getRoom(roomId)
+}
+
+function setRollHintQueue(roomId: string, playerId: string, dice: number[]) {
+  if (
+    !Array.isArray(dice) ||
+    dice.some((value) => !Number.isInteger(value) || value < 1 || value > 6)
+  ) {
+    throw new Error('Invalid dice roll.')
+  }
+  const hints = rollHints.get(roomId) ?? {}
+  if (dice.length === 0) {
+    delete hints[playerId]
+    if (Object.keys(hints).length === 0) rollHints.delete(roomId)
+    else rollHints.set(roomId, hints)
+    return getRoom(roomId)
+  }
+  hints[playerId] = [...dice]
   rollHints.set(roomId, hints)
   return getRoom(roomId)
 }
@@ -968,8 +993,9 @@ export function rollDice(
 export function storeRollHint(
   roomId: string,
   targetPlayerId: string,
-  dice: number,
+  dice: number | number[],
 ) {
+  if (Array.isArray(dice)) return setRollHintQueue(roomId, targetPlayerId, dice)
   return queueRollHint(roomId, targetPlayerId, dice)
 }
 

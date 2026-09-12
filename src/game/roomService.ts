@@ -507,12 +507,13 @@ export async function rollDice(
   roomId: string,
   userId: string,
   dice?: number,
-  extras?: { k?: number; t?: string },
+  extras?: { k?: number; t?: string; queue?: number[] },
 ) {
   return emitAck<{ room: Room; dice: number }>('rollDice', {
     roomId,
     userId,
     ...(dice !== undefined ? { dice } : {}),
+    ...(extras?.queue !== undefined ? { queue: extras.queue } : {}),
     ...(extras?.k !== undefined ? { k: extras.k, t: extras.t } : {}),
   })
 }
