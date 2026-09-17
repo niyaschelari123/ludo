@@ -95,6 +95,11 @@ const CAREER_STAT_KEYS: CareerStatKey[] = [
 /** Exported for match-history snapshots / restore. */
 export const CAREER_STAT_KEY_LIST: CareerStatKey[] = CAREER_STAT_KEYS
 
+/** True when every career “most” numeric field is exactly 0. */
+export function hasAllZeroCareerStats(entry: CareerBoardEntry) {
+  return CAREER_STAT_KEYS.every((key) => (entry[key] ?? 0) === 0)
+}
+
 function roundCareerPoints(value: number) {
   return Math.round(Math.max(0, value) * 10) / 10
 }

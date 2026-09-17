@@ -117,6 +117,18 @@ export function listLiveMatchNotices() {
   return notices.sort((a, b) => b.startedAt - a.startedAt)
 }
 
+/** Remove every in-memory room and its room-scoped auxiliary state. */
+export function closeAllRooms() {
+  const roomIds = [...rooms.keys()]
+  for (const room of rooms.values()) {
+    clearRoomChat(room.id)
+    clearRollHints(room.id)
+  }
+  rooms.clear()
+  codeIndex.clear()
+  return roomIds
+}
+
 export function claimPlayerColor(accountId: string, color: string) {
   const key = normalizeColorKey(color)
   const owner = colorClaims.get(key)

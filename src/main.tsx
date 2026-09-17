@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 import { BoardPreview } from './pages/BoardPreview.tsx'
+import { MostStatsPage } from './pages/MostStats.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -12,6 +13,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/5-players" element={<BoardPreview playerCount={5} />} />
         <Route path="/6-players" element={<BoardPreview playerCount={6} />} />
         <Route path="/7-players" element={<BoardPreview playerCount={7} />} />
+        <Route path="/most-stats" element={<MostStatsPage />} />
         <Route path="/*" element={<App />} />
       </Routes>
     </BrowserRouter>

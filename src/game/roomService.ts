@@ -108,6 +108,10 @@ export async function stopMatch(roomId: string, userId: string) {
   return room
 }
 
+export async function closeAllRooms(adminSecret: string) {
+  return emitAck<{ closedCount: number }>('closeAllRooms', { adminSecret })
+}
+
 export async function setPlayerColor(
   roomId: string,
   userId: string,
@@ -411,6 +415,7 @@ export function watchRoom(
   onSpectateDenied?: () => void,
   onPlayerKicked?: (reason: string) => void,
   onJoinDenied?: () => void,
+  onAllRoomsClosed?: (message: string) => void,
 ) {
   const socket = getSocket()
 
@@ -442,6 +447,12 @@ export function watchRoom(
     onPlayerKicked?.(payload.reason ?? 'removed')
   }
 
+  const handleAllRoomsClosed = (payload: { message?: string }) => {
+    onAllRoomsClosed?.(
+      payload.message ?? 'All rooms were closed by an administrator.',
+    )
+  }
+
   const handleConnectError = (error: Error) => onError(error.message)
   const handleSocketError = (payload: { message?: string }) => {
     onError(payload.message ?? 'Connection error.')
@@ -453,6 +464,7 @@ export function watchRoom(
   socket.on('spectateDenied', handleSpectateDenied)
   socket.on('joinDenied', handleJoinDenied)
   socket.on('playerKicked', handlePlayerKicked)
+  socket.on('allRoomsClosed', handleAllRoomsClosed)
   socket.on('connect_error', handleConnectError)
   socket.on('error', handleSocketError)
 
@@ -474,6 +486,7 @@ export function watchRoom(
     socket.off('spectateDenied', handleSpectateDenied)
     socket.off('joinDenied', handleJoinDenied)
     socket.off('playerKicked', handlePlayerKicked)
+    socket.off('allRoomsClosed', handleAllRoomsClosed)
     socket.off('connect_error', handleConnectError)
     socket.off('error', handleSocketError)
   }

@@ -15,6 +15,7 @@ import {
   approveJoin,
   claimPlayerColor,
   claimSeat,
+  closeAllRooms,
   createRoom,
   denySpectate,
   denyJoin,
@@ -65,6 +66,7 @@ import { chatHistoryFor, postChatMessage } from './chat.js'
 import type { ActiveMove, ChatMessage, Room } from '../../src/game/types.js'
 import { isBlitzMode } from '../../src/game/types.js'
 import { tokenMoveDurationMs } from '../../src/game/types.js'
+import { ADMIN_PIN } from '../../src/lib/profile.js'
 
 const PORT = Number(process.env.PORT) || 3001
 const CORS_ORIGIN = process.env.CORS_ORIGIN?.split(',').map((value) => value.trim()) ?? [
@@ -326,7 +328,7 @@ function kickUserFromRoom(userId: string, roomId: string, reason: string) {
   detachUserFromRoom(userId, roomId)
 }
 
-function ackError(callback: Ack<unknown> | undefined, error: unknown) {
+function ackError<T>(callback: Ack<T> | undefined, error: unknown) {
   if (!callback) return
   const message = error instanceof Error ? error.message : 'Request failed.'
   callback({ ok: false, error: message })
@@ -343,6 +345,48 @@ function ackRoom(
 io.on('connection', (socket) => {
   // Home-screen live match bells for any connected client.
   socket.emit('liveMatchesUpdate', listLiveMatchNotices())
+
+  socket.on(
+    'closeAllRooms',
+    (
+      payload: { adminSecret?: string },
+      callback?: Ack<{ closedCount: number }>,
+    ) => {
+      try {
+        if (payload.adminSecret !== ADMIN_PIN) {
+          throw new Error('Invalid admin code.')
+        }
+
+        const roomIds = closeAllRooms()
+        const closed = new Set(roomIds)
+        for (const roomId of roomIds) {
+          stopTurnTimer(roomId)
+          stopPowerTimer(roomId)
+          stopBotTurn(roomId)
+          stopBlitzTimer(roomId)
+        }
+
+        if (roomIds.length > 0) {
+          io.to(roomIds).emit('allRoomsClosed', {
+            message: 'All rooms were closed by an administrator.',
+          })
+        }
+        for (const [socketId, session] of sessions.entries()) {
+          if (!closed.has(session.roomId)) continue
+          io.sockets.sockets.get(socketId)?.leave(session.roomId)
+          sessions.delete(socketId)
+        }
+
+        callback?.({
+          ok: true,
+          data: { closedCount: roomIds.length },
+        })
+        broadcastLiveMatches()
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
 
   socket.on(
     'listLiveMatches',

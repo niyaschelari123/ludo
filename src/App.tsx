@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
+import { Link } from 'react-router-dom'
 import './App.css'
 import {
   getSoundVolume,
@@ -27,6 +28,7 @@ import {
   approveJoin,
   claimColor,
   createRoom,
+  closeAllRooms,
   claimSeat,
   denySpectate,
   denyJoin,
@@ -80,15 +82,14 @@ import {
   adminSetCareerStats,
   applyHistoryCareerSnapshot,
   applyHistoryMostLeaders,
-  buildElimPairLeaders,
   CAREER_STAT_EDIT_LABELS,
   fetchCareerBoard,
   formatCareerFinishTime,
+  hasAllZeroCareerStats,
   isCareerEligibleMatch,
   recordMatchCareerExtras,
   recordMatchMotm,
   recordMatchWins,
-  sortCareerBoard,
   sortCareerBoardAscending,
   sortUltimateBoard,
   ultimateScore,
@@ -97,8 +98,12 @@ import {
   ULTIMATE_WORST_PENALTY,
   type CareerBoardEntry,
   type CareerStatKey,
-  type ElimPairLeader,
 } from './lib/profileCloud'
+import {
+  CareerElimPairsBoard,
+  CareerLobbyBoard,
+  formatCareerMotmPoints,
+} from './components/CareerBoards'
 import {
   fetchMatchHistory,
   finalizeEligibleMatchHistory,
@@ -132,9 +137,6 @@ import {
 } from './game/powerUps'
 import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWinOdds, rankBlitzPlayers, readPlayerStats, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
 
-function formatCareerMotmPoints(value: number) {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1)
-}
 import { PLAYER_COLORS, BLITZ_DURATION_OPTIONS, DEFAULT_BLITZ_DURATION_MS, blitzDurationLabel, canControlSeat, gameModeLabel, hasPowerBoard, isAutoControlled, isBlitzMode, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room, type SpectatorAccess, type TeamAssignMode, type TeamSize } from './game/types'
 import {
   isTeamMode,
@@ -236,118 +238,6 @@ function playerColorStyle(color: string): CSSProperties | undefined {
 
 function formatAwardScore(score: number) {
   return Number.isInteger(score) ? String(score) : score.toFixed(1)
-}
-
-function CareerLobbyBoard({
-  title,
-  board,
-  roomPlayers,
-  statKey,
-  formatCount,
-  className = '',
-  sortEntries,
-  formatEntry,
-}: {
-  title: string
-  board: CareerBoardEntry[] | null
-  roomPlayers: Room['players']
-  statKey: CareerStatKey
-  formatCount: (value: number) => string
-  className?: string
-  sortEntries?: (board: CareerBoardEntry[]) => CareerBoardEntry[]
-  formatEntry?: (entry: CareerBoardEntry) => string
-}) {
-  const ranked = board
-    ? (sortEntries ?? ((list) => sortCareerBoard(list, statKey)))(board)
-    : null
-  return (
-    <aside className={`lobby-wins-board lobby-stat-board ${className}`.trim()}>
-      <h3>{title}</h3>
-      {ranked === null ? (
-        <p className="lobby-wins-loading">Loading…</p>
-      ) : (
-        <ol className="lobby-wins-list">
-          {ranked.map((entry, index) => {
-            const inRoom = roomPlayers.some(
-              (player) => player.id === entry.accountId,
-            )
-            const value = entry[statKey] ?? 0
-            return (
-              <li
-                key={`${statKey}-${entry.accountId}`}
-                className={`lobby-wins-row ${playerColorClass(entry.color)} ${inRoom ? 'in-room' : 'away'}`}
-                style={playerColorStyle(entry.color)}
-              >
-                <span className="lobby-wins-rank">#{index + 1}</span>
-                <span className="lobby-wins-avatar">
-                  {entry.name[0]?.toUpperCase() ?? '?'}
-                </span>
-                <div className="lobby-wins-meta">
-                  <strong className="lobby-wins-name">{entry.name}</strong>
-                  <small>{inRoom ? 'In room' : 'Not joined'}</small>
-                </div>
-                <em className="lobby-wins-count">
-                  {formatEntry ? formatEntry(entry) : formatCount(value)}
-                </em>
-              </li>
-            )
-          })}
-        </ol>
-      )}
-    </aside>
-  )
-}
-
-function CareerElimPairsBoard({
-  board,
-  roomPlayers,
-  limit = 8,
-}: {
-  board: CareerBoardEntry[] | null
-  roomPlayers: Room['players']
-  limit?: number
-}) {
-  const leaders: ElimPairLeader[] | null = board
-    ? buildElimPairLeaders(board, limit)
-    : null
-  return (
-    <aside className="lobby-wins-board lobby-stat-board lobby-elim-pairs-board">
-      <h3>Who eliminated whom (most)</h3>
-      {leaders === null ? (
-        <p className="lobby-wins-loading">Loading…</p>
-      ) : leaders.length === 0 ? (
-        <p className="lobby-wins-loading">No eliminations yet</p>
-      ) : (
-        <ol className="lobby-wins-list">
-          {leaders.map((entry, index) => {
-            const attackerInRoom = roomPlayers.some(
-              (player) => player.id === entry.attackerId,
-            )
-            return (
-              <li
-                key={`${entry.attackerId}-${entry.victimId}`}
-                className={`lobby-wins-row ${playerColorClass(entry.attackerColor)} ${attackerInRoom ? 'in-room' : 'away'}`}
-                style={playerColorStyle(entry.attackerColor)}
-              >
-                <span className="lobby-wins-rank">#{index + 1}</span>
-                <div className="lobby-wins-meta lobby-elim-pair-meta">
-                  <strong className="lobby-wins-name">
-                    {entry.attackerName}
-                    <span className="lobby-elim-vs"> → </span>
-                    {entry.victimName}
-                  </strong>
-                  <small>
-                    {attackerInRoom ? 'Attacker in room' : 'Career total'}
-                  </small>
-                </div>
-                <em className="lobby-wins-count">×{entry.count}</em>
-              </li>
-            )
-          })}
-        </ol>
-      )}
-    </aside>
-  )
 }
 
 function MatchAwardCard({
@@ -458,6 +348,11 @@ function App() {
   >({})
   const [adminEditMsg, setAdminEditMsg] = useState('')
   const [adminEditBusy, setAdminEditBusy] = useState(false)
+  const [closeRoomsOpen, setCloseRoomsOpen] = useState(false)
+  const [closeRoomsSecret, setCloseRoomsSecret] = useState('')
+  const [closeRoomsBusy, setCloseRoomsBusy] = useState(false)
+  const [closeRoomsMsg, setCloseRoomsMsg] = useState('')
+  const [zeroStatsDismissed, setZeroStatsDismissed] = useState(false)
   const [colorClaims, setColorClaims] = useState<Record<string, string>>({})
   const [rolling, setRolling] = useState(false)
   const [diceFace, setDiceFace] = useState(1)
@@ -618,10 +513,13 @@ function App() {
   }, [room?.id, room?.status])
 
   useEffect(() => {
-    if (!profile || !room || room.status !== 'lobby') {
+    if (!profile) {
       setCareerBoard(null)
+      setZeroStatsDismissed(false)
       return
     }
+    // Home + lobby both need the career board (zero-stats banner / lobby boards).
+    if (room && room.status !== 'lobby') return
     let cancelled = false
     void fetchCareerBoard().then((board) => {
       if (!cancelled) setCareerBoard(board)
@@ -894,6 +792,9 @@ function App() {
       () => {
         restoreRoomNotice(roomId)
         exitToHome('The host declined your join request.')
+      },
+      (message) => {
+        exitToHome(message)
       },
     )
   }, [roomId, userId, scheduleRemoteMove])
@@ -1301,6 +1202,34 @@ function App() {
         setAdminEditBusy(false)
       }
     })()
+  }
+
+  const openCloseRooms = () => {
+    if (!isAdminAccountId(profile?.accountId)) return
+    setCloseRoomsSecret('')
+    setCloseRoomsMsg('')
+    setCloseRoomsOpen(true)
+  }
+
+  const confirmCloseAllRooms = () => {
+    if (!isAdminAccountId(profile?.accountId) || !closeRoomsSecret || closeRoomsBusy)
+      return
+    setCloseRoomsBusy(true)
+    setCloseRoomsMsg('')
+    void closeAllRooms(closeRoomsSecret)
+      .then(({ closedCount }) => {
+        setLiveMatchNotices([])
+        setCloseRoomsSecret('')
+        setCloseRoomsMsg(
+          `${closedCount} ${closedCount === 1 ? 'room' : 'rooms'} closed.`,
+        )
+      })
+      .catch((reason) => {
+        setCloseRoomsMsg(
+          reason instanceof Error ? reason.message : 'Failed to close rooms.',
+        )
+      })
+      .finally(() => setCloseRoomsBusy(false))
   }
 
   const logoutProfile = async () => {
@@ -1781,8 +1710,38 @@ function App() {
         setRoomId(pendingRoom.id)
       })
     }
+    const zeroStatsPlayers =
+      careerBoard?.filter((entry) => hasAllZeroCareerStats(entry)) ?? []
+    const showZeroStatsAlert =
+      Boolean(profile) && !zeroStatsDismissed && zeroStatsPlayers.length > 0
     return (
       <main className="home-screen" onClickCapture={playButtonSound}>
+        {showZeroStatsAlert ? (
+          <div
+            className="home-zero-stats-alert"
+            role="alert"
+            aria-live="polite"
+          >
+            <div className="home-zero-stats-alert-copy">
+              <strong>Empty career stats</strong>
+              <p>
+                {zeroStatsPlayers.length === 1
+                  ? `${zeroStatsPlayers[0].name} has all most-stat values at zero.`
+                  : `${zeroStatsPlayers
+                      .map((entry) => entry.name)
+                      .join(', ')} have all most-stat values at zero.`}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="home-zero-stats-alert-close"
+              aria-label="Dismiss empty career stats alert"
+              onClick={() => setZeroStatsDismissed(true)}
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
         <section className="hero-panel">
           <div className="home-topbar">
             <div className="brand"><span className="brand-mark">L</span> Ludo Live</div>
@@ -1877,14 +1836,26 @@ function App() {
                     }
                   />
                   <strong>{profile.name}</strong>
+                  <Link className="text-button" to="/most-stats">
+                    View most stats
+                  </Link>
                   {isAdminAccountId(profile.accountId) ? (
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={openAdminCareerEditor}
-                    >
-                      Edit most stats
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={openAdminCareerEditor}
+                      >
+                        Edit most stats
+                      </button>
+                      <button
+                        type="button"
+                        className="text-button admin-close-rooms-button"
+                        onClick={openCloseRooms}
+                      >
+                        Close all rooms
+                      </button>
+                    </>
                   ) : null}
                   <button type="button" className="text-button" onClick={() => void logoutProfile()}>
                     Log out
@@ -2296,6 +2267,78 @@ function App() {
                   onClick={submitLogin}
                 >
                   Continue
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {closeRoomsOpen && profile && isAdminAccountId(profile.accountId) ? (
+          <div
+            className="confirm-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Close all rooms confirmation"
+            onClick={() => !closeRoomsBusy && setCloseRoomsOpen(false)}
+          >
+            <div
+              className="confirm-card"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="confirm-icon">!</div>
+              <h2>Close all active rooms?</h2>
+              <p>
+                Every lobby and match will end immediately. Connected players
+                will return to the home screen. This cannot be undone.
+              </p>
+              <label className="admin-room-secret">
+                Admin code
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={closeRoomsSecret}
+                  disabled={closeRoomsBusy}
+                  autoComplete="off"
+                  autoFocus
+                  placeholder="••••"
+                  onChange={(event) =>
+                    setCloseRoomsSecret(
+                      event.target.value.replace(/\D/g, '').slice(0, 4),
+                    )
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') confirmCloseAllRooms()
+                  }}
+                />
+              </label>
+              {closeRoomsMsg ? (
+                <p
+                  className={
+                    closeRoomsMsg.endsWith('closed.')
+                      ? 'admin-career-ok'
+                      : 'error'
+                  }
+                >
+                  {closeRoomsMsg}
+                </p>
+              ) : null}
+              <div className="confirm-actions">
+                <button
+                  type="button"
+                  className="cancel-button"
+                  disabled={closeRoomsBusy}
+                  onClick={() => setCloseRoomsOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={closeRoomsBusy || !closeRoomsSecret}
+                  onClick={confirmCloseAllRooms}
+                >
+                  {closeRoomsBusy ? 'Closing…' : 'Close all rooms'}
                 </button>
               </div>
             </div>
