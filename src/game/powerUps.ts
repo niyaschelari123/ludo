@@ -624,7 +624,9 @@ function retreatToken(token: Token, steps: number, room: Room) {
 }
 
 /** Half-board leap, then snap forward onto the next safe star/start.
- *  If the leap would reach or pass home entry, land on the home-lane entry instead.
+ *  If the leap would reach home entry, the last track cell, or beyond, land on
+ *  the home-lane entry — avoids odd-length boards parking one seat just short
+ *  of the door (e.g. 5p jump 32 from progress 32 → 64).
  */
 function applySuperLeap(token: Token, player: Player, room: Room): string {
   const length = trackLength(room);
@@ -633,13 +635,13 @@ function applySuperLeap(token: Token, player: Player, room: Room): string {
   const maxTrack = homeEntry - 1;
   if (token.progress < 0) return `${player.name} missed a super leap`;
 
-  const remainingToHome = homeEntry - token.progress;
-  if (jump >= remainingToHome) {
+  const projected = token.progress + jump;
+  if (projected >= maxTrack) {
     token.progress = homeEntry;
     return `${player.name} leapt onto the home path`;
   }
 
-  const ideal = Math.min(token.progress + jump, maxTrack);
+  const ideal = projected;
   const safes = safeCells(room);
   const startCell = player.seat * CELLS_PER_PLAYER;
 

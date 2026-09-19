@@ -1197,6 +1197,19 @@ select:focus {
   color: #fecaca;
 }
 
+.admin-worst-button {
+  color: #fcd34d;
+}
+
+.admin-worst-button:hover {
+  color: #fde68a;
+}
+
+.worst-board-list {
+  margin-top: 8px;
+}
+
+
 .header-actions {
   justify-self: end;
   display: flex;
@@ -1324,13 +1337,63 @@ select:focus {
   position: static;
 }
 
-.lobby-elim-pairs-board .lobby-elim-pair-meta {
+.lobby-elim-pairs-board .lobby-elim-pair-list {
+  gap: 8px;
+}
+
+.lobby-elim-pair-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--player, #64748b) 12%, rgba(15, 23, 42, 0.85));
+  border: 1px solid color-mix(in srgb, var(--player, #64748b) 35%, transparent);
+}
+
+.lobby-elim-pair-row.away {
+  opacity: 0.72;
+}
+
+.lobby-elim-pair-copy {
   min-width: 0;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+}
+
+.lobby-elim-pair-names {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #f8fafc;
+  line-height: 1.25;
+}
+
+.lobby-elim-attacker,
+.lobby-elim-victim {
+  overflow-wrap: anywhere;
 }
 
 .lobby-elim-vs {
-  opacity: 0.55;
-  font-weight: 600;
+  opacity: 0.7;
+  font-weight: 700;
+  color: #fbbf24;
+}
+
+.lobby-elim-pair-copy small {
+  font-size: 10px;
+  color: #7c8aa5;
+  letter-spacing: 0.02em;
+}
+
+.lobby-elim-pair-row.in-room .lobby-elim-pair-copy small {
+  color: #86efac;
 }
 
 .lobby-stat-board h3 {

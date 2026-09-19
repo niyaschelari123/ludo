@@ -114,7 +114,7 @@ export function CareerElimPairsBoard({
       ) : leaders.length === 0 ? (
         <p className="lobby-wins-loading">No eliminations yet</p>
       ) : (
-        <ol className="lobby-wins-list">
+        <ol className="lobby-wins-list lobby-elim-pair-list">
           {leaders.map((entry, index) => {
             const attackerInRoom = roomPlayers.some(
               (player) => player.id === entry.attackerId,
@@ -122,21 +122,25 @@ export function CareerElimPairsBoard({
             return (
               <li
                 key={`${entry.attackerId}-${entry.victimId}`}
-                className={`lobby-wins-row ${playerColorClass(entry.attackerColor)} ${hasRoomContext ? (attackerInRoom ? 'in-room' : 'away') : 'in-room'}`}
+                className={`lobby-elim-pair-row ${playerColorClass(entry.attackerColor)} ${hasRoomContext ? (attackerInRoom ? 'in-room' : 'away') : 'in-room'}`}
                 style={playerColorStyle(entry.attackerColor)}
               >
                 <span className="lobby-wins-rank">#{index + 1}</span>
-                <div className="lobby-wins-meta lobby-elim-pair-meta">
-                  <strong className="lobby-wins-name">
-                    {entry.attackerName}
-                    <span className="lobby-elim-vs"> → </span>
-                    {entry.victimName}
-                  </strong>
-                  {hasRoomContext ? (
-                    <small>
-                      {attackerInRoom ? 'Attacker in room' : 'Career total'}
-                    </small>
-                  ) : null}
+                <div className="lobby-elim-pair-copy">
+                  <p className="lobby-elim-pair-names">
+                    <span className="lobby-elim-attacker">{entry.attackerName}</span>
+                    <span className="lobby-elim-vs" aria-hidden="true">
+                      →
+                    </span>
+                    <span className="lobby-elim-victim">{entry.victimName}</span>
+                  </p>
+                  <small>
+                    {hasRoomContext
+                      ? attackerInRoom
+                        ? 'Attacker in room'
+                        : 'Career total'
+                      : 'Career eliminations'}
+                  </small>
                 </div>
                 <em className="lobby-wins-count">×{entry.count}</em>
               </li>

@@ -135,7 +135,7 @@ import {
   canTriggerSuper,
   SUPER_USES_PER_GAME,
 } from './game/powerUps'
-import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWinOdds, rankBlitzPlayers, readPlayerStats, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
+import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWorstStandings, computeWinOdds, rankBlitzPlayers, readPlayerStats, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
 
 import { PLAYER_COLORS, BLITZ_DURATION_OPTIONS, DEFAULT_BLITZ_DURATION_MS, blitzDurationLabel, canControlSeat, gameModeLabel, hasPowerBoard, isAutoControlled, isBlitzMode, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room, type SpectatorAccess, type TeamAssignMode, type TeamSize } from './game/types'
 import {
@@ -376,6 +376,7 @@ function App() {
   const [motmBreakdownOpen, setMotmBreakdownOpen] = useState(false)
   const [motmBreakdownTabId, setMotmBreakdownTabId] = useState<string | null>(null)
   const [elimBoardOpen, setElimBoardOpen] = useState(false)
+  const [worstBoardOpen, setWorstBoardOpen] = useState(false)
   /** Client-side watch flow: pending host approve, or actively watching. */
   const [watchRole, setWatchRole] = useState<
     'pending' | 'watching' | 'join-pending' | null
@@ -518,14 +519,26 @@ function App() {
       setZeroStatsDismissed(false)
       return
     }
-    // Home + lobby both need the career board (zero-stats banner / lobby boards).
+
+    // Lobby boards + zero-stats poll. Stop once the match has started.
     if (room && room.status !== 'lobby') return
+
     let cancelled = false
-    void fetchCareerBoard().then((board) => {
-      if (!cancelled) setCareerBoard(board)
-    })
+    const refresh = () => {
+      void fetchCareerBoard().then((board) => {
+        if (cancelled) return
+        setCareerBoard(board)
+        if (!board.some((entry) => hasAllZeroCareerStats(entry))) {
+          setZeroStatsDismissed(false)
+        }
+      })
+    }
+
+    refresh()
+    const timer = window.setInterval(refresh, 5_000)
     return () => {
       cancelled = true
+      window.clearInterval(timer)
     }
   }, [profile?.accountId, room?.id, room?.status])
 
@@ -2543,6 +2556,13 @@ function App() {
     viewRoom.game && room.status === 'playing'
       ? computeMotmStandings(viewRoom, viewRoom.players)
       : []
+  const liveWorstStandings =
+    viewRoom.game && (room.status === 'playing' || room.status === 'finished')
+      ? computeWorstStandings(
+          viewRoom,
+          room.status === 'finished' ? awardPool : viewRoom.players,
+        )
+      : []
   const liveMotm = liveMotmStandings[0] ?? (
     viewRoom.game ? computeMotm(viewRoom, viewRoom.players) : null
   )
@@ -2566,6 +2586,37 @@ function App() {
     rolling && viewRoom.game?.lastAction?.includes(' rolled ')
       ? 'Rolling dice…'
       : viewRoom.game?.lastAction
+
+  const zeroStatsPlayers =
+    careerBoard?.filter((entry) => hasAllZeroCareerStats(entry)) ?? []
+  const showZeroStatsAlert =
+    Boolean(profile) &&
+    !zeroStatsDismissed &&
+    zeroStatsPlayers.length > 0 &&
+    (!room || room.status === 'lobby')
+
+  const zeroStatsAlert = showZeroStatsAlert ? (
+    <div className="home-zero-stats-alert" role="alert" aria-live="polite">
+      <div className="home-zero-stats-alert-copy">
+        <strong>Empty career stats</strong>
+        <p>
+          {zeroStatsPlayers.length === 1
+            ? `${zeroStatsPlayers[0].name} has all most-stat values at zero.`
+            : `${zeroStatsPlayers
+                .map((entry) => entry.name)
+                .join(', ')} have all most-stat values at zero.`}
+        </p>
+      </div>
+      <button
+        type="button"
+        className="home-zero-stats-alert-close"
+        aria-label="Dismiss empty career stats alert"
+        onClick={() => setZeroStatsDismissed(true)}
+      >
+        ×
+      </button>
+    </div>
+  ) : null
 
   if (isPendingWatch || isPendingJoin) {
     return (
@@ -2627,6 +2678,7 @@ function App() {
 
   return (
     <main className="room-screen" onClickCapture={playButtonSound}>
+      {zeroStatsAlert}
       <header className="room-header">
         <div className="brand"><span className="brand-mark small">L</span> Ludo Live</div>
         {room.status === 'playing' && isBlitz && (blitzScores[0] || liveMotm) ? (
@@ -2746,6 +2798,15 @@ function App() {
               onClick={() => setStopMatchConfirmOpen(true)}
             >
               Stop match
+            </button>
+          ) : null}
+          {extraCtrl && room.status === 'playing' && viewRoom.game ? (
+            <button
+              type="button"
+              className="text-button admin-worst-button"
+              onClick={() => setWorstBoardOpen(true)}
+            >
+              Worst list
             </button>
           ) : null}
           <button className="text-button" onClick={openLeaveFlow}>
@@ -4193,6 +4254,52 @@ function App() {
                 },
               )}
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {worstBoardOpen && extraCtrl && viewRoom.game ? (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Worst players"
+          onClick={() => setWorstBoardOpen(false)}
+        >
+          <div
+            className="confirm-card elim-board-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="blitz-breakdown-header">
+              <h2>Worst players</h2>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setWorstBoardOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <p className="elim-board-lead">
+              Lowest MotM score first (same formula as MotM / Worst of the match).
+            </p>
+            {liveWorstStandings.length > 0 ? (
+              <ol className="motm-live-board worst-board-list">
+                {liveWorstStandings.map((entry, index) => (
+                  <li
+                    key={`worst-${entry.player.id}`}
+                    className={playerColorClass(entry.player.color)}
+                    style={playerColorStyle(entry.player.color)}
+                  >
+                    <span>#{index + 1}</span>
+                    <strong>{entry.player.name}</strong>
+                    <em>{formatAwardScore(entry.score)} pts</em>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="elim-empty">No players to rank yet.</p>
+            )}
           </div>
         </div>
       ) : null}

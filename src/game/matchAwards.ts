@@ -144,20 +144,26 @@ export function computeMotm(
   return computeMotmStandings(room, players)[0] ?? null
 }
 
+/** Lowest MOTM score first — live/end “worst” ranking. */
+export function computeWorstStandings(
+  room: Room,
+  players: Player[],
+): MotmCandidate[] {
+  return scoreCandidates(room, players).sort(
+    (first, second) =>
+      first.score - second.score ||
+      second.place - first.place ||
+      first.stats.captures - second.stats.captures ||
+      second.stats.eliminated - first.stats.eliminated,
+  )
+}
+
 /** Lowest MOTM score — the weakest overall performance. */
 export function computeWorstPlayer(
   room: Room,
   players: Player[],
 ): MotmCandidate | null {
-  return (
-    scoreCandidates(room, players).sort(
-      (first, second) =>
-        first.score - second.score ||
-        second.place - first.place ||
-        first.stats.captures - second.stats.captures ||
-        second.stats.eliminated - first.stats.eliminated,
-    )[0] ?? null
-  )
+  return computeWorstStandings(room, players)[0] ?? null
 }
 
 /**
