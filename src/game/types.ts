@@ -228,6 +228,11 @@ export interface DepartedPlayer extends Player {
   savedShieldBuff?: boolean;
   /** Index in winnerIds when they left, if they had finished. */
   savedWinnerPlace?: number;
+  /**
+   * Host signed off on this mid-game leave.
+   * False/omitted = they left on their own and are forced Worst of the match.
+   */
+  hostApprovedLeave?: boolean;
 }
 
 export interface Token {
@@ -356,6 +361,8 @@ export interface PlayerStats {
   superPowers?: number;
   /** Landings on the +3 (spring) power tile this match. */
   plus3?: number;
+  /** Times this player broke another player's shield. */
+  shieldBreaks?: number;
 }
 
 export interface GameState {

@@ -12,6 +12,7 @@ import { createServer } from 'node:http'
 import { Server, type Socket } from 'socket.io'
 import {
   approveSpectate,
+  approveAllJoins,
   approveJoin,
   claimPlayerColor,
   claimSeat,
@@ -46,6 +47,7 @@ import {
   startRoom,
   storeRollHint,
   setPlayerAutoPlay,
+  setHostApprovedLeave,
   endBlitzRoom,
   setBlitzDuration,
   extendBlitzTime,
@@ -53,6 +55,7 @@ import {
   stopMatchByHost,
   setPlayerColorByHost,
   setOwnPhoto,
+  setOwnProfile,
   setTeams,
   setQuickTokens,
   runSeatToss,
@@ -663,6 +666,37 @@ io.on('connection', (socket) => {
     },
   )
 
+  socket.on(
+    'setOwnProfile',
+    (
+      payload: {
+        roomId: string
+        userId: string
+        name?: string
+        color?: string
+        lockColor?: boolean
+        photoUrl?: string | null
+      },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = setOwnProfile(payload.roomId, payload.userId, {
+          name: payload.name,
+          color: payload.color,
+          lockColor: payload.lockColor,
+          photoUrl: payload.photoUrl,
+        })
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+        if (payload.color) {
+          io.emit('colorClaimsUpdate', listColorClaims())
+        }
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
   // --- joinRoom: enter an existing lobby by six-character code ---
   socket.on(
     'joinRoom',
@@ -797,6 +831,22 @@ io.on('connection', (socket) => {
           payload.userId,
           payload.targetUserId,
         )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'approveAllJoins',
+    (
+      payload: { roomId: string; userId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = approveAllJoins(payload.roomId, payload.userId)
         ackRoom(callback, room, payload.userId)
         broadcastState(room)
       } catch (error) {
@@ -1239,6 +1289,32 @@ io.on('connection', (socket) => {
           payload.userId,
           payload.targetUserId,
           payload.enabled,
+        )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'setHostApprovedLeave',
+    (
+      payload: {
+        roomId: string
+        userId: string
+        targetUserId: string
+        approved: boolean
+      },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = setHostApprovedLeave(
+          payload.roomId,
+          payload.userId,
+          payload.targetUserId,
+          payload.approved,
         )
         ackRoom(callback, room, payload.userId)
         broadcastState(room)

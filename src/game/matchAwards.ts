@@ -1,13 +1,14 @@
 import { finishedProgress } from './engine'
 import type { Player, PlayerStats, Room } from './types'
 import { isBlitzMode } from './types'
-import { isTeamMode } from './teams'
+import { isTeamMode, winningTeam } from './teams'
 
 export type MotmBreakdown = {
   eliminations: number
   placeBonus: number
   tokensHome: number
   sixes: number
+  shieldBreaks: number
   timesEliminated: number
   total: number
 }
@@ -37,6 +38,7 @@ function emptyStats(): PlayerStats {
     negativePowers: 0,
     superPowers: 0,
     plus3: 0,
+    shieldBreaks: 0,
   }
 }
 
@@ -52,6 +54,7 @@ export function readPlayerStats(
     negativePowers: stats.negativePowers ?? 0,
     superPowers: stats.superPowers ?? 0,
     plus3: stats.plus3 ?? 0,
+    shieldBreaks: stats.shieldBreaks ?? 0,
   }
 }
 
@@ -68,14 +71,22 @@ export function motmBreakdown(
     placeIndex === 0 ? 5 : placeIndex === 1 ? 3 : placeIndex === 2 ? 1 : 0
   const tokensHome = stats.tokensHome * 2
   const sixes = stats.sixes * 0.5
+  const shieldBreaks = stats.shieldBreaks ?? 0
   const timesEliminated = stats.eliminated
   return {
     eliminations,
     placeBonus,
     tokensHome,
     sixes,
+    shieldBreaks,
     timesEliminated,
-    total: eliminations + placeBonus + tokensHome + sixes - timesEliminated,
+    total:
+      eliminations +
+      placeBonus +
+      tokensHome +
+      sixes +
+      shieldBreaks -
+      timesEliminated,
   }
 }
 
@@ -144,26 +155,62 @@ export function computeMotm(
   return computeMotmStandings(room, players)[0] ?? null
 }
 
-/** Lowest MOTM score first — live/end “worst” ranking. */
+function idsBlockedFromWorst(room: Room) {
+  const blocked = new Set<string>()
+  const winnerId = room.game?.winnerIds[0]
+  if (winnerId) blocked.add(winnerId)
+  const team = winningTeam(room)
+  if (team) {
+    for (const id of team.memberIds) blocked.add(id)
+  }
+  return blocked
+}
+
+/** Mid-game quit the host has not signed off — forced Worst of the match. */
+export function leftWithoutHostApproval(room: Room, playerId: string) {
+  const departed = (room.departedPlayers ?? []).find(
+    (player) => player.id === playerId,
+  )
+  if (!departed || departed.isBot) return false
+  if (departed.hostApprovedLeave === true) return false
+  if (departed.savedWinnerPlace != null) return false
+  return true
+}
+
+/** Lowest MOTM score first — live/end “worst” ranking. Winners never appear. */
 export function computeWorstStandings(
   room: Room,
   players: Player[],
 ): MotmCandidate[] {
-  return scoreCandidates(room, players).sort(
-    (first, second) =>
-      first.score - second.score ||
-      second.place - first.place ||
-      first.stats.captures - second.stats.captures ||
-      second.stats.eliminated - first.stats.eliminated,
-  )
+  const blocked = idsBlockedFromWorst(room)
+  return scoreCandidates(room, players)
+    .filter((entry) => !blocked.has(entry.player.id))
+    .sort((first, second) => {
+      const firstQuit = leftWithoutHostApproval(room, first.player.id) ? 1 : 0
+      const secondQuit = leftWithoutHostApproval(room, second.player.id) ? 1 : 0
+      if (firstQuit !== secondQuit) return secondQuit - firstQuit
+      return (
+        first.score - second.score ||
+        second.place - first.place ||
+        first.stats.captures - second.stats.captures ||
+        second.stats.eliminated - first.stats.eliminated
+      )
+    })
 }
 
-/** Lowest MOTM score — the weakest overall performance. */
+/** Lowest MOTM score — the weakest overall performance. Never the winner. */
 export function computeWorstPlayer(
   room: Room,
   players: Player[],
 ): MotmCandidate | null {
-  return computeWorstStandings(room, players)[0] ?? null
+  const standings = computeWorstStandings(room, players)
+  const forced = standings.find((entry) =>
+    leftWithoutHostApproval(room, entry.player.id),
+  )
+  if (forced) {
+    return { ...forced, reason: 'Left without host approval' }
+  }
+  return standings[0] ?? null
 }
 
 /**
@@ -261,6 +308,7 @@ export const BLITZ_SCORE_RULES: { label: string; detail: string }[] = [
   { label: '+5', detail: 'each elimination you make' },
   { label: '−3', detail: 'each time one of your tokens is eliminated' },
   { label: '+1', detail: 'each six you roll' },
+  { label: '+1', detail: 'each rival shield you break' },
   { label: '+0–8', detail: 'per unfinished token based on how far it has raced (progress)' },
   { label: '+12', detail: 'bonus if all 4 of your tokens are home before time runs out' },
   { label: '+4', detail: 'bonus if you have the single farthest token on the board at the buzzer' },
@@ -271,6 +319,7 @@ export type BlitzBreakdown = {
   eliminations: number
   eliminatedPenalty: number
   sixes: number
+  shieldBreaks: number
   boardProgress: number
   allHomeBonus: number
   leadTokenBonus: number
@@ -304,6 +353,7 @@ export function blitzBreakdown(room: Room, playerId: string): BlitzBreakdown {
   const eliminations = stats.captures * 5
   const eliminatedPenalty = stats.eliminated * 3
   const sixes = stats.sixes
+  const shieldBreaks = stats.shieldBreaks ?? 0
   const allHomeBonus = homeCount === tokens.length && tokens.length > 0 ? 12 : 0
 
   return {
@@ -311,6 +361,7 @@ export function blitzBreakdown(room: Room, playerId: string): BlitzBreakdown {
     eliminations,
     eliminatedPenalty,
     sixes,
+    shieldBreaks,
     boardProgress,
     allHomeBonus,
     leadTokenBonus: 0,
@@ -319,6 +370,7 @@ export function blitzBreakdown(room: Room, playerId: string): BlitzBreakdown {
       eliminations -
       eliminatedPenalty +
       sixes +
+      shieldBreaks +
       boardProgress +
       allHomeBonus,
   }

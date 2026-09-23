@@ -3,12 +3,14 @@ import {
   eliminatedProgress,
   ensurePlayerStats,
   finishedProgress,
+  recordShieldBreak,
   globalCell,
   homeEntryProgress,
   isSoleTokenProtected,
   recordCapture,
   recordEliminated,
   safeCells,
+  tokensPerPlayer,
   trackLength,
 } from "./engine";
 import type {
@@ -113,7 +115,7 @@ export const POWER_UP_INFO: {
     type: "super",
     label: "Super",
     description:
-      "Leaps halfway around the board onto a safe star (max 3 uses per player per game); if home is closer, enters the home path",
+      "Leaps halfway around the board onto a safe star (one use per token you start with); if home is closer, enters the home path",
   },
   {
     type: "tnt",
@@ -136,9 +138,13 @@ export const POWER_UP_INFO: {
 export function powerInfoForMode(
   mode: GameMode | null | undefined,
   playerCount?: number,
+  tokenLimit?: number,
 ) {
+  let entries = POWER_UP_INFO.filter(
+    (entry) => entry.type !== "super" && entry.type !== "yard",
+  )
   if (mode === "race") {
-    return POWER_UP_INFO.filter((entry) => entry.type !== "shield").map(
+    entries = POWER_UP_INFO.filter((entry) => entry.type !== "shield").map(
       (entry) => {
         if (entry.type === "ice") {
           return {
@@ -162,24 +168,28 @@ export function powerInfoForMode(
         return entry;
       },
     );
-  }
-  if (mode === "quick" || mode === "blitz") {
-    return POWER_UP_INFO.filter(
+  } else if (mode === "quick" || mode === "blitz") {
+    entries = POWER_UP_INFO.filter(
       (entry) =>
         entry.type !== "tnt" &&
         entry.type !== "back5" &&
         entry.type !== "yard",
     );
+  } else if (mode === "team") {
+    entries = POWER_UP_INFO.filter((entry) => entry.type !== "yard");
+  } else if (mode === "power" && playerCount === 5) {
+    // Classic Power: Super only on 5-player boards (upper-path leaps).
+    entries = POWER_UP_INFO.filter((entry) => entry.type !== "yard");
   }
-  if (mode === "team") {
-    return POWER_UP_INFO.filter((entry) => entry.type !== "yard");
-  }
-  // Classic Power: Super only on 5-player boards (upper-path leaps).
-  if (mode === "power" && playerCount === 5) {
-    return POWER_UP_INFO.filter((entry) => entry.type !== "yard");
-  }
-  return POWER_UP_INFO.filter(
-    (entry) => entry.type !== "super" && entry.type !== "yard",
+
+  if (!tokenLimit) return entries
+  return entries.map((entry) =>
+    entry.type === "super"
+      ? {
+          ...entry,
+          description: `Leaps halfway around the board onto a safe star (max ${tokenLimit} uses — one per token); if home is closer, enters the home path`,
+        }
+      : entry,
   );
 }
 
@@ -199,8 +209,6 @@ const TNT_OFFSET = 9;
 const SUPER_OFFSET = 7;
 const RARE_POWER_COUNT = 2;
 const SUPER_COUNT = 2;
-/** Max Super (⚡) leaps each player may trigger in one match. */
-export const SUPER_USES_PER_GAME = 3;
 const SHIELD_COUNT = 3;
 const EXTRA_ROCKET_COUNT = 2;
 const BACK5_COUNT = 1;
@@ -594,13 +602,30 @@ export function powerUpAtCell(
   return game.powerTiles[cell] ?? null;
 }
 
-export function superUsesRemaining(game: GameState, playerId: string) {
-  game.superUses ??= {};
-  return Math.max(0, SUPER_USES_PER_GAME - (game.superUses[playerId] ?? 0));
+/** Super leaps allowed = how many tokens that player starts with. */
+export function superUsesLimit(room: Room) {
+  return tokensPerPlayer(room.gameMode, room.quickTokens);
 }
 
-export function canTriggerSuper(game: GameState, playerId: string) {
-  return superUsesRemaining(game, playerId) > 0;
+export function superUsesUsed(
+  game: GameState | null | undefined,
+  playerId: string,
+) {
+  return game?.superUses?.[playerId] ?? 0;
+}
+
+export function superUsesRemaining(room: Room, playerId: string) {
+  const game = room.game;
+  if (game) game.superUses ??= {};
+  return Math.max(0, superUsesLimit(room) - superUsesUsed(game, playerId));
+}
+
+export function canTriggerSuper(room: Room, playerId: string) {
+  return superUsesRemaining(room, playerId) > 0;
+}
+
+export function superExhaustedMessage(playerName: string, limit: number) {
+  return `${playerName} already used all ${limit} Super leaps`;
 }
 
 function advanceToken(token: Token, steps: number, room: Room) {
@@ -724,6 +749,7 @@ export function applyPowerUp(
         if (isSoleTokenProtected(game, opponent.playerId, room)) continue;
         if (game.shieldBuff[opponent.playerId]) {
           game.shieldBuff[opponent.playerId] = false;
+          recordShieldBreak(game, player.id);
           continue;
         }
         opponent.progress = eliminatedProgress(room);
@@ -807,8 +833,9 @@ export function applyPowerUp(
     case "super": {
       game.superUses ??= {};
       const used = game.superUses[player.id] ?? 0;
-      if (used >= SUPER_USES_PER_GAME) {
-        return `${player.name} already used all ${SUPER_USES_PER_GAME} Super leaps`;
+      const limit = superUsesLimit(room);
+      if (used >= limit) {
+        return superExhaustedMessage(player.name, limit);
       }
       game.superUses[player.id] = used + 1;
       const stats = ensurePlayerStats(game, player.id);

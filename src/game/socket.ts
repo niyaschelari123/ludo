@@ -2,9 +2,14 @@ import { io, type Socket } from 'socket.io-client'
 
 // const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001'
 // const SOCKET_URL = 'https://ludo-w7dl.onrender.com'
-// const SOCKET_URL = 'https://ludo-final.onrender.com'
-const SOCKET_URL = 'https://ludo-23xe.onrender.com'
-// const SOCKET_URL = 'http://localhost:3001'
+
+// in niyas.rio123 render deployment https://ludokingfinal.niyas-c.workers.dev/
+// const SOCKET_URL = 'https://ludo-1-7e6c.onrender.com' 
+
+// in niyaschelari123 render deployment https://ludokingclone.niyas-c.workers.dev/
+// const SOCKET_URL = 'https://ludo-23xe.onrender.com'
+
+const SOCKET_URL = 'http://localhost:3001'
 
 let socket: Socket | null = null
 

@@ -140,6 +140,24 @@ export async function setOwnPhoto(
   return room
 }
 
+export async function setOwnProfile(
+  roomId: string,
+  userId: string,
+  options: {
+    name?: string
+    color?: string
+    lockColor?: boolean
+    photoUrl?: string | null
+  },
+) {
+  const { room } = await emitAck<{ room: Room }>('setOwnProfile', {
+    roomId,
+    userId,
+    ...options,
+  })
+  return room
+}
+
 export async function runSeatToss(roomId: string, userId: string) {
   const { room } = await emitAck<{ room: Room }>('runSeatToss', {
     roomId,
@@ -225,6 +243,14 @@ export async function approveJoin(
     roomId,
     userId,
     targetUserId,
+  })
+  return room
+}
+
+export async function approveAllJoins(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room }>('approveAllJoins', {
+    roomId,
+    userId,
   })
   return room
 }
@@ -605,6 +631,21 @@ export async function setPlayerAutoPlay(
     userId,
     targetUserId,
     enabled,
+  })
+  return room
+}
+
+export async function setHostApprovedLeave(
+  roomId: string,
+  userId: string,
+  targetUserId: string,
+  approved: boolean,
+) {
+  const { room } = await emitAck<{ room: Room }>('setHostApprovedLeave', {
+    roomId,
+    userId,
+    targetUserId,
+    approved,
   })
   return room
 }

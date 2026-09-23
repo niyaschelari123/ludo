@@ -5,6 +5,7 @@ import './index.css'
 import App from './App.tsx'
 import { BoardPreview } from './pages/BoardPreview.tsx'
 import { MostStatsPage } from './pages/MostStats.tsx'
+import { MatchHistoryDetailPage } from './pages/MatchHistoryDetail.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -14,6 +15,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/6-players" element={<BoardPreview playerCount={6} />} />
         <Route path="/7-players" element={<BoardPreview playerCount={7} />} />
         <Route path="/most-stats" element={<MostStatsPage />} />
+        <Route path="/match-history/:roomId" element={<MatchHistoryDetailPage />} />
         <Route path="/*" element={<App />} />
       </Routes>
     </BrowserRouter>

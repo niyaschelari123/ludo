@@ -10,6 +10,7 @@ export type LiveMatchNotice = {
   status: Extract<RoomStatus, 'lobby' | 'playing'>
   playerCount: number
   maxPlayers: number
+  openSeat?: boolean
   startedAt: number
 }
 
@@ -34,6 +35,7 @@ function normalizeNotices(raw: unknown): LiveMatchNotice[] {
           typeof data.playerCount === 'number' ? data.playerCount : 0,
         maxPlayers:
           typeof data.maxPlayers === 'number' ? data.maxPlayers : 0,
+        openSeat: Boolean(data.openSeat),
         startedAt: typeof data.startedAt === 'number' ? data.startedAt : 0,
       } satisfies LiveMatchNotice
     })

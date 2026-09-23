@@ -982,3 +982,36 @@ export async function applyHistoryCareerSnapshot(
   }
   return written
 }
+
+/**
+ * Add one archived match’s results on top of the live Most stats board.
+ */
+export async function addMatchDetailsToCareer(
+  deltas: Array<
+    { accountId: string } & Partial<Pick<CareerBoardEntry, CareerStatKey>>
+  >,
+): Promise<number> {
+  const board = await fetchCareerBoard()
+  const current = new Map(board.map((entry) => [entry.accountId, entry]))
+  let written = 0
+
+  for (const delta of deltas) {
+    if (!isCareerAccountId(delta.accountId)) continue
+    const live = current.get(delta.accountId)
+    const stats: Partial<Pick<CareerBoardEntry, CareerStatKey>> = {}
+    for (const key of CAREER_STAT_KEYS) {
+      if (key === 'bestFinishMs') continue
+      const amount = delta[key]
+      if (typeof amount !== 'number' || !Number.isFinite(amount) || amount === 0) {
+        continue
+      }
+      const base = live?.[key] ?? 0
+      stats[key] = base + amount
+    }
+    if (Object.keys(stats).length === 0) continue
+    await writeCareerStatPatch(delta.accountId, stats)
+    written += 1
+  }
+
+  return written
+}

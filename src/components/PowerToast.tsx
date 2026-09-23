@@ -1,4 +1,4 @@
-import { POWER_UP_ICONS, powerUpDescription, powerUpLabel, SUPER_USES_PER_GAME } from '../game/powerUps'
+import { POWER_UP_ICONS, powerUpDescription, powerUpLabel } from '../game/powerUps'
 import type { PowerUpType } from '../game/types'
 
 interface PowerToastProps {
@@ -7,6 +7,7 @@ interface PowerToastProps {
   visible: boolean
   /** When set, replaces the default “landed on…” line. */
   message?: string
+  maxSuperUses?: number
 }
 
 export function PowerToast({
@@ -14,6 +15,7 @@ export function PowerToast({
   playerName,
   visible,
   message,
+  maxSuperUses,
 }: PowerToastProps) {
   if (!visible) return null
 
@@ -30,7 +32,7 @@ export function PowerToast({
           </span>
           <small>
             {message
-              ? `Max ${SUPER_USES_PER_GAME} Super leaps per player each game`
+              ? `Max ${maxSuperUses ?? 0} Super leaps — one per token`
               : powerUpDescription(type)}
           </small>
         </div>

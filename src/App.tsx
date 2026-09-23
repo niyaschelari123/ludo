@@ -25,6 +25,7 @@ import { PowerLegend } from './components/PowerLegend'
 import { PowerToast } from './components/PowerToast'
 import {
   approveSpectate,
+  approveAllJoins,
   approveJoin,
   claimColor,
   createRoom,
@@ -46,6 +47,7 @@ import {
   setTeams,
   setSlotBot,
   setPlayerAutoPlay,
+  setHostApprovedLeave,
   setBlitzDuration,
   setQuickTokens,
   setSpectatorAccess,
@@ -54,6 +56,7 @@ import {
   stopMatch,
   setPlayerColor,
   setOwnPhoto,
+  setOwnProfile,
   runSeatToss,
   confirmSeatToss,
   skipMoveTimer,
@@ -123,7 +126,7 @@ import { PLAYER_COLOR_HEX, isNamedPlayerColor, normalizeColorKey, resolveColorHe
 import {
   activeMoveToMovingToken,
   findCaptureVictimIds,
-  movableTokens,
+  forcedMoveToken,
   performLocalMove,
   performLocalResolvePower,
   QUICK_TOKEN_OPTIONS,
@@ -133,9 +136,12 @@ import {
 } from './game/engine'
 import {
   canTriggerSuper,
-  SUPER_USES_PER_GAME,
+  powerInfoForMode,
+  superExhaustedMessage,
+  superUsesLimit,
+  superUsesUsed,
 } from './game/powerUps'
-import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWorstStandings, computeWinOdds, rankBlitzPlayers, readPlayerStats, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
+import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWorstStandings, computeWinOdds, rankBlitzPlayers, readPlayerStats, leftWithoutHostApproval, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
 
 import { PLAYER_COLORS, BLITZ_DURATION_OPTIONS, DEFAULT_BLITZ_DURATION_MS, blitzDurationLabel, canControlSeat, gameModeLabel, hasPowerBoard, isAutoControlled, isBlitzMode, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room, type SpectatorAccess, type TeamAssignMode, type TeamSize } from './game/types'
 import {
@@ -236,6 +242,13 @@ function playerColorStyle(color: string): CSSProperties | undefined {
     : ({ ['--player' as string]: resolveColorHex(color) } as CSSProperties)
 }
 
+function formatSeatColorName(color: string) {
+  if (isNamedPlayerColor(color)) {
+    return color.charAt(0).toUpperCase() + color.slice(1)
+  }
+  return resolveColorHex(color).toUpperCase()
+}
+
 function formatAwardScore(score: number) {
   return Number.isInteger(score) ? String(score) : score.toFixed(1)
 }
@@ -286,6 +299,10 @@ function MatchAwardCard({
           <span>Sixes ({award.stats.sixes} × 0.5)</span>
           <em>+{award.breakdown.sixes}</em>
         </li>
+        <li>
+          <span>Shields broken ({award.stats.shieldBreaks ?? 0})</span>
+          <em>+{award.breakdown.shieldBreaks}</em>
+        </li>
         <li className="motm-breakdown-penalty">
           <span>Times eliminated ({award.stats.eliminated})</span>
           <em>−{award.breakdown.timesEliminated}</em>
@@ -330,6 +347,7 @@ function App() {
   const [seatTossDismissedCount, setSeatTossDismissedCount] = useState<number | null>(null)
   const [stopMatchConfirmOpen, setStopMatchConfirmOpen] = useState(false)
   const [colorEditPlayerId, setColorEditPlayerId] = useState<string | null>(null)
+  const [highlightPlayerId, setHighlightPlayerId] = useState<string | null>(null)
   const [cropImage, setCropImage] = useState<HTMLImageElement | null>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
   const [careerBoard, setCareerBoard] = useState<CareerBoardEntry[] | null>(null)
@@ -658,12 +676,12 @@ function App() {
     const exhaustedSuper =
       pending.type === 'super' &&
       baseRoom.game != null &&
-      !canTriggerSuper(baseRoom.game, pending.playerId)
+      !canTriggerSuper(baseRoom, pending.playerId)
     setPowerToast({
       type: pending.type,
       playerName,
       message: exhaustedSuper
-        ? `${playerName} already used all ${SUPER_USES_PER_GAME} Super leaps`
+        ? superExhaustedMessage(playerName, superUsesLimit(baseRoom))
         : undefined,
     })
     await new Promise((resolve) => window.setTimeout(resolve, POWER_TOAST_MS))
@@ -1100,6 +1118,12 @@ function App() {
   }, [displayRoom?.status, displayRoom?.gameMode, displayRoom?.game?.endsAt])
 
   useEffect(() => {
+    if (displayRoom?.status !== 'playing') {
+      setHighlightPlayerId(null)
+    }
+  }, [displayRoom?.status])
+
+  useEffect(() => {
     if (!moveReadyToClear || !movingToken || !room?.game) return
     const serverToken = room.game.tokens.find(
       (token) =>
@@ -1259,14 +1283,32 @@ function App() {
     setUserId(getActiveUserId(null))
   }
 
+  const isColorOwnedByOther = (color: string) => {
+    try {
+      const key = normalizeColorKey(color)
+      const owner = colorClaims[key]
+      if (owner && owner !== (profile?.accountId ?? userId)) return true
+      return Boolean(
+        room?.players.some((player) => {
+          if (player.id === userId) return false
+          try {
+            return normalizeColorKey(player.color) === key
+          } catch {
+            return player.color === key
+          }
+        }),
+      )
+    } catch {
+      return false
+    }
+  }
+
   const pickProfileColor = (color: string) => {
     if (!profile) return
     setError('')
     setProfileSaveMsg('')
     try {
-      const key = normalizeColorKey(color)
-      const owner = colorClaims[key]
-      if (owner && owner !== profile.accountId) {
+      if (isColorOwnedByOther(color)) {
         setError('That color is already taken.')
         return
       }
@@ -1276,22 +1318,48 @@ function App() {
     }
   }
 
+  const syncRoomProfile = async (next: {
+    name: string
+    color?: string
+    photoUrl?: string
+  }) => {
+    if (!room) return
+    const seated = room.players.some((player) => player.id === userId)
+    const pending = (room.joinRequests ?? []).some((entry) => entry.id === userId)
+    if (!seated && !pending) return
+    await setOwnProfile(room.id, userId, {
+      name: next.name,
+      ...(next.color ? { color: next.color, lockColor: true } : {}),
+      ...(next.photoUrl !== undefined ? { photoUrl: next.photoUrl } : {}),
+    })
+  }
+
   const saveProfileDetails = () => {
-    if (!profile) return
     setError('')
     setProfileSaveMsg('')
     void perform(async () => {
-      const nextName = name.trim().slice(0, 18) || profile.name
-      if (!profile.color) {
-        throw new Error('Pick a color before saving.')
+      const nextName = name.trim().slice(0, 18) || profile?.name || ''
+      if (!nextName) {
+        throw new Error('Enter a display name.')
       }
-      const claims = await claimColor(profile.accountId, profile.color)
-      setColorClaims(claims)
-      const updated = { ...profile, name: nextName, color: profile.color }
-      await saveProfileAsync(updated)
-      setProfile(updated)
-      setName(updated.name)
-      setProfileSaveMsg('Profile saved')
+      if (profile) {
+        if (!profile.color) {
+          throw new Error('Pick a color before saving.')
+        }
+        const updated = { ...profile, name: nextName, color: profile.color }
+        await syncRoomProfile(updated)
+        const claims = await claimColor(profile.accountId, profile.color)
+        setColorClaims(claims)
+        await saveProfileAsync(updated)
+        setProfile(updated)
+        setName(updated.name)
+        setProfileSaveMsg('Profile saved')
+      } else {
+        await syncRoomProfile({ name: nextName })
+        localStorage.setItem('ludo-name', nextName)
+        setName(nextName)
+        setProfileSaveMsg('Name saved')
+      }
       window.setTimeout(() => setProfileSaveMsg(''), 2500)
     })
   }
@@ -1310,7 +1378,11 @@ function App() {
     await saveProfileAsync(updated)
     setProfile(updated)
     setCropImage(null)
-    if (room && room.players.some((player) => player.id === userId)) {
+    if (
+      room &&
+      (room.players.some((player) => player.id === userId) ||
+        (room.joinRequests ?? []).some((entry) => entry.id === userId))
+    ) {
       await setOwnPhoto(room.id, userId, dataUrl)
     }
   }
@@ -1322,7 +1394,11 @@ function App() {
       delete updated.photoUrl
       await saveProfileAsync(updated)
       setProfile(updated)
-      if (room && room.players.some((player) => player.id === userId)) {
+      if (
+        room &&
+        (room.players.some((player) => player.id === userId) ||
+          (room.joinRequests ?? []).some((entry) => entry.id === userId))
+      ) {
         await setOwnPhoto(room.id, userId, '')
       }
     })
@@ -1494,10 +1570,10 @@ function App() {
       return
     }
 
-    const legalMoves = movableTokens(displayRoom)
-    if (legalMoves.length !== 1) return
+    const forced = forcedMoveToken(displayRoom)
+    if (!forced) return
     const timer = window.setTimeout(
-      () => void animateMove(legalMoves[0].id),
+      () => void animateMove(forced.id),
       700,
     )
     return () => window.clearTimeout(timer)
@@ -1513,12 +1589,12 @@ function App() {
       const exhaustedSuper =
         pending.type === 'super' &&
         displayRoom?.game != null &&
-        !canTriggerSuper(displayRoom.game, pending.playerId)
+        !canTriggerSuper(displayRoom, pending.playerId)
       setPowerToast({
         type: pending.type,
         playerName,
         message: exhaustedSuper
-          ? `${playerName} already used all ${SUPER_USES_PER_GAME} Super leaps`
+          ? superExhaustedMessage(playerName, superUsesLimit(displayRoom))
           : undefined,
       })
       return
@@ -1700,7 +1776,7 @@ function App() {
         rememberName()
         setJoinCode(notice.code)
         setMatchNoticeOpen(false)
-        if (notice.status === 'playing') {
+        if (notice.status === 'playing' && !notice.openSeat) {
           const { room: watched, status } = await requestSpectate(
             userId,
             name,
@@ -1802,12 +1878,15 @@ function App() {
                               <div className="match-notice-copy">
                                 <strong>
                                   {notice.status === 'playing'
-                                    ? `${notice.hostName} started a match`
+                                    ? notice.openSeat
+                                      ? `${notice.hostName} has an open seat`
+                                      : `${notice.hostName} started a match`
                                     : `${notice.hostName} opened a room`}
                                 </strong>
                                 <small>
                                   {gameModeLabel(notice.gameMode)} ·{' '}
-                                  {notice.playerCount}/{notice.maxPlayers} · code{' '}
+                                  {notice.playerCount}/{notice.maxPlayers}
+                                  {notice.openSeat ? ' · seat open' : ''} · code{' '}
                                   <em>{notice.code}</em>
                                 </small>
                               </div>
@@ -1818,7 +1897,9 @@ function App() {
                                   disabled={busy || !canPlay}
                                   onClick={() => joinMatchFromNotice(notice)}
                                 >
-                                  {notice.status === 'playing' ? 'Watch match' : 'Ask to join'}
+                                  {notice.status === 'playing' && !notice.openSeat
+                                    ? 'Watch match'
+                                    : 'Ask to join'}
                                 </button>
                                 <button
                                   type="button"
@@ -1968,14 +2049,7 @@ function App() {
                 <span className="color-picker-label">Your color</span>
                 <div className="color-swatches">
                   {PLAYER_COLORS.map((color) => {
-                    let takenByOther = false
-                    try {
-                      const key = normalizeColorKey(color)
-                      const owner = colorClaims[key]
-                      takenByOther = Boolean(owner && owner !== profile.accountId)
-                    } catch {
-                      takenByOther = false
-                    }
+                    const takenByOther = isColorOwnedByOther(color)
                     return (
                       <button
                         key={color}
@@ -2057,10 +2131,25 @@ function App() {
                     setRoomId(claimed.id)
                     return
                   }
-                  const joined = await joinRoom(userId, name, joinCode, roomProfileOptions)
-                  setWatchRole(null)
-                  setRoom(joined)
-                  setRoomId(joined.id)
+                  try {
+                    const joined = await joinRoom(userId, name, joinCode, roomProfileOptions)
+                    setWatchRole(null)
+                    setRoom(joined)
+                    setRoomId(joined.id)
+                  } catch (error) {
+                    const message = error instanceof Error ? error.message : ''
+                    if (!message.includes('already started')) throw error
+                    const { room: pendingRoom } = await requestJoin(
+                      userId,
+                      name,
+                      joinCode,
+                      roomProfileOptions,
+                    )
+                    wasSeatPlayerRef.current = false
+                    setWatchRole('join-pending')
+                    setRoom(pendingRoom)
+                    setRoomId(pendingRoom.id)
+                  }
                 })}
               >{seatCode.length === 4 ? 'Reclaim seat' : 'Join room'}</button>
               <button
@@ -2083,7 +2172,7 @@ function App() {
               </button>
             </div>
             <p className="join-hint">
-              Mid-game: seat code reclaims a player seat. Watch match asks the host to let you look only.
+              Mid-game: room code asks the host for an open seat. Seat code reclaims that seat directly. Watch match is look-only.
             </p>
             {profile ? (
               <>
@@ -2468,7 +2557,23 @@ function App() {
     !isPendingWatch &&
     ((viewRoom.joinRequests ?? []).some((entry) => entry.id === userId) ||
       watchRole === 'join-pending')
+  const hasOpenJoinSeat = (viewRoom.departedPlayers ?? []).some(
+    (player) =>
+      player.reclaimable &&
+      !viewRoom.players.some((entry) => entry.seat === player.seat),
+  )
+  const askedToTakeSeat = (viewRoom.joinRequests ?? []).some(
+    (entry) => entry.id === userId,
+  )
   const isPowerMode = hasPowerBoard(viewRoom.gameMode)
+  const superLimit = superUsesLimit(viewRoom)
+  const showSuperUses =
+    isPowerMode &&
+    powerInfoForMode(
+      viewRoom.gameMode,
+      viewRoom.game?.boardPlayerCount ?? viewRoom.maxPlayers,
+      superLimit,
+    ).some((entry) => entry.type === 'super')
   const isQuickMode = (viewRoom.gameMode ?? 'classic') === 'quick'
   const isRaceMode = (viewRoom.gameMode ?? 'classic') === 'race'
   const isBlitz = isBlitzMode(viewRoom.gameMode)
@@ -2575,11 +2680,18 @@ function App() {
     viewRoom.status === 'finished'
       ? computeWorstPlayer(viewRoom, awardPool)
       : null
+  const forcedQuitWorst =
+    Boolean(
+      worstPlayer &&
+      leftWithoutHostApproval(viewRoom, worstPlayer.player.id),
+    )
   const showWorst =
     Boolean(
       worstPlayer &&
-      motm &&
-      worstPlayer.player.id !== motm.player.id,
+      (forcedQuitWorst ||
+        (motm &&
+          worstPlayer.player.id !== motm.player.id &&
+          worstPlayer.player.id !== viewRoom.game?.winnerIds[0])),
     )
 
   const bannerAction =
@@ -2818,7 +2930,28 @@ function App() {
       {isSpectator ? (
         <div className="spectator-banner" role="status">
           <strong>Watching</strong>
-          <span>You can see the match but cannot roll or move.</span>
+          <span>
+            {askedToTakeSeat
+              ? 'Join request sent — waiting for the host to give you an open seat.'
+              : hasOpenJoinSeat
+                ? 'A seat is open. Ask the host to let you take it.'
+                : 'You can see the match but cannot roll or move.'}
+          </span>
+          {hasOpenJoinSeat && !askedToTakeSeat ? (
+            <button
+              type="button"
+              className="slot-action"
+              disabled={busy || !name.trim()}
+              onClick={() =>
+                void perform(async () => {
+                  await requestJoin(userId, name, room.code, roomProfileOptions)
+                  setWatchRole('join-pending')
+                })
+              }
+            >
+              Ask to join
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -3239,9 +3372,136 @@ function App() {
             ) : (
               <p className="waiting-text">Waiting for the host to start…</p>
             )}
+            {isSeatPlayer || isPendingJoin ? (
+              <div className="lobby-profile-editor">
+                <p className="power-rules-title"><strong>Your details</strong></p>
+                <label>
+                  Display name
+                  <input
+                    value={name}
+                    maxLength={18}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="Your name"
+                  />
+                </label>
+                {profile ? (
+                  <div className="color-picker-block">
+                    <span className="color-picker-label">Profile photo</span>
+                    <div className="profile-photo-row">
+                      <PlayerAvatar
+                        name={profile.name}
+                        photoUrl={profile.photoUrl}
+                        className="profile-photo-preview"
+                        style={
+                          profile.photoUrl
+                            ? undefined
+                            : {
+                                background: profile.color
+                                  ? resolveColorHex(profile.color)
+                                  : '#64748b',
+                              }
+                        }
+                      />
+                      <div className="profile-photo-actions">
+                        <input
+                          ref={photoInputRef}
+                          type="file"
+                          accept="image/*"
+                          hidden
+                          onChange={(event) => {
+                            const file = event.target.files?.[0]
+                            event.target.value = ''
+                            onProfilePhotoFile(file)
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="secondary-button profile-photo-button"
+                          disabled={busy}
+                          onClick={() => photoInputRef.current?.click()}
+                        >
+                          {profile.photoUrl ? 'Change photo' : 'Upload photo'}
+                        </button>
+                        {profile.photoUrl ? (
+                          <button
+                            type="button"
+                            className="text-button"
+                            disabled={busy}
+                            onClick={removeProfilePhoto}
+                          >
+                            Remove
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                    <span className="color-picker-label">Your color</span>
+                    <div className="color-swatches">
+                      {PLAYER_COLORS.map((color) => {
+                        const takenByOther = isColorOwnedByOther(color)
+                        return (
+                          <button
+                            key={color}
+                            type="button"
+                            className={`color-swatch ${profile.color === color ? 'selected' : ''}`}
+                            style={{ background: PLAYER_COLOR_HEX[color] }}
+                            disabled={takenByOther}
+                            title={takenByOther ? 'Taken' : color}
+                            onClick={() => void pickProfileColor(color)}
+                          />
+                        )
+                      })}
+                      <label className="color-swatch color-swatch-custom" title="Custom color">
+                        <input
+                          type="color"
+                          value={
+                            profile.color?.startsWith('#')
+                              ? profile.color
+                              : resolveColorHex(profile.color || 'red')
+                          }
+                          onChange={(event) => void pickProfileColor(event.target.value)}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="profile-save-row">
+                  <button
+                    type="button"
+                    className="secondary-button profile-save-button"
+                    disabled={busy || !name.trim() || Boolean(profile && !profile.color)}
+                    onClick={saveProfileDetails}
+                  >
+                    Save details
+                  </button>
+                  {profileSaveMsg ? (
+                    <span className="profile-save-status">{profileSaveMsg}</span>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             {room.hostId === userId ? (
               <div className="watch-host-panel">
-                <p className="power-rules-title"><strong>Join requests</strong></p>
+                <div className="join-request-heading">
+                  <p className="power-rules-title"><strong>Join requests</strong></p>
+                  {(room.joinRequests ?? []).length > 0 ? (
+                    <button
+                      type="button"
+                      className="slot-action"
+                      disabled={
+                        busy ||
+                        (room.status === 'lobby' &&
+                          room.players.length >= room.maxPlayers)
+                      }
+                      onClick={() =>
+                        void perform(async () => {
+                          await approveAllJoins(room.id, userId)
+                        })
+                      }
+                    >
+                      Accept all
+                    </button>
+                  ) : null}
+                </div>
                 {(room.joinRequests ?? []).length > 0 ? (
                   <ul className="watch-request-list">
                     {(room.joinRequests ?? []).map((request) => (
@@ -3551,6 +3811,18 @@ function App() {
                             🛡
                           </span>
                         ) : null}
+                        {showSuperUses && viewRoom.status === 'playing' ? (
+                          <span
+                            className={`super-use-badge ${
+                              superUsesUsed(viewRoom.game, player.id) >= superLimit
+                                ? 'super-use-badge--done'
+                                : ''
+                            }`}
+                            title={`Flash Super used ${superUsesUsed(viewRoom.game, player.id)} of ${superLimit}`}
+                          >
+                            ⚡ {superUsesUsed(viewRoom.game, player.id)}/{superLimit}
+                          </span>
+                        ) : null}
                       </strong>
                       <small>
                         {isBlitz
@@ -3573,10 +3845,30 @@ function App() {
                       </small>
                     </div>
                   </div>
-                  {isHost &&
-                  (viewRoom.status === 'playing' || player.id !== userId) ? (
+                  {viewRoom.status === 'playing' ||
+                  (isHost && player.id !== userId) ? (
                     <div className="player-row-actions">
                       {viewRoom.status === 'playing' ? (
+                        <button
+                          type="button"
+                          className={`slot-action player-locate ${highlightPlayerId === player.id ? 'active' : ''}`}
+                          aria-pressed={highlightPlayerId === player.id}
+                          title={
+                            highlightPlayerId === player.id
+                              ? `Stop tracking ${player.name}`
+                              : `Track ${player.name}'s tokens on the board`
+                          }
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setHighlightPlayerId((current) =>
+                              current === player.id ? null : player.id,
+                            )
+                          }}
+                        >
+                          {highlightPlayerId === player.id ? 'Finding' : 'Find'}
+                        </button>
+                      ) : null}
+                      {isHost && viewRoom.status === 'playing' ? (
                         <button
                           type="button"
                           className={`slot-action player-color-edit ${colorEditPlayerId === player.id ? 'active' : ''}`}
@@ -3592,7 +3884,7 @@ function App() {
                           Color
                         </button>
                       ) : null}
-                      {!player.isBot && viewRoom.status === 'playing' ? (
+                      {isHost && !player.isBot && viewRoom.status === 'playing' ? (
                         <button
                           type="button"
                           className={`slot-action player-autoplay ${player.autoPlay ? 'active' : ''}`}
@@ -3619,7 +3911,7 @@ function App() {
                           {player.autoPlay ? 'Cancel auto' : 'Autoplay'}
                         </button>
                       ) : null}
-                      {player.id !== userId ? (
+                      {isHost && player.id !== userId ? (
                         <button
                           type="button"
                           className="slot-action player-remove"
@@ -3711,46 +4003,202 @@ function App() {
                 </div>
               )
             })}
-            {room.hostId === userId &&
-              viewRoom.status === 'playing' &&
-              (viewRoom.departedPlayers ?? []).some((player) => player.reclaimable) ? (
+            {viewRoom.status === 'playing'
+              ? Array.from(
+                  { length: viewRoom.game?.boardPlayerCount ?? viewRoom.maxPlayers },
+                  (_, seat) => {
+                    if (viewRoom.players.some((player) => player.seat === seat)) {
+                      return null
+                    }
+                    const departed = (viewRoom.departedPlayers ?? []).find(
+                      (player) => player.seat === seat && player.reclaimable,
+                    )
+                    if (!departed) return null
+                    const seatColorName = formatSeatColorName(departed.color)
+                    return (
+                      <div
+                        key={`open-seat-${seat}`}
+                        className={`player-row player-row--open ${playerColorClass(departed.color)}`}
+                        style={playerColorStyle(departed.color)}
+                      >
+                        <div className="player-row-main">
+                          <span
+                            className="avatar open-seat-swatch"
+                            style={{ background: resolveColorHex(departed.color) }}
+                            title={seatColorName}
+                          >
+                            {seat + 1}
+                          </span>
+                          <div className="player-row-copy">
+                            <strong>
+                              Seat {seat + 1}
+                              <span className="open-seat-color-chip">
+                                <em
+                                  style={{ background: resolveColorHex(departed.color) }}
+                                />
+                                {seatColorName}
+                              </span>
+                            </strong>
+                            <small>
+                              {`${departed.name} left · waiting for a player`}
+                              {room.hostId === userId && departed.rejoinCode
+                                ? ` · Code ${departed.rejoinCode}`
+                                : ' · ask host, or send a join request'}
+                            </small>
+                          </div>
+                        </div>
+                        {room.hostId === userId && departed.rejoinCode ? (
+                          <div className="player-row-actions">
+                            <button
+                              type="button"
+                              className="slot-action"
+                              onClick={() =>
+                                void navigator.clipboard.writeText(
+                                  departed.rejoinCode ?? '',
+                                )
+                              }
+                            >
+                              Copy code
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  },
+                )
+              : null}
+            {viewRoom.status === 'playing' &&
+              (viewRoom.departedPlayers ?? []).some((player) => !player.isBot) ? (
               <div className="reclaim-panel">
-                <h3>Left seats</h3>
-                <p>Share room + seat code — humans can reclaim left seats (including removed bots).</p>
+                <h3>Left the match</h3>
+                <p>
+                  {room.hostId === userId
+                    ? 'Approve a leave if it was fair. Unapproved leavers become Worst of the match.'
+                    : 'Unapproved leavers become Worst of the match unless the host approves.'}
+                </p>
                 <ul className="reclaim-list">
                   {(viewRoom.departedPlayers ?? [])
-                    .filter((player) => player.reclaimable)
+                    .filter((player) => !player.isBot)
                     .sort((first, second) => first.seat - second.seat)
-                    .map((player) => (
-                      <li
-                        key={`${player.id}-${player.leftAt}`}
-                        className={playerColorClass(player.color)}
-                        style={playerColorStyle(player.color)}
-                      >
-                        <span className="reclaim-avatar">
-                          {player.isBot ? (
-                            '🤖'
-                          ) : player.photoUrl ? (
-                            <img src={player.photoUrl} alt="" draggable={false} />
-                          ) : (
-                            player.name[0]?.toUpperCase() ?? '?'
-                          )}
-                        </span>
-                        <div className="reclaim-copy">
-                          <strong>{player.name}</strong>
-                          <small>
-                            Seat {player.seat + 1}
-                            {player.isBot ? ' · open for human' : ''}
-                          </small>
-                        </div>
-                        <em className="seat-code-label">{player.rejoinCode ?? '—'}</em>
-                      </li>
-                    ))}
+                    .map((player) => {
+                      const approved = player.hostApprovedLeave === true
+                      return (
+                        <li
+                          key={`${player.id}-${player.leftAt}`}
+                          className={playerColorClass(player.color)}
+                          style={playerColorStyle(player.color)}
+                        >
+                          <span className="reclaim-avatar">
+                            {player.photoUrl ? (
+                              <img src={player.photoUrl} alt="" draggable={false} />
+                            ) : (
+                              player.name[0]?.toUpperCase() ?? '?'
+                            )}
+                          </span>
+                          <div className="reclaim-copy">
+                            <strong>{player.name}</strong>
+                            <small>
+                              {`Seat ${player.seat + 1} · ${formatSeatColorName(player.color)}`}
+                              {player.reclaimable
+                                ? room.hostId === userId
+                                  ? ` · Open for join · Code ${player.rejoinCode ?? '—'}`
+                                  : ' · Open for join · ask host for the seat code'
+                                : ''}
+                            </small>
+                            <span
+                              className={`leave-approval-badge ${approved ? 'is-approved' : 'is-denied'}`}
+                            >
+                              {approved ? 'Host approved' : 'Host not approved'}
+                            </span>
+                          </div>
+                          {room.hostId === userId ? (
+                            <button
+                              type="button"
+                              className={`slot-action ${approved ? '' : 'player-remove'}`}
+                              disabled={busy}
+                              onClick={() =>
+                                void perform(async () => {
+                                  await setHostApprovedLeave(
+                                    room.id,
+                                    userId,
+                                    player.id,
+                                    !approved,
+                                  )
+                                })
+                              }
+                            >
+                              {approved ? 'Unapprove' : 'Approve'}
+                            </button>
+                          ) : null}
+                        </li>
+                      )
+                    })}
                 </ul>
               </div>
             ) : null}
             {room.hostId === userId ? (
               <div className="watch-host-panel watch-host-panel--game">
+                <div className="join-request-heading">
+                  <p className="power-rules-title"><strong>Join requests</strong></p>
+                  {(viewRoom.joinRequests ?? []).length > 0 ? (
+                    <button
+                      type="button"
+                      className="slot-action"
+                      disabled={busy || !hasOpenJoinSeat}
+                      onClick={() =>
+                        void perform(async () => {
+                          await approveAllJoins(room.id, userId)
+                        })
+                      }
+                    >
+                      Accept all
+                    </button>
+                  ) : null}
+                </div>
+                {(viewRoom.joinRequests ?? []).length > 0 ? (
+                  <ul className="watch-request-list">
+                    {(viewRoom.joinRequests ?? []).map((request) => (
+                      <li key={request.id}>
+                        <strong>{request.name}</strong>
+                        <span>
+                          {hasOpenJoinSeat
+                            ? 'wants an open seat'
+                            : 'wants to join'}
+                        </span>
+                        <button
+                          type="button"
+                          className="slot-action"
+                          disabled={busy || !hasOpenJoinSeat}
+                          onClick={() =>
+                            void perform(async () => {
+                              await approveJoin(room.id, userId, request.id)
+                            })
+                          }
+                        >
+                          Accept
+                        </button>
+                        <button
+                          type="button"
+                          className="slot-action danger"
+                          disabled={busy}
+                          onClick={() =>
+                            void perform(async () => {
+                              await denyJoin(room.id, userId, request.id)
+                            })
+                          }
+                        >
+                          Decline
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="lobby-hint">
+                    {hasOpenJoinSeat
+                      ? 'Open seat — waiting for someone to ask to join.'
+                      : 'No join requests right now.'}
+                  </p>
+                )}
                 <p className="power-rules-title"><strong>Watchers</strong></p>
                 <label className="lobby-blitz-duration">
                   Who can watch
@@ -3853,6 +4301,7 @@ function App() {
               room={viewRoom}
               userId={userId}
               movingToken={movingToken}
+              highlightPlayerId={highlightPlayerId}
               onMove={(tokenId) => {
                 if (isSpectator) return
                 void animateMove(tokenId)
@@ -3863,6 +4312,7 @@ function App() {
               playerName={powerToast?.playerName ?? ''}
               message={powerToast?.message}
               visible={powerToast !== null}
+              maxSuperUses={superUsesLimit(viewRoom)}
             />
           </div>
 
@@ -3878,6 +4328,26 @@ function App() {
                   Watching live — you can’t roll or move. Current turn:{' '}
                   <strong>{currentPlayer?.name ?? '…'}</strong>
                 </p>
+                {hasOpenJoinSeat ? (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={busy || askedToTakeSeat || !name.trim()}
+                    onClick={() =>
+                      void perform(async () => {
+                        await requestJoin(
+                          userId,
+                          name,
+                          room.code,
+                          roomProfileOptions,
+                        )
+                        setWatchRole('join-pending')
+                      })
+                    }
+                  >
+                    {askedToTakeSeat ? 'Waiting for host…' : 'Ask to join open seat'}
+                  </button>
+                ) : null}
               </>
             ) : (
               <>
@@ -4161,6 +4631,7 @@ function App() {
                 playerCount={
                   viewRoom.game?.boardPlayerCount ?? viewRoom.maxPlayers
                 }
+                tokenLimit={superUsesLimit(viewRoom)}
                 winOdds={winOdds}
               />
             </div>
@@ -4378,6 +4849,11 @@ function App() {
                   points: breakdown.sixes,
                 },
                 {
+                  label: 'Shields broken',
+                  detail: `${stats.shieldBreaks ?? 0} × +1`,
+                  points: breakdown.shieldBreaks,
+                },
+                {
                   label: 'Times eliminated',
                   detail: `${stats.eliminated} × −1`,
                   points: -breakdown.timesEliminated,
@@ -4486,6 +4962,11 @@ function App() {
                     label: 'Sixes rolled',
                     detail: `${stats.sixes} × +1`,
                     points: breakdown.sixes,
+                  },
+                  {
+                    label: 'Shields broken',
+                    detail: `${stats.shieldBreaks ?? 0} × +1`,
+                    points: breakdown.shieldBreaks,
                   },
                   {
                     label: 'Board progress',
@@ -4781,6 +5262,13 @@ function App() {
                               ))}
                             </ol>
                           ) : null}
+                          <Link
+                            className="secondary-button match-history-full"
+                            to={`/match-history/${entry.roomId}`}
+                            onClick={() => setMatchHistoryOpen(false)}
+                          >
+                            Show every details
+                          </Link>
                           <h3>Most leaders (after this match)</h3>
                           <ul className="match-history-most">
                             {(
@@ -5153,7 +5641,9 @@ function App() {
                   <strong>{player.name}</strong>
                   <small>
                     {player.leftEarly
-                      ? 'LEFT EARLY'
+                      ? player.hostApprovedLeave
+                        ? 'LEFT EARLY · Host approved'
+                        : 'LEFT EARLY · Not approved'
                       : isBlitzMode(room.gameMode)
                         ? `${rankBlitzPlayers(room).find((entry) => entry.player.id === player.id)?.breakdown.total ?? 0} PTS`
                         : index === 0
@@ -5182,7 +5672,9 @@ function App() {
                     <strong>{player.name}</strong>
                     <small>
                       {player.leftEarly
-                        ? 'LEFT EARLY'
+                        ? player.hostApprovedLeave
+                          ? 'LEFT EARLY · Host approved'
+                          : 'LEFT EARLY · Not approved'
                         : player.id === userId
                           ? 'YOU'
                           : ''}

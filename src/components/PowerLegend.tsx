@@ -18,14 +18,16 @@ export function PowerLegend({
   showPowers = true,
   gameMode = 'power',
   playerCount,
+  tokenLimit,
   winOdds = [],
 }: {
   showPowers?: boolean
   gameMode?: GameMode | null
   playerCount?: number
+  tokenLimit?: number
   winOdds?: WinOddsEntry[]
 }) {
-  const powerInfo = powerInfoForMode(gameMode, playerCount)
+  const powerInfo = powerInfoForMode(gameMode, playerCount, tokenLimit)
 
   return (
     <div className="power-legend">
@@ -56,6 +58,7 @@ export function PowerLegend({
               <li>+5 / +3 / +1 for 1st / 2nd / 3rd place</li>
               <li>+2 per token home</li>
               <li>+0.5 per six rolled</li>
+              <li>+1 per rival shield broken</li>
               <li>−1 per time you were eliminated</li>
             </ul>
             <p>Highest score wins. Ties go to better finish place, then more eliminations.</p>

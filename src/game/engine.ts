@@ -128,6 +128,7 @@ function emptyPlayerStats(): PlayerStats {
     negativePowers: 0,
     superPowers: 0,
     plus3: 0,
+    shieldBreaks: 0,
   };
 }
 
@@ -143,8 +144,14 @@ export function ensurePlayerStats(
     game.stats[playerId].negativePowers ??= 0;
     game.stats[playerId].superPowers ??= 0;
     game.stats[playerId].plus3 ??= 0;
+    game.stats[playerId].shieldBreaks ??= 0;
   }
   return game.stats[playerId];
+}
+
+export function recordShieldBreak(game: GameState, attackerId: string) {
+  const stats = ensurePlayerStats(game, attackerId);
+  stats.shieldBreaks = (stats.shieldBreaks ?? 0) + 1;
 }
 
 export function recordCapture(
@@ -293,6 +300,7 @@ export function resolveLandingCapture(
         sharedProtectedCell = true;
       } else if (game.shieldBuff[opponent.playerId]) {
         game.shieldBuff[opponent.playerId] = false;
+        recordShieldBreak(game, playerId);
         sharedProtectedCell = true;
       } else {
         opponent.progress = eliminatedProgress(room);
@@ -390,6 +398,18 @@ export function movableTokens(room: Room) {
     (token) =>
       token.playerId === player?.id && canMove(token, room.game!.dice!, room),
   );
+}
+
+/**
+ * When there is only one real choice — one movable token, or several stacked
+ * on the same cell — return that token so the client can auto-play it.
+ */
+export function forcedMoveToken(room: Room): Token | null {
+  const candidates = movableTokens(room);
+  if (candidates.length === 0) return null;
+  const progress = candidates[0].progress;
+  if (candidates.some((token) => token.progress !== progress)) return null;
+  return candidates[0];
 }
 
 /** Prefer captures, home finishes, then yard exits for auto/bot moves. */

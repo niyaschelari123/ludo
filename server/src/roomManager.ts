@@ -26,6 +26,7 @@ import {
   validateTeamAssignment,
 } from '../../src/game/teams.js'
 import { finalizeBlitzGame, finalizeHostStoppedGame } from '../../src/game/matchAwards.js'
+import { pickUniqueBotName } from '../../src/game/botNames.js'
 import { normalizeColorKey } from '../../src/game/colors.js'
 import { sanitizePhotoDataUrl } from '../../src/lib/profilePhoto.js'
 import { isLoginAccountId } from '../../src/lib/profile.js'
@@ -91,12 +92,14 @@ export function listLiveMatchNotices() {
     status: 'lobby' | 'playing'
     playerCount: number
     maxPlayers: number
+    openSeat: boolean
     startedAt: number
   }> = []
   for (const room of rooms.values()) {
-    // Only open lobbies — hide once the match starts or ends.
-    if (room.status !== 'lobby') continue
-    if (room.players.length >= room.maxPlayers) continue
+    const lobbyOpen =
+      room.status === 'lobby' && room.players.length < room.maxPlayers
+    const playingOpen = room.status === 'playing' && Boolean(firstOpenReclaimSeat(room))
+    if (!lobbyOpen && !playingOpen) continue
 
     const host = room.players.find((player) => player.id === room.hostId)
     // Skip bot-hosted / guest-hosted rooms (e.g. host left and a bot took over).
@@ -108,10 +111,11 @@ export function listLiveMatchNotices() {
       hostId: room.hostId,
       hostName: host.name,
       gameMode: room.gameMode,
-      status: 'lobby',
+      status: room.status === 'playing' ? 'playing' : 'lobby',
       playerCount: room.players.length,
-      maxPlayers: room.maxPlayers,
-      startedAt: room.createdAt,
+      maxPlayers: room.game?.boardPlayerCount ?? room.maxPlayers,
+      openSeat: true,
+      startedAt: room.status === 'playing' ? room.updatedAt : room.createdAt,
     })
   }
   return notices.sort((a, b) => b.startedAt - a.startedAt)
@@ -484,10 +488,9 @@ export function setSlotBot(
 
   if (add) {
     if (existing) throw new Error('That seat is already taken.')
-    const botCount = room.players.filter((player) => player.isBot).length
     room.players.push({
       id: crypto.randomUUID(),
-      name: `Bot ${botCount + 1}`,
+      name: pickUniqueBotName(room.players.map((player) => player.name)),
       color: nextFreePresetColor(room),
       seat,
       connected: true,
@@ -547,11 +550,10 @@ function addControlledTeammateBot(room: Room, humanId: string) {
   }
   const seat = firstOpenSeat(room)
   if (seat === -1) throw new Error('No open seat for teammate bot.')
-  const botCount = room.players.filter((player) => player.isBot).length
   const botId = crypto.randomUUID()
   room.players.push({
     id: botId,
-    name: `Bot ${botCount + 1}`,
+    name: pickUniqueBotName(room.players.map((player) => player.name)),
     color: nextFreePresetColor(room),
     seat,
     connected: true,
@@ -932,24 +934,79 @@ export function setPlayerColorByHost(
   return next
 }
 
+/** Player updates their own name, color, and/or photo in a room or join request. */
+export function setOwnProfile(
+  roomId: string,
+  userId: string,
+  options: {
+    name?: string
+    color?: string
+    lockColor?: boolean
+    photoUrl?: string | null
+  },
+) {
+  const room = getRoom(roomId)
+  ensureSpectatorLists(room)
+  const player = room.players.find((entry) => entry.id === userId)
+  const request = room.joinRequests.find((entry) => entry.id === userId)
+  if (!player && !request) {
+    throw new Error('You are not in this room.')
+  }
+
+  if (options.name !== undefined) {
+    const nextName = cleanName(options.name)
+    if (player) player.name = nextName
+    if (request) request.name = nextName
+  }
+
+  if (options.color !== undefined) {
+    if (room.status !== 'lobby') {
+      throw new Error('Color can only be changed in the lobby.')
+    }
+    const key = normalizeColorKey(options.color)
+    if (player) {
+      const used = usedColorsInRoom(room, userId)
+      if (used.has(key)) {
+        throw new Error('That color is already used in this room.')
+      }
+      player.color = options.color
+      if (options.lockColor) player.colorLocked = true
+    }
+    if (request) {
+      request.color = options.color
+      if (options.lockColor) request.lockColor = true
+    }
+    if (options.lockColor || isLoginAccountId(userId)) {
+      claimPlayerColor(userId, options.color)
+    }
+  }
+
+  if (options.photoUrl !== undefined) {
+    const photo =
+      options.photoUrl == null || options.photoUrl === ''
+        ? undefined
+        : cleanPhotoUrl(options.photoUrl)
+    if (player) {
+      if (photo) player.photoUrl = photo
+      else delete player.photoUrl
+    }
+    if (request) {
+      if (photo) request.photoUrl = photo
+      else delete request.photoUrl
+    }
+  }
+
+  room.updatedAt = Date.now()
+  return room
+}
+
 /** Player updates their own profile photo while in a room. */
 export function setOwnPhoto(
   roomId: string,
   userId: string,
   photoUrl?: string | null,
 ) {
-  const room = getRoom(roomId)
-  const player = room.players.find((entry) => entry.id === userId)
-  if (!player) throw new Error('You are not in this room.')
-  if (photoUrl == null || photoUrl === '') {
-    delete player.photoUrl
-  } else {
-    const photo = cleanPhotoUrl(photoUrl)
-    if (!photo) delete player.photoUrl
-    else player.photoUrl = photo
-  }
-  room.updatedAt = Date.now()
-  return room
+  return setOwnProfile(roomId, userId, { photoUrl })
 }
 
 /**
@@ -1362,7 +1419,7 @@ export function removePlayerFromRoom(
   room: Room,
   userId: string,
   lastAction: string,
-  options?: { reclaimable?: boolean },
+  options?: { reclaimable?: boolean; hostApprovedLeave?: boolean },
 ): Room | null {
   const leavingIndex = room.players.findIndex((player) => player.id === userId)
   if (leavingIndex === -1) return room
@@ -1381,6 +1438,7 @@ export function removePlayerFromRoom(
         connected: false,
         autoPlay: undefined,
         leftAt: Date.now(),
+        hostApprovedLeave: Boolean(options?.hostApprovedLeave),
         ...(reclaimable ? snapshotForReclaim(room, leavingPlayer) : { reclaimable: false }),
       })
     }
@@ -1458,6 +1516,28 @@ export function setPlayerAutoPlay(
   return room
 }
 
+export function setHostApprovedLeave(
+  roomId: string,
+  hostId: string,
+  targetUserId: string,
+  approved: boolean,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can approve a leave.')
+  }
+  if (room.status !== 'playing' && room.status !== 'finished') {
+    throw new Error('Leave approval is only for a started match.')
+  }
+  const departed = (room.departedPlayers ?? []).find(
+    (player) => player.id === targetUserId,
+  )
+  if (!departed) throw new Error('That player has not left.')
+  departed.hostApprovedLeave = approved
+  room.updatedAt = Date.now()
+  return room
+}
+
 export function removePlayer(
   roomId: string,
   hostId: string,
@@ -1489,7 +1569,7 @@ export function removePlayer(
     room,
     targetUserId,
     `${target.name} was removed`,
-    { reclaimable: true },
+    { reclaimable: true, hostApprovedLeave: true },
   )
   if (!next) throw new Error('Room closed.')
   rooms.set(roomId, next)
@@ -1758,18 +1838,20 @@ export function requestJoin(
   if (room.players.some((player) => player.id === userId)) {
     throw new Error('You are already in this room.')
   }
-  if (room.status !== 'lobby') {
+  if (room.status !== 'lobby' && !firstOpenReclaimSeat(room)) {
     throw new Error('This game has already started. Ask to watch instead.')
   }
-  if (room.players.length >= room.maxPlayers) {
+  if (room.status === 'lobby' && room.players.length >= room.maxPlayers) {
     throw new Error('This room is full.')
   }
 
-  // Drop watcher presence while asking for a seat.
-  room.spectators = room.spectators.filter((entry) => entry.id !== userId)
-  room.spectatorRequests = room.spectatorRequests.filter(
-    (entry) => entry.id !== userId,
-  )
+  // Keep mid-game watchers on the board while the host decides.
+  if (room.status === 'lobby') {
+    room.spectators = room.spectators.filter((entry) => entry.id !== userId)
+    room.spectatorRequests = room.spectatorRequests.filter(
+      (entry) => entry.id !== userId,
+    )
+  }
 
   const photo = cleanPhotoUrl(options?.photoUrl)
   const existing = room.joinRequests.find((entry) => entry.id === userId)
@@ -1799,6 +1881,59 @@ export function requestJoin(
   return { room, status: 'pending' as const }
 }
 
+function firstOpenReclaimSeat(room: Room) {
+  return (room.departedPlayers ?? []).find(
+    (player) =>
+      player.reclaimable &&
+      Boolean(player.rejoinCode) &&
+      !room.players.some((entry) => entry.seat === player.seat),
+  )
+}
+
+function seatJoinRequest(room: Room, request: NonNullable<Room['joinRequests']>[number]) {
+  if (room.status === 'playing') {
+    const open = firstOpenReclaimSeat(room)
+    if (!open?.rejoinCode) {
+      throw new Error('No open seat to join.')
+    }
+    return claimSeat(
+      request.id,
+      request.name,
+      room.code,
+      open.rejoinCode,
+      request.photoUrl,
+    )
+  }
+
+  try {
+    return joinRoom(
+      request.id,
+      request.name,
+      room.code,
+      request.color,
+      request.lockColor,
+      request.photoUrl,
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ''
+    if (
+      request.lockColor &&
+      (message.includes('already taken') || message.includes('already used'))
+    ) {
+      // Keep the seat; assign a free color if their locked pick is gone.
+      return joinRoom(
+        request.id,
+        request.name,
+        room.code,
+        undefined,
+        false,
+        request.photoUrl,
+      )
+    }
+    throw error
+  }
+}
+
 export function approveJoin(
   roomId: string,
   hostId: string,
@@ -1809,8 +1944,11 @@ export function approveJoin(
     throw new Error('Only the host can accept players.')
   }
   ensureSpectatorLists(room)
-  if (room.status !== 'lobby') {
+  if (room.status !== 'lobby' && room.status !== 'playing') {
     throw new Error('The match already started.')
+  }
+  if (room.status === 'playing' && !firstOpenReclaimSeat(room)) {
+    throw new Error('No open seat to join.')
   }
 
   const requestIndex = room.joinRequests.findIndex(
@@ -1821,15 +1959,62 @@ export function approveJoin(
   }
   const [request] = room.joinRequests.splice(requestIndex, 1)
 
-  // Seat them with the same path as a normal join.
-  return joinRoom(
-    request.id,
-    request.name,
-    room.code,
-    request.color,
-    request.lockColor,
-    request.photoUrl,
-  )
+  try {
+    return seatJoinRequest(room, request)
+  } catch (error) {
+    room.joinRequests.splice(requestIndex, 0, request)
+    throw error
+  }
+}
+
+/** Host accepts every pending join that still has an open seat. */
+export function approveAllJoins(roomId: string, hostId: string) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can accept players.')
+  }
+  ensureSpectatorLists(room)
+  if (room.status !== 'lobby' && room.status !== 'playing') {
+    throw new Error('The match already started.')
+  }
+  if (room.joinRequests.length === 0) {
+    throw new Error('No join requests to accept.')
+  }
+  if (room.status === 'lobby' && room.players.length >= room.maxPlayers) {
+    throw new Error('This room is full.')
+  }
+  if (room.status === 'playing' && !firstOpenReclaimSeat(room)) {
+    throw new Error('No open seat to join.')
+  }
+
+  const queue = [...room.joinRequests]
+  let nextRoom = room
+
+  for (const request of queue) {
+    if (nextRoom.status === 'lobby' && nextRoom.players.length >= nextRoom.maxPlayers) {
+      break
+    }
+    if (nextRoom.status === 'playing' && !firstOpenReclaimSeat(nextRoom)) {
+      break
+    }
+
+    const requestIndex = nextRoom.joinRequests.findIndex(
+      (entry) => entry.id === request.id,
+    )
+    if (requestIndex === -1) continue
+    nextRoom.joinRequests.splice(requestIndex, 1)
+
+    try {
+      nextRoom = seatJoinRequest(nextRoom, request)
+    } catch {
+      if (!nextRoom.joinRequests.some((entry) => entry.id === request.id)) {
+        nextRoom.joinRequests.splice(requestIndex, 0, request)
+      }
+    }
+  }
+
+  nextRoom.updatedAt = Date.now()
+  return nextRoom
 }
 
 export function denyJoin(

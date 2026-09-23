@@ -723,6 +723,7 @@ interface Props {
   room: Room
   userId: string
   movingToken: MovingToken | null
+  highlightPlayerId?: string | null
   onMove: (tokenId: number) => void
 }
 
@@ -730,6 +731,7 @@ export function LudoBoard({
   room,
   userId,
   movingToken,
+  highlightPlayerId,
   onMove,
 }: Props) {
   const boardCount = boardSeatCount(room)
@@ -764,6 +766,10 @@ export function LudoBoard({
     setHoveredStackKey(key)
   }
 
+  const isHoverPointer = (pointerType: string) =>
+    (pointerType === 'mouse' || pointerType === 'pen') &&
+    window.matchMedia('(hover: hover) and (pointer: fine)').matches
+
   useEffect(() => {
     return () => {
       if (stackHoverClearRef.current != null) {
@@ -771,6 +777,16 @@ export function LudoBoard({
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (!hoveredStackKey) return
+    const dismissOnTouch = (event: PointerEvent) => {
+      if (isHoverPointer(event.pointerType)) return
+      setHoveredStackKey(null)
+    }
+    window.addEventListener('pointerdown', dismissOnTouch)
+    return () => window.removeEventListener('pointerdown', dismissOnTouch)
+  }, [hoveredStackKey])
   const [animatedProgress, setAnimatedProgress] = useState<number | null>(null)
   const moveAnimationKey = movingToken
     ? `${movingToken.playerId}:${movingToken.id}:${movingToken.fromProgress}:${movingToken.dice}:${movingToken.startedAt ?? ''}`
@@ -857,6 +873,11 @@ export function LudoBoard({
   // Paint local player's tokens last so they sit on top of mixed stacks on
   // this client only (each player sees their own pieces as the top layer).
   const tokensToPaint = [...displayedTokens].sort((a, b) => {
+    const aLocated =
+      highlightPlayerId && a.originalToken.playerId === highlightPlayerId ? 2 : 0
+    const bLocated =
+      highlightPlayerId && b.originalToken.playerId === highlightPlayerId ? 2 : 0
+    if (aLocated !== bLocated) return aLocated - bLocated
     const aOwn = a.originalToken.playerId === userId ? 1 : 0
     const bOwn = b.originalToken.playerId === userId ? 1 : 0
     if (aOwn !== bOwn) return aOwn - bOwn
@@ -875,7 +896,7 @@ export function LudoBoard({
     !hoveredStack.every((entry) => entry.isFinished)
 
   return (
-    <div className={`board-wrap ${isSquare ? 'square' : 'radial'} ${largeNgon ? 'large-ngon-board' : ''}`}>
+    <div className={`board-wrap ${isSquare ? 'square' : 'radial'} ${largeNgon ? 'large-ngon-board' : ''} ${highlightPlayerId ? 'is-locating' : ''}`}>
       <svg
         className="ludo-board"
         viewBox={`0 0 ${boardSize} ${boardSize}`}
@@ -937,6 +958,7 @@ export function LudoBoard({
             const isMine = originalToken.playerId === userId
             const inYard = originalToken.progress === -1
             const shielded = Boolean(room.game?.shieldBuff?.[player.id])
+            const located = highlightPlayerId === originalToken.playerId
             const tokenRadius = tokenDisplayRadius(
               boardCount,
               isSquare,
@@ -971,7 +993,7 @@ export function LudoBoard({
             return (
               <g
                 key={`${originalToken.playerId}-${originalToken.id}`}
-                className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''} ${shielded ? 'shielded' : ''}`}
+                className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''} ${shielded ? 'shielded' : ''} ${located ? 'located' : ''}`}
                 style={{
                   transform: `translate(${position.x + offsetX}px, ${position.y + offsetY}px)`,
                   // Let taps reach your token when opponents overlap the same cell
@@ -979,11 +1001,15 @@ export function LudoBoard({
                     stacked && stackHasMine && !isMine ? 'none' : undefined,
                 }}
                 onClick={() => canSelect && onMove(originalToken.id)}
-                onMouseEnter={() => {
-                  if (crowded) keepStackHover(groupKey)
+                onPointerEnter={(event) => {
+                  if (crowded && isHoverPointer(event.pointerType)) {
+                    keepStackHover(groupKey)
+                  }
                 }}
-                onMouseLeave={() => {
-                  if (crowded) clearStackHoverSoon()
+                onPointerLeave={(event) => {
+                  if (crowded && isHoverPointer(event.pointerType)) {
+                    clearStackHoverSoon()
+                  }
                 }}
                 role={canSelect ? 'button' : undefined}
               >
@@ -993,6 +1019,23 @@ export function LudoBoard({
                   finished={isFinished}
                   shielded={shielded}
                 />
+                {located ? (
+                  <g className="locate-arrow" pointerEvents="none" aria-hidden="true">
+                    <g transform={`translate(0 ${-tokenRadius - 10})`}>
+                      <path
+                        className="locate-arrow-mark"
+                        d={`M 0 ${tokenRadius * 0.55}
+                          L ${-tokenRadius * 0.48} ${-tokenRadius * 0.12}
+                          L ${-tokenRadius * 0.18} ${-tokenRadius * 0.12}
+                          L ${-tokenRadius * 0.18} ${-tokenRadius * 0.85}
+                          L ${tokenRadius * 0.18} ${-tokenRadius * 0.85}
+                          L ${tokenRadius * 0.18} ${-tokenRadius * 0.12}
+                          L ${tokenRadius * 0.48} ${-tokenRadius * 0.12}
+                          Z`}
+                      />
+                    </g>
+                  </g>
+                ) : null}
               </g>
             )
           })}
