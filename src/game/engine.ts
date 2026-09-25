@@ -805,6 +805,12 @@ export function applyMove(room: Room, tokenId: number) {
   ) {
     const powerType = powerUpAtCell(game, landingCell);
     if (powerType) {
+      let bombStrippedShield = false;
+      if (powerType === "bomb") {
+        game.shieldBuff ??= {};
+        bombStrippedShield = Boolean(game.shieldBuff[player.id]);
+        game.shieldBuff[player.id] = false;
+      }
       game.pendingPower = {
         playerId: player.id,
         tokenId: token.id,
@@ -813,11 +819,16 @@ export function applyMove(room: Room, tokenId: number) {
         captured,
         sharedProtectedCell,
         forfeitedProtection,
+        ...(powerType === "bomb"
+          ? { strippedShield: bombStrippedShield }
+          : {}),
       };
       game.phase = "power";
       game.activeMove = null;
       game.turnDeadline = null;
-      game.lastAction = formatMoveAction(player, moveContext);
+      game.lastAction = bombStrippedShield
+        ? `${player.name}'s shield was blasted by a bomb`
+        : formatMoveAction(player, moveContext);
       return;
     }
   }

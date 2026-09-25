@@ -39,6 +39,7 @@ export const ACTIVE_POWER_TYPES: PowerUpType[] = [
   "ice",
   "super",
   "yard",
+  "bomb",
 ];
 
 export const POWER_UP_ICONS: Record<PowerUpType, string> = {
@@ -59,6 +60,7 @@ export const POWER_UP_ICONS: Record<PowerUpType, string> = {
   back3: "←3",
   back5: "-5",
   yard: "YRD",
+  bomb: "💣",
 };
 
 export const POWER_UP_INFO: {
@@ -133,6 +135,12 @@ export const POWER_UP_INFO: {
     label: "Yard",
     description: "Sends your token back to your colored start (entry) — not into the nest",
   },
+  {
+    type: "bomb",
+    label: "Bomb",
+    description:
+      "Sits just outside a track square — stepping onto that square blasts your shield off",
+  },
 ];
 
 export function powerInfoForMode(
@@ -141,10 +149,15 @@ export function powerInfoForMode(
   tokenLimit?: number,
 ) {
   let entries = POWER_UP_INFO.filter(
-    (entry) => entry.type !== "super" && entry.type !== "yard",
+    (entry) =>
+      entry.type !== "super" &&
+      entry.type !== "yard" &&
+      entry.type !== "bomb",
   )
   if (mode === "race") {
-    entries = POWER_UP_INFO.filter((entry) => entry.type !== "shield").map(
+    entries = POWER_UP_INFO.filter(
+      (entry) => entry.type !== "shield" && entry.type !== "bomb",
+    ).map(
       (entry) => {
         if (entry.type === "ice") {
           return {
@@ -417,6 +430,7 @@ function placeCommonAndRare(
 
   if (options.includeSuper) {
     placeSuperPowers(tiles, playerCount, length);
+    placeBombPowers(tiles, playerCount, length);
   }
 
   // After Super so mid-path shields do not steal upper-path Super cells.
@@ -519,6 +533,28 @@ function placeSuperPowers(
       const cell = (preferred + offset) % length;
       if (tiles[cell] || isPowerBlockedCell(cell)) continue;
       tiles[cell] = "super";
+      break;
+    }
+  }
+}
+
+/**
+ * One bomb on each home-to-home path, near the middle of that stretch.
+ * Offset 6 is the center of a 13-cell side; nearby free cells are fine.
+ */
+const BOMB_PATH_OFFSETS = [6, 5, 7, 4, 9, 3, 10, 2, 11, 1, 12];
+
+function placeBombPowers(
+  tiles: Record<number, PowerUpType>,
+  playerCount: number,
+  length: number,
+) {
+  for (let seat = 0; seat < playerCount; seat += 1) {
+    const base = seat * CELLS_PER_PLAYER;
+    for (const offset of BOMB_PATH_OFFSETS) {
+      const cell = (base + offset) % length;
+      if (tiles[cell] || isPowerBlockedCell(cell)) continue;
+      tiles[cell] = "bomb";
       break;
     }
   }
@@ -879,6 +915,13 @@ export function applyPowerUp(
       // Entry / start square (progress 0) — not the nest (−1).
       token.progress = 0;
       return `${player.name} was sent back to the start entry`;
+    }
+    case "bomb": {
+      const hadShield = Boolean(game.pendingPower?.strippedShield);
+      game.shieldBuff[player.id] = false;
+      return hadShield
+        ? `${player.name}'s shield was blasted by a bomb`
+        : `${player.name} stepped past a bomb`;
     }
     default:
       return `${player.name} triggered a power tile`;

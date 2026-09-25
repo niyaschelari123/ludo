@@ -4,6 +4,7 @@ import './App.css'
 import {
   getSoundVolume,
   isSoundEnabled,
+  playBomb,
   playCapture,
   playClick,
   playDiceResult,
@@ -17,6 +18,7 @@ import {
   setSoundVolume,
 } from './audio'
 import { LudoBoard } from './components/LudoBoard'
+import { SeatBoardMap } from './components/SeatBoardMap'
 import { Dice3D } from './components/Dice3D'
 import { GameChat } from './components/GameChat'
 import { PlayerAvatar } from './components/PlayerAvatar'
@@ -59,6 +61,9 @@ import {
   setOwnProfile,
   runSeatToss,
   confirmSeatToss,
+  proposeSeatSwap,
+  respondSeatSwap,
+  cancelSeatSwap,
   skipMoveTimer,
   skipPowerTimer,
   skipRollTimer,
@@ -345,6 +350,8 @@ function App() {
   )
   const [matchNoticeOpen, setMatchNoticeOpen] = useState(false)
   const [seatTossDismissedCount, setSeatTossDismissedCount] = useState<number | null>(null)
+  const [seatBoardOpen, setSeatBoardOpen] = useState(false)
+  const [seatSwapPick, setSeatSwapPick] = useState<string[]>([])
   const [stopMatchConfirmOpen, setStopMatchConfirmOpen] = useState(false)
   const [colorEditPlayerId, setColorEditPlayerId] = useState<string | null>(null)
   const [highlightPlayerId, setHighlightPlayerId] = useState<string | null>(null)
@@ -500,6 +507,18 @@ function App() {
     },
     [optimisticRoom, room, rollPicks, userId],
   )
+
+  useEffect(() => {
+    if (room?.status === 'lobby' && room.seatToss?.count === 3) {
+      setSeatBoardOpen(true)
+      setSeatSwapPick([])
+      return
+    }
+    if (!room?.seatToss || (room.seatToss.count ?? 0) < 3) {
+      setSeatBoardOpen(false)
+      setSeatSwapPick([])
+    }
+  }, [room?.id, room?.status, room?.seatToss?.count])
 
   useEffect(() => watchColorClaims(setColorClaims), [])
 
@@ -677,14 +696,17 @@ function App() {
       pending.type === 'super' &&
       baseRoom.game != null &&
       !canTriggerSuper(baseRoom, pending.playerId)
-    setPowerToast({
-      type: pending.type,
-      playerName,
-      message: exhaustedSuper
-        ? superExhaustedMessage(playerName, superUsesLimit(baseRoom))
-        : undefined,
-    })
-    await new Promise((resolve) => window.setTimeout(resolve, POWER_TOAST_MS))
+    const quietBomb = pending.type === 'bomb' && !pending.strippedShield
+    if (!quietBomb) {
+      setPowerToast({
+        type: pending.type,
+        playerName,
+        message: exhaustedSuper
+          ? superExhaustedMessage(playerName, superUsesLimit(baseRoom))
+          : undefined,
+      })
+      await new Promise((resolve) => window.setTimeout(resolve, POWER_TOAST_MS))
+    }
 
     const resolveStartedAt = Date.now()
     try {
@@ -1582,6 +1604,10 @@ function App() {
   useEffect(() => {
     const pending = displayRoom?.game?.pendingPower
     if (pending) {
+      if (pending.type === 'bomb' && !pending.strippedShield) {
+        setPowerToast(null)
+        return
+      }
       const player = displayRoom?.players.find(
         (candidate) => candidate.id === pending.playerId,
       )
@@ -1604,6 +1630,18 @@ function App() {
       return () => window.clearTimeout(timer)
     }
   }, [displayRoom?.game?.pendingPower, displayRoom?.game, displayRoom?.players])
+
+  useEffect(() => {
+    const pending = displayRoom?.game?.pendingPower
+    if (pending?.type !== 'bomb' || !pending.strippedShield) return
+    playBomb()
+  }, [
+    displayRoom?.game?.pendingPower?.type,
+    displayRoom?.game?.pendingPower?.playerId,
+    displayRoom?.game?.pendingPower?.tokenId,
+    displayRoom?.game?.pendingPower?.landingCell,
+    displayRoom?.game?.pendingPower?.strippedShield,
+  ])
 
   useEffect(() => {
     const game = room?.game
@@ -3336,9 +3374,18 @@ function App() {
                     Show toss results
                   </button>
                 ) : null}
+                {room.seatToss?.count === 3 && !seatBoardOpen ? (
+                  <button
+                    type="button"
+                    className="text-button seat-toss-button"
+                    onClick={() => setSeatBoardOpen(true)}
+                  >
+                    Show board seats
+                  </button>
+                ) : null}
                 {room.seatToss?.locked ? (
                   <p className="lobby-hint seat-toss-locked-hint">
-                    Positions locked from toss 3. Start when ready.
+                    Positions locked from toss 3. You can still swap seats if players accept.
                   </p>
                 ) : null}
                 <button
@@ -3372,6 +3419,15 @@ function App() {
             ) : (
               <p className="waiting-text">Waiting for the host to start…</p>
             )}
+            {room.seatToss?.count === 3 && !seatBoardOpen && room.hostId !== userId ? (
+              <button
+                type="button"
+                className="text-button seat-toss-button"
+                onClick={() => setSeatBoardOpen(true)}
+              >
+                Show board seats
+              </button>
+            ) : null}
             {isSeatPlayer || isPendingJoin ? (
               <div className="lobby-profile-editor">
                 <p className="power-rules-title"><strong>Your details</strong></p>
@@ -5462,7 +5518,8 @@ function App() {
 
       {room.status === 'lobby' &&
       room.seatToss?.current &&
-      seatTossDismissedCount !== room.seatToss.count ? (
+      seatTossDismissedCount !== room.seatToss.count &&
+      !(room.seatToss.count === 3 && seatBoardOpen) ? (
         <div
           className="confirm-overlay seat-toss-overlay"
           role="dialog"
@@ -5489,10 +5546,10 @@ function App() {
             </div>
             <p className="seat-toss-lead">
               {room.seatToss.locked
-                ? 'Final board seats from toss 3.'
+                ? 'Final board seats from toss 3. Host can still ask two players to swap.'
                 : room.seatToss.count < 3
                   ? 'Preview only — host must finish all 3 tosses before locking seats.'
-                  : 'Toss 3 complete — host can lock these as final positions.'}
+                  : 'Toss 3 complete — open the board map to swap seats, then lock these positions.'}
             </p>
             <ol className="seat-toss-list">
               {room.seatToss.current.seatOrder.map((playerId, seat) => {
@@ -5537,6 +5594,18 @@ function App() {
                     Toss again ({room.seatToss.count}/3)
                   </button>
                 ) : null}
+                {room.seatToss.count === 3 ? (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      setSeatTossDismissedCount(room.seatToss!.count)
+                      setSeatBoardOpen(true)
+                    }}
+                  >
+                    View on board
+                  </button>
+                ) : null}
                 {room.seatToss.count === 3 && !room.seatToss.locked ? (
                   <button
                     type="button"
@@ -5557,14 +5626,241 @@ function App() {
                 ) : null}
               </div>
             ) : (
+              <>
+                {room.seatToss.count === 3 ? (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      setSeatTossDismissedCount(room.seatToss!.count)
+                      setSeatBoardOpen(true)
+                    }}
+                  >
+                    View on board
+                  </button>
+                ) : null}
+                <p className="lobby-hint">
+                  {room.seatToss.locked
+                    ? 'Host locked these seats.'
+                    : room.seatToss.count < 3
+                      ? 'Waiting for host to finish 3 tosses…'
+                      : 'Waiting for host to lock positions…'}
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {room.status === 'lobby' &&
+      room.seatToss?.count === 3 &&
+      room.seatToss.current &&
+      seatBoardOpen ? (
+        <div
+          className="confirm-overlay seat-board-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Board seats"
+          onClick={() => setSeatBoardOpen(false)}
+        >
+          <div
+            className="confirm-card seat-board-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="seat-toss-head">
+              <h2>Board seats{room.seatToss.locked ? ' · locked' : ''}</h2>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setSeatBoardOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <p className="seat-toss-lead">
+              {room.hostId === userId
+                ? room.seatToss.swapRequest
+                  ? 'Waiting for those players to accept the swap.'
+                  : 'Talk it through, then tap two seats and send them an accept request.'
+                : room.seatToss.swapRequest
+                  ? 'Host asked two players to swap. Waiting for accept.'
+                  : 'These are the tossed board seats.'}
+            </p>
+            <SeatBoardMap
+              players={[...room.players, ...(room.departedPlayers ?? [])]}
+              seatOrder={room.seatToss.current.seatOrder}
+              selectedIds={seatSwapPick}
+              pendingIds={
+                room.seatToss.swapRequest
+                  ? [room.seatToss.swapRequest.firstId, room.seatToss.swapRequest.secondId]
+                  : []
+              }
+              interactive={
+                room.hostId === userId && !room.seatToss.swapRequest
+              }
+              onSelect={(playerId) => {
+                setSeatSwapPick((current) => {
+                  if (current.includes(playerId)) {
+                    return current.filter((id) => id !== playerId)
+                  }
+                  if (current.length >= 2) return [current[1], playerId]
+                  return [...current, playerId]
+                })
+              }}
+            />
+            {room.seatToss.swapRequest ? (
+              <p className="seat-board-pending">
+                Swap asked:{' '}
+                <strong>
+                  {room.players.find(
+                    (player) => player.id === room.seatToss!.swapRequest!.firstId,
+                  )?.name ?? 'Player'}
+                </strong>{' '}
+                (seat {room.seatToss.swapRequest.firstSeat + 1}) ↔{' '}
+                <strong>
+                  {room.players.find(
+                    (player) => player.id === room.seatToss!.swapRequest!.secondId,
+                  )?.name ?? 'Player'}
+                </strong>{' '}
+                (seat {room.seatToss.swapRequest.secondSeat + 1})
+                {room.seatToss.swapRequest.acceptedBy.includes(userId)
+                  ? ' You accepted — waiting for the other player.'
+                  : ''}
+              </p>
+            ) : seatSwapPick.length === 2 ? (
+              <p className="seat-board-pending">
+                Selected{' '}
+                <strong>
+                  {room.players.find((player) => player.id === seatSwapPick[0])?.name}
+                </strong>{' '}
+                and{' '}
+                <strong>
+                  {room.players.find((player) => player.id === seatSwapPick[1])?.name}
+                </strong>
+              </p>
+            ) : room.hostId === userId ? (
+              <p className="lobby-hint">Tap two players to propose a swap.</p>
+            ) : null}
+            {room.hostId === userId ? (
+              <div className="seat-toss-actions">
+                {room.seatToss.swapRequest ? (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() =>
+                      void perform(async () => {
+                        await cancelSeatSwap(room.id, userId)
+                      })
+                    }
+                  >
+                    Cancel swap request
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="start-button seat-toss-confirm"
+                    disabled={busy || seatSwapPick.length !== 2}
+                    onClick={() =>
+                      void perform(async () => {
+                        await proposeSeatSwap(
+                          room.id,
+                          userId,
+                          seatSwapPick[0],
+                          seatSwapPick[1],
+                        )
+                        setSeatSwapPick([])
+                      })
+                    }
+                  >
+                    Send accept request
+                  </button>
+                )}
+                {!room.seatToss.locked ? (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={busy || Boolean(room.seatToss.swapRequest)}
+                    onClick={() =>
+                      void perform(async () => {
+                        await confirmSeatToss(room.id, userId)
+                      })
+                    }
+                  >
+                    Use these positions
+                  </button>
+                ) : null}
+              </div>
+            ) : (
               <p className="lobby-hint">
                 {room.seatToss.locked
                   ? 'Host locked these seats.'
-                  : room.seatToss.count < 3
-                    ? 'Waiting for host to finish 3 tosses…'
-                    : 'Waiting for host to lock positions…'}
+                  : 'Waiting for host to lock positions…'}
               </p>
             )}
+          </div>
+        </div>
+      ) : null}
+
+      {room.status === 'lobby' &&
+      room.seatToss?.swapRequest &&
+      userId !== room.hostId &&
+      (userId === room.seatToss.swapRequest.firstId ||
+        userId === room.seatToss.swapRequest.secondId) &&
+      !room.seatToss.swapRequest.acceptedBy.includes(userId) ? (
+        <div
+          className="confirm-overlay seat-swap-accept-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Accept seat swap"
+        >
+          <div className="confirm-card seat-swap-accept-card">
+            <h2>Swap seats?</h2>
+            <p>
+              Host asked you to swap with{' '}
+              <strong>
+                {room.players.find((player) => {
+                  const swap = room.seatToss!.swapRequest!
+                  return player.id ===
+                    (userId === swap.firstId ? swap.secondId : swap.firstId)
+                })?.name ?? 'the other player'}
+              </strong>
+              . You would take seat{' '}
+              {userId === room.seatToss.swapRequest.firstId
+                ? room.seatToss.swapRequest.secondSeat + 1
+                : room.seatToss.swapRequest.firstSeat + 1}{' '}
+              and they would take seat{' '}
+              {userId === room.seatToss.swapRequest.firstId
+                ? room.seatToss.swapRequest.firstSeat + 1
+                : room.seatToss.swapRequest.secondSeat + 1}
+              .
+            </p>
+            <div className="confirm-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={busy}
+                onClick={() =>
+                  void perform(async () => {
+                    await respondSeatSwap(room.id, userId, false)
+                  })
+                }
+              >
+                Decline
+              </button>
+              <button
+                type="button"
+                className="start-button"
+                disabled={busy}
+                onClick={() =>
+                  void perform(async () => {
+                    await respondSeatSwap(room.id, userId, true)
+                  })
+                }
+              >
+                Accept
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

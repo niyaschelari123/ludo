@@ -60,6 +60,9 @@ import {
   setQuickTokens,
   runSeatToss,
   confirmSeatToss,
+  proposeSeatSwap,
+  respondSeatSwap,
+  cancelSeatSwap,
 } from './roomManager.js'
 import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.js'
 import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
@@ -1067,6 +1070,56 @@ io.on('connection', (socket) => {
     (payload: { roomId: string; userId: string }, callback?: Ack<{ room: Room }>) => {
       try {
         const room = confirmSeatToss(payload.roomId, payload.userId)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'proposeSeatSwap',
+    (
+      payload: { roomId: string; userId: string; firstId: string; secondId: string },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = proposeSeatSwap(
+          payload.roomId,
+          payload.userId,
+          payload.firstId,
+          payload.secondId,
+        )
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'respondSeatSwap',
+    (
+      payload: { roomId: string; userId: string; accept: boolean },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = respondSeatSwap(payload.roomId, payload.userId, payload.accept)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'cancelSeatSwap',
+    (payload: { roomId: string; userId: string }, callback?: Ack<{ room: Room }>) => {
+      try {
+        const room = cancelSeatSwap(payload.roomId, payload.userId)
         ackRoom(callback, room, payload.userId)
         broadcastState(room)
       } catch (error) {

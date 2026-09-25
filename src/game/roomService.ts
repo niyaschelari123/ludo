@@ -174,6 +174,42 @@ export async function confirmSeatToss(roomId: string, userId: string) {
   return room
 }
 
+export async function proposeSeatSwap(
+  roomId: string,
+  userId: string,
+  firstId: string,
+  secondId: string,
+) {
+  const { room } = await emitAck<{ room: Room }>('proposeSeatSwap', {
+    roomId,
+    userId,
+    firstId,
+    secondId,
+  })
+  return room
+}
+
+export async function respondSeatSwap(
+  roomId: string,
+  userId: string,
+  accept: boolean,
+) {
+  const { room } = await emitAck<{ room: Room }>('respondSeatSwap', {
+    roomId,
+    userId,
+    accept,
+  })
+  return room
+}
+
+export async function cancelSeatSwap(roomId: string, userId: string) {
+  const { room } = await emitAck<{ room: Room }>('cancelSeatSwap', {
+    roomId,
+    userId,
+  })
+  return room
+}
+
 export async function joinRoom(
   userId: string,
   name: string,

@@ -165,7 +165,8 @@ export type PowerUpType =
   | "back3"
   | "back5"
   | "yard"
-  | "tnt";
+  | "tnt"
+  | "bomb";
 
 export interface PowerTile {
   cell: number;
@@ -346,6 +347,8 @@ export interface PendingPower {
   captured: boolean;
   sharedProtectedCell: boolean;
   forfeitedProtection: boolean;
+  /** Bomb: true only if this landing actually removed a shield. */
+  strippedShield?: boolean;
 }
 
 export interface PlayerStats {
@@ -452,6 +455,15 @@ export type SeatTossResult = {
   seatOrder: string[];
 };
 
+export type SeatSwapRequest = {
+  id: string;
+  firstId: string;
+  secondId: string;
+  firstSeat: number;
+  secondSeat: number;
+  acceptedBy: string[];
+};
+
 export type SeatTossState = {
   /** Tosses run so far (1–3). */
   count: number;
@@ -460,4 +472,6 @@ export type SeatTossState = {
   history: SeatTossResult[];
   /** Host confirmed the 3rd toss — seats applied. */
   locked: boolean;
+  /** Host-proposed seat swap waiting for player accept. */
+  swapRequest?: SeatSwapRequest | null;
 };

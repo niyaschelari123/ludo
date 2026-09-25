@@ -170,3 +170,17 @@ export function playShieldLose() {
   tone(440, 0.1, { delay: 0.04, volume: 0.045, type: 'sawtooth', endFrequency: 160 })
   tone(220, 0.16, { delay: 0.09, volume: 0.04, type: 'triangle', endFrequency: 90 })
 }
+
+/** Low boom + smoke hiss when a bomb tile goes off. */
+export function playBomb() {
+  tone(88, 0.36, { volume: 0.11, type: 'sawtooth', endFrequency: 34 })
+  tone(150, 0.22, { volume: 0.08, type: 'square', endFrequency: 46 })
+  tone(240, 0.16, { delay: 0.02, volume: 0.055, type: 'square', endFrequency: 68 })
+  tone(70, 0.45, { delay: 0.03, volume: 0.075, type: 'triangle', endFrequency: 26 })
+  tone(980, 0.05, { delay: 0.01, volume: 0.035, type: 'square', endFrequency: 300 })
+  tone(640, 0.08, { delay: 0.05, volume: 0.03, type: 'sawtooth', endFrequency: 170 })
+  tone(1800, 0.28, { delay: 0.04, volume: 0.022, type: 'sawtooth', endFrequency: 380 })
+  tone(1320, 0.34, { delay: 0.08, volume: 0.02, type: 'square', endFrequency: 240 })
+  tone(860, 0.4, { delay: 0.12, volume: 0.02, type: 'sawtooth', endFrequency: 140 })
+  tone(420, 0.12, { delay: 0.1, volume: 0.025, type: 'triangle', endFrequency: 100 })
+}

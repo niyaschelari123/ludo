@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { getBoardPlayerCount } from '../game/engine'
 import {
   getPolygonBoardGeometry,
@@ -28,6 +29,54 @@ const FOUR_TRACK: Point[] = [
 
 function boardSeatCount(room: Room) {
   return getBoardPlayerCount(room)
+}
+
+const SQUARE_CENTER: Point = { x: 300, y: 300 }
+
+function bombOffset(
+  x: number,
+  y: number,
+  cellSize: number,
+  normal?: number,
+): Point {
+  const dist = cellSize * 0.78
+  if (typeof normal === 'number') {
+    return {
+      x: x + Math.cos(normal) * dist,
+      y: y + Math.sin(normal) * dist,
+    }
+  }
+  const dx = x - SQUARE_CENTER.x
+  const dy = y - SQUARE_CENTER.y
+  const length = Math.hypot(dx, dy) || 1
+  return {
+    x: x + (dx / length) * dist,
+    y: y + (dy / length) * dist,
+  }
+}
+
+function BombBurst({ x, y, burstKey }: { x: number; y: number; burstKey: number }) {
+  return (
+    <g className="bomb-burst" key={burstKey} transform={`translate(${x} ${y})`}>
+      <circle className="bomb-burst-flash" r={10} />
+      <circle className="bomb-burst-ring" r={14} />
+      <circle className="bomb-burst-ring bomb-burst-ring--late" r={18} />
+      {Array.from({ length: 8 }, (_, index) => {
+        const angle = (Math.PI * 2 * index) / 8
+        return (
+          <circle
+            key={index}
+            className="bomb-burst-spark"
+            r={3.2}
+            style={{
+              ['--spark-x' as string]: `${Math.cos(angle) * 28}px`,
+              ['--spark-y' as string]: `${Math.sin(angle) * 28}px`,
+            }}
+          />
+        )
+      })}
+    </g>
+  )
 }
 
 function PowerMarker({
@@ -96,6 +145,16 @@ export function PowerUpLayer({
   room: Room
   geometry?: BoardGeometry | null
 }) {
+  const [burst, setBurst] = useState<{ cell: number; key: number } | null>(null)
+  const pending = room.game?.pendingPower
+
+  useEffect(() => {
+    if (pending?.type !== 'bomb' || !pending.strippedShield) return
+    setBurst({ cell: pending.landingCell, key: Date.now() })
+    const timer = window.setTimeout(() => setBurst(null), 900)
+    return () => window.clearTimeout(timer)
+  }, [pending?.type, pending?.landingCell, pending?.playerId, pending?.tokenId, pending?.strippedShield])
+
   if (!hasPowerBoard(room.gameMode) || !room.game?.powerTiles) return null
 
   sanitizePowerTiles(room.game.powerTiles, getBoardPlayerCount(room), {
@@ -114,6 +173,26 @@ export function PowerUpLayer({
         if (isSquare) {
           const position = FOUR_TRACK[cell]
           if (!position) return null
+          if (type === 'bomb') {
+            const outside = bombOffset(position.x, position.y, GRID_SIZE)
+            return (
+              <g key={`${cell}-${type}`} className="bomb-anchor">
+                <line
+                  className="bomb-leash"
+                  x1={position.x}
+                  y1={position.y}
+                  x2={outside.x}
+                  y2={outside.y}
+                />
+                <PowerMarker
+                  x={outside.x}
+                  y={outside.y}
+                  type={type}
+                  cellSize={GRID_SIZE * 0.72}
+                />
+              </g>
+            )
+          }
           return (
             <PowerMarker
               key={`${cell}-${type}`}
@@ -127,6 +206,32 @@ export function PowerUpLayer({
         if (!polygonGeometry) return null
         const trackCell = polygonTrackPoint(polygonGeometry, cell)
         const rotation = (trackCell.tangent * 180) / Math.PI
+        if (type === 'bomb') {
+          const outside = bombOffset(
+            trackCell.point.x,
+            trackCell.point.y,
+            polygonGeometry.cellSize,
+            trackCell.normal,
+          )
+          return (
+            <g key={`${cell}-${type}`} className="bomb-anchor">
+              <line
+                className="bomb-leash"
+                x1={trackCell.point.x}
+                y1={trackCell.point.y}
+                x2={outside.x}
+                y2={outside.y}
+              />
+              <PowerMarker
+                x={outside.x}
+                y={outside.y}
+                type={type}
+                rotation={rotation}
+                cellSize={polygonGeometry.cellSize * 0.72}
+              />
+            </g>
+          )
+        }
         return (
           <PowerMarker
             key={`${cell}-${type}`}
@@ -138,6 +243,29 @@ export function PowerUpLayer({
           />
         )
       })}
+      {burst
+        ? (() => {
+            if (isSquare) {
+              const position = FOUR_TRACK[burst.cell]
+              if (!position) return null
+              const outside = bombOffset(position.x, position.y, GRID_SIZE)
+              return (
+                <BombBurst x={outside.x} y={outside.y} burstKey={burst.key} />
+              )
+            }
+            if (!polygonGeometry) return null
+            const trackCell = polygonTrackPoint(polygonGeometry, burst.cell)
+            const outside = bombOffset(
+              trackCell.point.x,
+              trackCell.point.y,
+              polygonGeometry.cellSize,
+              trackCell.normal,
+            )
+            return (
+              <BombBurst x={outside.x} y={outside.y} burstKey={burst.key} />
+            )
+          })()
+        : null}
     </g>
   )
 }

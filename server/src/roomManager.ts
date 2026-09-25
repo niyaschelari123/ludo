@@ -673,9 +673,14 @@ function applySeatTossOrder(room: Room, seatOrder: string[]) {
 
 /** Reset toss if lobby roster changes mid-flow. */
 function resetSeatTossIfRosterChanged(room: Room) {
-  if (!room.seatToss || room.seatToss.locked) return
+  if (!room.seatToss) return
   const currentIds = new Set(room.players.map((player) => player.id))
   const tossed = room.seatToss.current?.seatOrder ?? []
+  const swap = room.seatToss.swapRequest
+  if (swap && (!currentIds.has(swap.firstId) || !currentIds.has(swap.secondId))) {
+    room.seatToss.swapRequest = null
+  }
+  if (room.seatToss.locked) return
   if (
     tossed.length !== room.players.length ||
     tossed.some((id) => !currentIds.has(id))
@@ -713,6 +718,7 @@ export function runSeatToss(roomId: string, hostId: string) {
     current: { seatOrder },
     history,
     locked: false,
+    swapRequest: null,
   }
   room.updatedAt = Date.now()
   return room
@@ -741,7 +747,124 @@ export function confirmSeatToss(roomId: string, hostId: string) {
   room.seatToss = {
     ...room.seatToss,
     locked: true,
+    swapRequest: null,
   }
+  room.updatedAt = Date.now()
+  return room
+}
+
+function seatSwapAcceptors(room: Room, firstId: string, secondId: string) {
+  return [firstId, secondId].filter((id) => {
+    if (id === room.hostId) return false
+    const player = room.players.find((entry) => entry.id === id)
+    return Boolean(player && !player.isBot)
+  })
+}
+
+function applySeatSwap(room: Room) {
+  const toss = room.seatToss
+  const request = toss?.swapRequest
+  const order = toss?.current?.seatOrder
+  if (!toss || !request || !order) return
+  const firstIndex = order.indexOf(request.firstId)
+  const secondIndex = order.indexOf(request.secondId)
+  if (firstIndex < 0 || secondIndex < 0) {
+    toss.swapRequest = null
+    return
+  }
+  const nextOrder = [...order]
+  nextOrder[firstIndex] = request.secondId
+  nextOrder[secondIndex] = request.firstId
+  toss.current = { seatOrder: nextOrder }
+  toss.swapRequest = null
+  if (toss.locked) applySeatTossOrder(room, nextOrder)
+}
+
+/** Host asks two players to swap tossed seats. Humans must accept. */
+export function proposeSeatSwap(
+  roomId: string,
+  hostId: string,
+  firstId: string,
+  secondId: string,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can ask for a seat swap.')
+  }
+  if (room.status !== 'lobby') {
+    throw new Error('Seat swaps are only in the lobby.')
+  }
+  if (!room.seatToss?.current || room.seatToss.count < SEAT_TOSS_MAX) {
+    throw new Error('Finish all 3 tosses before swapping seats.')
+  }
+  if (room.seatToss.swapRequest) {
+    throw new Error('A swap is already waiting.')
+  }
+  if (firstId === secondId) {
+    throw new Error('Pick two different players to swap.')
+  }
+  const order = room.seatToss.current.seatOrder
+  const firstSeat = order.indexOf(firstId)
+  const secondSeat = order.indexOf(secondId)
+  if (firstSeat < 0 || secondSeat < 0) {
+    throw new Error('Those players are not in this toss.')
+  }
+  const first = room.players.find((player) => player.id === firstId)
+  const second = room.players.find((player) => player.id === secondId)
+  if (!first || !second) throw new Error('Player not found.')
+
+  const request = {
+    id: crypto.randomUUID(),
+    firstId,
+    secondId,
+    firstSeat,
+    secondSeat,
+    acceptedBy: [] as string[],
+  }
+  room.seatToss.swapRequest = request
+  if (seatSwapAcceptors(room, firstId, secondId).length === 0) {
+    applySeatSwap(room)
+  }
+  room.updatedAt = Date.now()
+  return room
+}
+
+export function respondSeatSwap(
+  roomId: string,
+  userId: string,
+  accept: boolean,
+) {
+  const room = getRoom(roomId)
+  if (room.status !== 'lobby') {
+    throw new Error('Seat swaps are only in the lobby.')
+  }
+  const request = room.seatToss?.swapRequest
+  if (!request) throw new Error('No seat swap is waiting.')
+  const needed = seatSwapAcceptors(room, request.firstId, request.secondId)
+  if (!needed.includes(userId)) {
+    throw new Error('This swap is not for you.')
+  }
+  if (!accept) {
+    room.seatToss!.swapRequest = null
+    room.updatedAt = Date.now()
+    return room
+  }
+  if (!request.acceptedBy.includes(userId)) {
+    request.acceptedBy.push(userId)
+  }
+  if (needed.every((id) => request.acceptedBy.includes(id))) {
+    applySeatSwap(room)
+  }
+  room.updatedAt = Date.now()
+  return room
+}
+
+export function cancelSeatSwap(roomId: string, hostId: string) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can cancel a seat swap.')
+  }
+  if (room.seatToss) room.seatToss.swapRequest = null
   room.updatedAt = Date.now()
   return room
 }

@@ -211,6 +211,32 @@ function tokenDisplayRadius(
   return cellFit * 0.5
 }
 
+function TokenSmoke({ radius }: { radius: number }) {
+  const puffs = [
+    { cx: 0, cy: -radius * 0.15, rx: radius * 0.95, ry: radius * 0.72, delay: '0s' },
+    { cx: -radius * 0.42, cy: radius * 0.2, rx: radius * 0.7, ry: radius * 0.55, delay: '0.08s' },
+    { cx: radius * 0.4, cy: radius * 0.12, rx: radius * 0.68, ry: radius * 0.5, delay: '0.14s' },
+    { cx: 0, cy: radius * 0.55, rx: radius * 0.78, ry: radius * 0.42, delay: '0.05s' },
+    { cx: -radius * 0.12, cy: -radius * 0.62, rx: radius * 0.55, ry: radius * 0.4, delay: '0.18s' },
+    { cx: radius * 0.18, cy: -radius * 0.35, rx: radius * 0.48, ry: radius * 0.36, delay: '0.22s' },
+  ]
+  return (
+    <g className="token-smoke" pointerEvents="none" aria-hidden="true">
+      {puffs.map((puff, index) => (
+        <ellipse
+          key={index}
+          className="token-smoke-puff"
+          cx={puff.cx}
+          cy={puff.cy}
+          rx={puff.rx}
+          ry={puff.ry}
+          style={{ animationDelay: puff.delay }}
+        />
+      ))}
+    </g>
+  )
+}
+
 function TokenDisc({
   color,
   radius,
@@ -747,6 +773,11 @@ export function LudoBoard({
   const boardSize = geometry?.size ?? SIZE
   const [hoveredStackKey, setHoveredStackKey] = useState<string | null>(null)
   const stackHoverClearRef = useRef<number | null>(null)
+  const [smokeHit, setSmokeHit] = useState<{
+    playerId: string
+    tokenId: number
+    key: number
+  } | null>(null)
 
   const clearStackHoverSoon = () => {
     if (stackHoverClearRef.current != null) {
@@ -796,6 +827,24 @@ export function LudoBoard({
       .filter((token) => token.playerId === userId)
       .map((token) => token.id),
   )
+
+  useEffect(() => {
+    const pending = room.game?.pendingPower
+    if (pending?.type !== 'bomb' || !pending.strippedShield) return
+    setSmokeHit({
+      playerId: pending.playerId,
+      tokenId: pending.tokenId,
+      key: Date.now(),
+    })
+    const timer = window.setTimeout(() => setSmokeHit(null), 1400)
+    return () => window.clearTimeout(timer)
+  }, [
+    room.game?.pendingPower?.type,
+    room.game?.pendingPower?.playerId,
+    room.game?.pendingPower?.tokenId,
+    room.game?.pendingPower?.landingCell,
+    room.game?.pendingPower?.strippedShield,
+  ])
 
   useLayoutEffect(() => {
     if (!movingToken) {
@@ -958,6 +1007,9 @@ export function LudoBoard({
             const isMine = originalToken.playerId === userId
             const inYard = originalToken.progress === -1
             const shielded = Boolean(room.game?.shieldBuff?.[player.id])
+            const bombHit =
+              smokeHit?.playerId === originalToken.playerId &&
+              smokeHit.tokenId === originalToken.id
             const located = highlightPlayerId === originalToken.playerId
             const tokenRadius = tokenDisplayRadius(
               boardCount,
@@ -993,7 +1045,7 @@ export function LudoBoard({
             return (
               <g
                 key={`${originalToken.playerId}-${originalToken.id}`}
-                className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''} ${shielded ? 'shielded' : ''} ${located ? 'located' : ''}`}
+                className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''} ${shielded ? 'shielded' : ''} ${bombHit ? 'token--bomb-hit' : ''} ${located ? 'located' : ''}`}
                 style={{
                   transform: `translate(${position.x + offsetX}px, ${position.y + offsetY}px)`,
                   // Let taps reach your token when opponents overlap the same cell
@@ -1019,6 +1071,7 @@ export function LudoBoard({
                   finished={isFinished}
                   shielded={shielded}
                 />
+                {bombHit ? <TokenSmoke radius={tokenRadius} /> : null}
                 {located ? (
                   <g className="locate-arrow" pointerEvents="none" aria-hidden="true">
                     <g transform={`translate(0 ${-tokenRadius - 10})`}>
