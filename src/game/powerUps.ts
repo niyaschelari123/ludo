@@ -22,7 +22,7 @@ import type {
   Room,
   Token,
 } from "./types";
-import { allowsCaptures } from "./types";
+import { allowsCaptures, SUPER_GUN_TIMEOUT_MS } from "./types";
 import { areTeammates } from "./teams";
 
 export const ACTIVE_POWER_TYPES: PowerUpType[] = [
@@ -117,7 +117,7 @@ export const POWER_UP_INFO: {
     type: "super",
     label: "Super",
     description:
-      "Leaps halfway around the board onto a safe star (one use per token you start with); if home is closer, enters the home path",
+      "Leaps halfway around the board onto a safe star (one use per token you start with); if home is closer, enters the home path. Use every Super to earn a Super Gun",
   },
   {
     type: "tnt",
@@ -200,7 +200,7 @@ export function powerInfoForMode(
     entry.type === "super"
       ? {
           ...entry,
-          description: `Leaps halfway around the board onto a safe star (max ${tokenLimit} uses — one per token); if home is closer, enters the home path`,
+          description: `Leaps halfway around the board onto a safe star (max ${tokenLimit} uses — one per token); if home is closer, enters the home path. Use every Super to earn a Super Gun`,
         }
       : entry,
   );
@@ -876,7 +876,13 @@ export function applyPowerUp(
       game.superUses[player.id] = used + 1;
       const stats = ensurePlayerStats(game, player.id);
       stats.superPowers = (stats.superPowers ?? 0) + 1;
-      return applySuperLeap(token, player, room);
+      const leap = applySuperLeap(token, player, room);
+      if (game.superUses[player.id] >= limit && !game.superGunUsed?.[player.id]) {
+        game.superGunReady = { ...(game.superGunReady ?? {}), [player.id]: true };
+        game.superGunDeadline = Date.now() + SUPER_GUN_TIMEOUT_MS;
+        return `${leap} — Super Gun ready. Left-click to fire within 30s`;
+      }
+      return leap;
     }
     case "portal": {
       const length = trackLength(room);

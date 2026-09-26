@@ -1,6 +1,8 @@
 import { pickBestMovableToken } from '../../src/game/engine.js'
 import { isAutoControlled, type Room } from '../../src/game/types.js'
+import { hasSuperGunReady } from '../../src/game/superGun.js'
 import {
+  fireSuperGun,
   getRoom,
   movePawn,
   resolvePendingPower,
@@ -58,6 +60,18 @@ export function runBotStep(roomId: string): BotActionResult {
   if (!isAutoControlled(player)) return { kind: 'none' }
 
   const game = room.game
+
+  if (hasSuperGunReady(room, player.id) && !(game.phase === 'power' && game.pendingPower)) {
+    const { previewRoom, room: nextRoom } = fireSuperGun(
+      roomId,
+      player.id,
+      Math.random() * Math.PI * 2,
+    )
+    if (previewRoom.game?.activeMove) {
+      return { kind: 'move', previewRoom, room: nextRoom }
+    }
+    return { kind: 'state', room: nextRoom }
+  }
 
   if (game.phase === 'roll') {
     const { room: nextRoom } = rollDice(roomId, player.id)

@@ -26,6 +26,8 @@ import {
 } from '../game/types'
 import { isTeamMode } from '../game/teams'
 import { PowerUpLayer } from './PowerUpLayer'
+import { SuperGunLayer } from './SuperGunLayer'
+import { canFireSuperGun } from '../game/superGun'
 
 const SIZE = BOARD_SIZE
 const CENTER = SIZE / 2
@@ -751,6 +753,7 @@ interface Props {
   movingToken: MovingToken | null
   highlightPlayerId?: string | null
   onMove: (tokenId: number) => void
+  onFireGun?: (angle: number) => void
 }
 
 export function LudoBoard({
@@ -759,7 +762,9 @@ export function LudoBoard({
   movingToken,
   highlightPlayerId,
   onMove,
+  onFireGun,
 }: Props) {
+  const gunAimRef = useRef<() => number>(() => -Math.PI / 2)
   const boardCount = boardSeatCount(room)
   const isSquare = boardCount === 4
   const largeNgon = boardCount >= 5 && boardCount <= 7
@@ -944,8 +949,17 @@ export function LudoBoard({
     hoveredStack.length > 2 &&
     !hoveredStack.every((entry) => entry.isFinished)
 
+  const gunReady = canFireSuperGun(room, userId)
+
   return (
-    <div className={`board-wrap ${isSquare ? 'square' : 'radial'} ${largeNgon ? 'large-ngon-board' : ''} ${highlightPlayerId ? 'is-locating' : ''}`}>
+    <div
+      className={`board-wrap ${isSquare ? 'square' : 'radial'} ${largeNgon ? 'large-ngon-board' : ''} ${highlightPlayerId ? 'is-locating' : ''} ${gunReady ? 'is-gun-aiming' : ''}`}
+      onPointerDown={(event) => {
+        if (!onFireGun || !gunReady || event.button !== 0) return
+        event.preventDefault()
+        onFireGun(gunAimRef.current())
+      }}
+    >
       <svg
         className="ludo-board"
         viewBox={`0 0 ${boardSize} ${boardSize}`}
@@ -1092,6 +1106,7 @@ export function LudoBoard({
               </g>
             )
           })}
+        <SuperGunLayer room={room} userId={userId} aimRef={gunAimRef} />
       </svg>
 
       {showStackPeek && hoveredStack ? (

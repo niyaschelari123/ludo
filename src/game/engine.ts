@@ -216,6 +216,11 @@ export function createGame(
             : {},
     shieldBuff: {},
     superUses: {},
+    superGunReady: {},
+    superGunUsed: {},
+    activeShot: null,
+    superGunDeadline: null,
+    superGunHold: null,
     pendingExtraTurn: null,
     pendingPower: null,
     endsAt: gameMode === "blitz" ? Date.now() + blitzMs : null,
@@ -488,6 +493,9 @@ export function applyRoll(room: Room, value: number) {
   if (!game || game.phase !== "roll")
     throw new Error("Dice cannot be rolled now.");
   const player = room.players[game.turnIndex];
+  if (player && game.superGunReady?.[player.id]) {
+    throw new Error("Fire the Super Gun first.");
+  }
   if (!player) throw new Error("Current player is missing.");
 
   game.dice = value;
@@ -571,6 +579,47 @@ function completeTurnAfterMove(
   } else {
     beginRollPhase(game);
   }
+}
+
+export function resumeAfterSuperGun(room: Room) {
+  const game = room.game;
+  if (!game) return;
+  const hold = game.superGunHold;
+  game.superGunHold = null;
+  game.superGunDeadline = null;
+  if (!hold) return;
+  const player =
+    room.players.find((entry) => entry.id === hold.playerId) ??
+    room.players[game.turnIndex];
+  if (!player) return;
+  completeTurnAfterMove(
+    room,
+    game,
+    player,
+    hold.dice,
+    {
+      captured: hold.captured,
+      reachedHome: hold.reachedHome,
+      allHome: hold.allHome,
+    },
+    hold.tokenMoved,
+  );
+}
+
+export function expireSuperGun(room: Room) {
+  const game = room.game;
+  if (!game) return room;
+  const shooter = room.players[game.turnIndex];
+  if (!shooter || !game.superGunReady?.[shooter.id]) return room;
+  game.superGunReady = { ...game.superGunReady, [shooter.id]: false };
+  game.superGunUsed = { ...(game.superGunUsed ?? {}), [shooter.id]: true };
+  game.superGunDeadline = null;
+  if (game.superGunHold) {
+    game.superGunHold = { ...game.superGunHold, tokenMoved: false };
+  }
+  game.lastAction = `${shooter.name} let the Super Gun expire`;
+  resumeAfterSuperGun(room);
+  return room;
 }
 
 /** Classic/Power/Quick/Race: filling places can end the match. Blitz waits for the clock. */
@@ -707,6 +756,18 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
 
   if (tryConcludeByFinishPlaces(room, game)) return;
 
+  if (game.superGunReady?.[player.id] && !game.superGunUsed?.[player.id]) {
+    game.superGunHold = {
+      playerId: player.id,
+      dice,
+      captured,
+      reachedHome: reachedHomeAfterPower,
+      allHome,
+      tokenMoved: token.progress !== progressBeforePower,
+    };
+    return;
+  }
+
   completeTurnAfterMove(
     room,
     game,
@@ -743,6 +804,9 @@ export function applyMove(room: Room, tokenId: number) {
   }
 
   const player = room.players[game.turnIndex];
+  if (player && game.superGunReady?.[player.id]) {
+    throw new Error("Fire the Super Gun first.");
+  }
   const token = game.tokens.find(
     (candidate) => candidate.playerId === player.id && candidate.id === tokenId,
   );

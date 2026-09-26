@@ -171,6 +171,14 @@ export function playShieldLose() {
   tone(220, 0.16, { delay: 0.09, volume: 0.04, type: 'triangle', endFrequency: 90 })
 }
 
+/** Short crack when the Super Gun fires. */
+export function playGun() {
+  tone(180, 0.08, { volume: 0.09, type: 'square', endFrequency: 70 })
+  tone(520, 0.05, { volume: 0.06, type: 'sawtooth', endFrequency: 180 })
+  tone(1400, 0.04, { delay: 0.01, volume: 0.04, type: 'square', endFrequency: 400 })
+  tone(90, 0.18, { delay: 0.02, volume: 0.07, type: 'triangle', endFrequency: 40 })
+}
+
 /** Low boom + smoke hiss when a bomb tile goes off. */
 export function playBomb() {
   tone(88, 0.36, { volume: 0.11, type: 'sawtooth', endFrequency: 34 })

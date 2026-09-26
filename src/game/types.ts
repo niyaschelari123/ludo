@@ -265,6 +265,8 @@ export interface ActiveMove {
   willCapture?: boolean;
 }
 
+export const SUPER_GUN_TIMEOUT_MS = 30_000;
+
 export const TOKEN_MOVE_STEP_MS = 135;
 export const TOKEN_MOVE_END_PADDING_MS = 240;
 
@@ -339,6 +341,27 @@ export const resolveAnimationProgress = (movingToken: MovingToken) => {
   };
 };
 
+export interface SuperGunHold {
+  playerId: string;
+  dice: number;
+  captured: boolean;
+  reachedHome: boolean;
+  allHome: boolean;
+  tokenMoved: boolean;
+}
+
+export interface SuperGunShot {
+  shooterId: string;
+  angle: number;
+  /** Straight segments including wall / safe-piece bounces. */
+  path?: { x: number; y: number }[];
+  hitPlayerId: string | null;
+  hitTokenId: number | null;
+  hitX: number;
+  hitY: number;
+  startedAt: number;
+}
+
 export interface PendingPower {
   playerId: string;
   tokenId: number;
@@ -389,6 +412,16 @@ export interface GameState {
   shieldBuff?: Record<string, boolean>;
   /** Super (⚡) leaps used this match, keyed by player id. */
   superUses?: Record<string, number>;
+  /** True after a player uses every Super leap — one Super Gun shot. */
+  superGunReady?: Record<string, boolean>;
+  /** Super Gun already fired this match. */
+  superGunUsed?: Record<string, boolean>;
+  /** Latest Super Gun shot, for the laser / bullet animation. */
+  activeShot?: SuperGunShot | null;
+  /** When the 30s Super Gun window ends. */
+  superGunDeadline?: number | null;
+  /** Turn to resume after the Super Gun is fired or expires. */
+  superGunHold?: SuperGunHold | null;
   pendingExtraTurn?: string | null;
   pendingPower?: PendingPower | null;
   /** Blitz: wall-clock end time (ms since epoch). */
@@ -442,6 +475,8 @@ export interface Room {
   spectatorRequests?: SpectatorRequest[];
   /** Players asking to sit (host must accept). */
   joinRequests?: JoinRequest[];
+  /** Host stopped the match without applying career / Most stats. */
+  skipCareerPoints?: boolean;
   status: RoomStatus;
   players: Player[];
   departedPlayers: DepartedPlayer[];

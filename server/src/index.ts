@@ -63,10 +63,13 @@ import {
   proposeSeatSwap,
   respondSeatSwap,
   cancelSeatSwap,
+  fireSuperGun,
+  expireSuperGunRoom,
 } from './roomManager.js'
 import { scheduleBotTurn, stopBotTurn, type BotActionResult } from './botRunner.js'
 import { scheduleTurnTimer, stopTurnTimer } from './turnTimer.js'
 import { schedulePowerTimer, stopPowerTimer } from './powerTimer.js'
+import { scheduleSuperGunTimer, stopSuperGunTimer } from './gunTimer.js'
 import { scheduleBlitzTimer, stopBlitzTimer } from './blitzTimer.js'
 import { chatHistoryFor, postChatMessage } from './chat.js'
 import type { ActiveMove, ChatMessage, Room } from '../../src/game/types.js'
@@ -190,6 +193,24 @@ function publishResolvedPower(
     emitStateToRoom(room)
     scheduleBotTurn(roomId, handleBotAction, 'afterMove')
     scheduleTurnTimer(roomId, handleTurnTimeout)
+  }
+  const shooter = room.players[room.game?.turnIndex ?? -1]
+  if (shooter && room.game?.superGunReady?.[shooter.id]) {
+    stopTurnTimer(roomId)
+    scheduleSuperGunTimer(roomId, handleSuperGunTimeout)
+  }
+}
+
+function handleSuperGunTimeout(roomId: string) {
+  try {
+    const room = expireSuperGunRoom(roomId)
+    if (!room) return
+    stopSuperGunTimer(roomId)
+    emitStateToRoom(room)
+    scheduleBotTurn(roomId, handleBotAction, 'afterMove')
+    scheduleTurnTimer(roomId, handleTurnTimeout)
+  } catch (error) {
+    console.error(`Super Gun timeout failed in room ${roomId}:`, error)
   }
 }
 
@@ -602,11 +623,15 @@ io.on('connection', (socket) => {
   socket.on(
     'stopMatch',
     (
-      payload: { roomId: string; userId: string },
+      payload: { roomId: string; userId: string; addPoints?: boolean },
       callback?: Ack<{ room: Room }>,
     ) => {
       try {
-        const room = stopMatchByHost(payload.roomId, payload.userId)
+        const room = stopMatchByHost(
+          payload.roomId,
+          payload.userId,
+          payload.addPoints !== false,
+        )
         stopTurnTimer(room.id)
         stopPowerTimer(room.id)
         stopBotTurn(room.id)
@@ -1235,6 +1260,35 @@ io.on('connection', (socket) => {
     },
   )
 
+  socket.on(
+    'fireSuperGun',
+    (
+      payload: { roomId: string; userId: string; angle: number; startedAt?: number },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const startedAt = payload.startedAt ?? Date.now()
+        stopSuperGunTimer(payload.roomId)
+        const { previewRoom, room } = fireSuperGun(
+          payload.roomId,
+          payload.userId,
+          payload.angle,
+          startedAt,
+        )
+        if (previewRoom.game?.activeMove) {
+          emitAnimatedMove(payload.roomId, previewRoom, room)
+        } else {
+          emitStateToRoom(room)
+          scheduleBotTurn(payload.roomId, handleBotAction, 'afterMove')
+          scheduleTurnTimer(payload.roomId, handleTurnTimeout)
+        }
+        ackRoom(callback, room, payload.userId)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
   // --- leaveRoom: remove player and rebalance turn order ---
   socket.on(
     'leaveRoom',
@@ -1249,6 +1303,7 @@ io.on('connection', (socket) => {
         stopBotTurn(payload.roomId)
         stopTurnTimer(payload.roomId)
         stopPowerTimer(payload.roomId)
+        stopSuperGunTimer(payload.roomId)
         callback?.({
           ok: true,
           data: { room: room ? roomViewFor(room, payload.userId) : null },

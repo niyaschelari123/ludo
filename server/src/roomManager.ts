@@ -6,6 +6,7 @@ import {
   applyMove,
   applyPendingPower,
   applyRoll,
+  expireSuperGun,
   applyRollMisses,
   createGame,
   getBoardPlayerCount,
@@ -15,6 +16,7 @@ import {
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
 import { sanitizePowerTiles } from '../../src/game/powerUps.js'
+import { applySuperGunShot } from '../../src/game/superGun.js'
 import { PLAYER_COLORS, canControlSeat, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, BLITZ_EXTEND_MS, BLITZ_REDUCE_MS, BLITZ_MIN_REMAINING_MS, type Room, type SpectatorAccess, type Team, type TeamAssignMode, type TeamSize } from '../../src/game/types.js'
 import {
   buildRandomTeams,
@@ -979,7 +981,11 @@ export function endBlitzRoom(roomId: string) {
 }
 
 /** Host ends a live match early and locks current standings as the result. */
-export function stopMatchByHost(roomId: string, hostId: string) {
+export function stopMatchByHost(
+  roomId: string,
+  hostId: string,
+  addPoints = true,
+) {
   const room = getRoom(roomId)
   if (room.hostId !== hostId) {
     throw new Error('Only the host can stop the match.')
@@ -993,6 +999,7 @@ export function stopMatchByHost(roomId: string, hostId: string) {
     next.players.find((player) => player.id === hostId) ??
     (next.departedPlayers ?? []).find((player) => player.id === hostId)
   finalizeHostStoppedGame(next, host?.name ?? 'Host')
+  next.skipCareerPoints = !addPoints
   rooms.set(roomId, next)
   return next
 }
@@ -1282,6 +1289,56 @@ export function resolvePendingPower(
 
   rooms.set(roomId, finalRoom)
   return { previewRoom: finalRoom, room: finalRoom }
+}
+
+export function fireSuperGun(
+  roomId: string,
+  userId: string,
+  angle: number,
+  startedAt = Date.now(),
+) {
+  const current = getRoom(roomId)
+  if (current.status !== 'playing' || !current.game) {
+    throw new Error('No active game.')
+  }
+
+  const finalRoom = structuredClone(current) as Room
+  applySuperGunShot(finalRoom, userId, angle, startedAt)
+  finalRoom.updatedAt = Date.now()
+  rooms.set(roomId, finalRoom)
+
+  const activeMove = finalRoom.game?.activeMove
+  const activeShot = finalRoom.game?.activeShot
+  if (activeMove && activeShot) {
+    const previewRoom = structuredClone(finalRoom) as Room
+    const previewToken = previewRoom.game!.tokens.find(
+      (candidate) =>
+        candidate.playerId === activeMove.playerId &&
+        candidate.id === activeMove.tokenId,
+    )
+    if (previewToken) previewToken.progress = activeMove.fromProgress
+    previewRoom.game!.activeMove = activeMove
+    previewRoom.updatedAt = Date.now()
+    // Drop the move from live state so a later broadcast does not replay it.
+    finalRoom.game!.activeMove = null
+    rooms.set(roomId, finalRoom)
+    return { previewRoom, room: finalRoom }
+  }
+
+  return { previewRoom: finalRoom, room: finalRoom }
+}
+
+export function expireSuperGunRoom(roomId: string) {
+  const current = getRoom(roomId)
+  if (current.status !== 'playing' || !current.game) return null
+  const player = current.players[current.game.turnIndex]
+  if (!player || !current.game.superGunReady?.[player.id]) return null
+
+  const room = structuredClone(current) as Room
+  expireSuperGun(room)
+  room.updatedAt = Date.now()
+  rooms.set(roomId, room)
+  return room
 }
 
 /** Server/host force-resolve when the lander's client stalls. */

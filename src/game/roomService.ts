@@ -100,10 +100,15 @@ export async function reduceBlitzTime(roomId: string, userId: string) {
   return room
 }
 
-export async function stopMatch(roomId: string, userId: string) {
+export async function stopMatch(
+  roomId: string,
+  userId: string,
+  addPoints = true,
+) {
   const { room } = await emitAck<{ room: Room }>('stopMatch', {
     roomId,
     userId,
+    addPoints,
   })
   return room
 }
@@ -615,6 +620,21 @@ export async function resolvePendingPower(
   startedAt: number,
 ) {
   await emitAck('resolvePower', { roomId, userId, startedAt })
+}
+
+export async function fireSuperGun(
+  roomId: string,
+  userId: string,
+  angle: number,
+  startedAt = Date.now(),
+) {
+  const { room } = await emitAck<{ room: Room }>('fireSuperGun', {
+    roomId,
+    userId,
+    angle,
+    startedAt,
+  })
+  return room
 }
 
 export async function moveTokenWithRetry(

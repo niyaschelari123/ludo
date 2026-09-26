@@ -2276,6 +2276,18 @@ select:focus {
   box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.28);
 }
 
+.super-gun-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 11px;
+  background: rgba(127, 29, 29, 0.45);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.45);
+}
+
 .player-row.has-shield {
   border-color: rgba(96, 165, 250, 0.45);
   background: color-mix(in srgb, #3b82f6 10%, transparent);
@@ -2822,6 +2834,57 @@ select:focus {
   stroke-width: 1.2;
   stroke-linejoin: round;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+}
+
+.super-gun-laser {
+  stroke: #fb7185;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 7 6;
+  filter: drop-shadow(0 0 6px #fb7185);
+  opacity: 0.88;
+}
+
+.super-gun-laser.is-firing {
+  stroke: #fff7ed;
+  stroke-dasharray: none;
+  opacity: 1;
+}
+
+.super-gun-body,
+.super-gun-barrel,
+.super-gun-grip {
+  fill: #334155;
+  stroke: #0f172a;
+  stroke-width: 1.2;
+}
+
+.super-gun-barrel {
+  fill: #1e293b;
+}
+
+.super-gun-grip {
+  fill: #7f1d1d;
+}
+
+.super-gun-sight {
+  fill: #f87171;
+}
+
+.super-gun-bullet {
+  fill: #fde68a;
+  stroke: #f97316;
+  stroke-width: 1.4;
+  filter: drop-shadow(0 0 8px #fbbf24);
+}
+
+.board-wrap.is-gun-aiming {
+  cursor: crosshair;
+}
+
+.super-gun-hint {
+  color: #fecaca;
 }
 
 @keyframes token-locate {
@@ -3654,6 +3717,10 @@ select:focus {
   grid-template-columns: 1fr 1fr;
   gap: 10px;
   margin-top: 25px;
+}
+
+.confirm-actions--triple {
+  grid-template-columns: 1fr;
 }
 
 .confirm-actions button {

@@ -296,6 +296,7 @@ export function countLoginPlayersInMatch(room: Room): number {
 
 /** Career win/MotM only count when ≥3 login accounts were in the match. */
 export function isCareerEligibleMatch(room: Room): boolean {
+  if (room.skipCareerPoints) return false
   return countLoginPlayersInMatch(room) >= 3
 }
 

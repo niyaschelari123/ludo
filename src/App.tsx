@@ -6,6 +6,7 @@ import {
   isSoundEnabled,
   playBomb,
   playCapture,
+  playGun,
   playClick,
   playDiceResult,
   playDiceTick,
@@ -64,6 +65,7 @@ import {
   proposeSeatSwap,
   respondSeatSwap,
   cancelSeatSwap,
+  fireSuperGun,
   skipMoveTimer,
   skipPowerTimer,
   skipRollTimer,
@@ -146,6 +148,7 @@ import {
   superUsesLimit,
   superUsesUsed,
 } from './game/powerUps'
+import { canFireSuperGun } from './game/superGun'
 import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWorstStandings, computeWinOdds, rankBlitzPlayers, readPlayerStats, leftWithoutHostApproval, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
 
 import { PLAYER_COLORS, BLITZ_DURATION_OPTIONS, DEFAULT_BLITZ_DURATION_MS, blitzDurationLabel, canControlSeat, gameModeLabel, hasPowerBoard, isAutoControlled, isBlitzMode, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room, type SpectatorAccess, type TeamAssignMode, type TeamSize } from './game/types'
@@ -416,6 +419,7 @@ function App() {
   const powerResolveInFlightRef = useRef(false)
   const prevRoomRef = useRef<Room | null>(null)
   const remoteAnimSignatureRef = useRef<string | null>(null)
+  const lastGunSendHomeKeyRef = useRef<string | null>(null)
   const movingTokenRef = useRef<MovingToken | null>(null)
   const roomRef = useRef<Room | null>(null)
   const [soundOn, setSoundOn] = useState(isSoundEnabled)
@@ -673,6 +677,13 @@ function App() {
   const scheduleRemoteMove = useCallback((move: MovingToken) => {
     const signature = moveBaseSignature(move)
     if (remoteAnimSignatureRef.current === signature) return
+    const shot = roomRef.current?.game?.activeShot
+    const goingHome = movingTokenTarget(move) === -1
+    if (goingHome && shot?.hitPlayerId === move.playerId && shot.hitTokenId === move.id) {
+      const gunKey = `${shot.startedAt}:${shot.hitPlayerId}:${shot.hitTokenId}`
+      if (lastGunSendHomeKeyRef.current === gunKey) return
+      lastGunSendHomeKeyRef.current = gunKey
+    }
     remoteAnimSignatureRef.current = signature
     const victims =
       move.willCapture && prevRoomRef.current && roomRef.current
@@ -1095,18 +1106,19 @@ function App() {
     if (
       !game ||
       displayRoom?.status !== 'playing' ||
-      (game.phase !== 'roll' && game.phase !== 'move')
+      (game.phase !== 'roll' && game.phase !== 'move' && !game.superGunDeadline)
     ) {
       setTurnSecondsLeft(null)
       return
     }
 
     const tick = () => {
-      if (!game.turnDeadline) {
+      const deadline = game.superGunDeadline ?? game.turnDeadline
+      if (!deadline) {
         setTurnSecondsLeft(null)
         return
       }
-      setTurnSecondsLeft(Math.max(0, Math.ceil((game.turnDeadline - Date.now()) / 1000)))
+      setTurnSecondsLeft(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)))
     }
 
     tick()
@@ -1116,6 +1128,7 @@ function App() {
     displayRoom?.status,
     displayRoom?.game?.phase,
     displayRoom?.game?.turnDeadline,
+    displayRoom?.game?.superGunDeadline,
     displayRoom?.game?.turnIndex,
   ])
 
@@ -1630,6 +1643,17 @@ function App() {
       return () => window.clearTimeout(timer)
     }
   }, [displayRoom?.game?.pendingPower, displayRoom?.game, displayRoom?.players])
+
+  useEffect(() => {
+    const shot = displayRoom?.game?.activeShot
+    if (!shot) return
+    playGun()
+    if (shot.hitPlayerId) playCapture()
+  }, [
+    displayRoom?.game?.activeShot?.startedAt,
+    displayRoom?.game?.activeShot?.shooterId,
+    displayRoom?.game?.activeShot?.hitPlayerId,
+  ])
 
   useEffect(() => {
     const pending = displayRoom?.game?.pendingPower
@@ -3879,6 +3903,11 @@ function App() {
                             ⚡ {superUsesUsed(viewRoom.game, player.id)}/{superLimit}
                           </span>
                         ) : null}
+                        {viewRoom.game?.superGunReady?.[player.id] ? (
+                          <span className="super-gun-badge" title="Super Gun ready">
+                            🔫
+                          </span>
+                        ) : null}
                       </strong>
                       <small>
                         {isBlitz
@@ -4340,10 +4369,17 @@ function App() {
               <strong>{isMyTurn ? 'Your turn' : `${currentPlayer?.name}'s turn`}</strong>
               <span>{bannerAction}</span>
               {turnSecondsLeft !== null &&
-                (viewRoom.game?.phase === 'roll' || viewRoom.game?.phase === 'move') &&
+                (viewRoom.game?.superGunDeadline ||
+                  viewRoom.game?.phase === 'roll' ||
+                  viewRoom.game?.phase === 'move') &&
                 !isAutoControlled(currentPlayer) ? (
                 <span className={`turn-timer ${turnSecondsLeft <= 5 ? 'urgent' : ''}`}>
-                  {viewRoom.game?.phase === 'roll' ? 'Roll' : 'Move'} within {turnSecondsLeft}s
+                  {viewRoom.game?.superGunDeadline
+                    ? `Fire Super Gun within ${turnSecondsLeft}s`
+                    : viewRoom.game?.phase === 'roll'
+                      ? 'Roll'
+                      : 'Move'}{' '}
+                  {viewRoom.game?.superGunDeadline ? '' : `within ${turnSecondsLeft}s`}
                 </span>
               ) : null}
             </div>
@@ -4361,6 +4397,12 @@ function App() {
               onMove={(tokenId) => {
                 if (isSpectator) return
                 void animateMove(tokenId)
+              }}
+              onFireGun={(angle) => {
+                if (isSpectator) return
+                void perform(async () => {
+                  await fireSuperGun(viewRoom.id, userId, angle)
+                })
               }}
             />
             <PowerToast
@@ -4412,7 +4454,15 @@ function App() {
               value={rolling ? diceFace : displayDice}
               rolling={rolling}
             />
-            {isMyTurn && viewRoom.game?.phase === 'roll' ? (
+            {canFireSuperGun(viewRoom, userId) ? (
+              <p className="action-hint super-gun-hint">
+                Super Gun — point the laser at a token, then left-click to fire. You have 30s.
+              </p>
+            ) : currentPlayer && viewRoom.game?.superGunReady?.[currentPlayer.id] ? (
+              <p className="action-hint super-gun-hint">
+                Waiting for {currentPlayer.name} to fire the Super Gun…
+              </p>
+            ) : isMyTurn && viewRoom.game?.phase === 'roll' ? (
               <button className="roll-button" disabled={busy || rolling} onClick={() => void animateRoll()}>
                 Roll dice
               </button>
@@ -5486,12 +5536,13 @@ function App() {
             </div>
             <h2>Stop this match?</h2>
             <p>
-              The game ends now. Winners are ranked from the current board
+              The game ends now and results still show. Choose whether this
+              match counts toward Most stats
               {isBlitzMode(room.gameMode)
-                ? ' (Blitz points).'
+                ? ' (Blitz ranking).'
                 : ' (finishers first, then tokens home / progress).'}
             </p>
-            <div className="confirm-actions">
+            <div className="confirm-actions confirm-actions--triple">
               <button
                 className="cancel-button"
                 disabled={busy}
@@ -5500,16 +5551,28 @@ function App() {
                 Keep playing
               </button>
               <button
-                className="danger-button"
+                className="secondary-button"
                 disabled={busy}
                 onClick={() =>
                   void perform(async () => {
-                    await stopMatch(room.id, userId)
+                    await stopMatch(room.id, userId, false)
                     setStopMatchConfirmOpen(false)
                   })
                 }
               >
-                Stop & show results
+                Don't add points
+              </button>
+              <button
+                className="danger-button"
+                disabled={busy}
+                onClick={() =>
+                  void perform(async () => {
+                    await stopMatch(room.id, userId, true)
+                    setStopMatchConfirmOpen(false)
+                  })
+                }
+              >
+                Add points
               </button>
             </div>
           </div>
