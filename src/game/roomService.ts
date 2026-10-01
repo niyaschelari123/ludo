@@ -627,12 +627,16 @@ export async function fireSuperGun(
   userId: string,
   angle: number,
   startedAt = Date.now(),
+  target?: { playerId: string; tokenId: number },
 ) {
   const { room } = await emitAck<{ room: Room }>('fireSuperGun', {
     roomId,
     userId,
     angle,
     startedAt,
+    ...(target
+      ? { targetPlayerId: target.playerId, targetTokenId: target.tokenId }
+      : {}),
   })
   return room
 }

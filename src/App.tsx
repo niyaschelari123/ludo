@@ -148,7 +148,7 @@ import {
   superUsesLimit,
   superUsesUsed,
 } from './game/powerUps'
-import { canFireSuperGun } from './game/superGun'
+import { angleTowardToken, canFireSuperGun, listSuperGunTargets } from './game/superGun'
 import { computeMotm, computeMotmStandings, computeWorstPlayer, computeWorstStandings, computeWinOdds, rankBlitzPlayers, readPlayerStats, leftWithoutHostApproval, BLITZ_SCORE_RULES, type MotmCandidate } from './game/matchAwards'
 
 import { PLAYER_COLORS, BLITZ_DURATION_OPTIONS, DEFAULT_BLITZ_DURATION_MS, blitzDurationLabel, canControlSeat, gameModeLabel, hasPowerBoard, isAutoControlled, isBlitzMode, type GameMode, type MovingToken, type PlayerStats, type PowerUpType, type Room, type SpectatorAccess, type TeamAssignMode, type TeamSize } from './game/types'
@@ -354,6 +354,8 @@ function App() {
   const [matchNoticeOpen, setMatchNoticeOpen] = useState(false)
   const [seatTossDismissedCount, setSeatTossDismissedCount] = useState<number | null>(null)
   const [seatBoardOpen, setSeatBoardOpen] = useState(false)
+  const [gunTargetKey, setGunTargetKey] = useState<string | null>(null)
+  const [touchGun, setTouchGun] = useState(false)
   const [seatSwapPick, setSeatSwapPick] = useState<string[]>([])
   const [stopMatchConfirmOpen, setStopMatchConfirmOpen] = useState(false)
   const [colorEditPlayerId, setColorEditPlayerId] = useState<string | null>(null)
@@ -523,6 +525,14 @@ function App() {
       setSeatSwapPick([])
     }
   }, [room?.id, room?.status, room?.seatToss?.count])
+
+  useEffect(() => {
+    const query = window.matchMedia('(pointer: coarse), (max-width: 820px)')
+    const sync = () => setTouchGun(query.matches)
+    sync()
+    query.addEventListener('change', sync)
+    return () => query.removeEventListener('change', sync)
+  }, [])
 
   useEffect(() => watchColorClaims(setColorClaims), [])
 
@@ -4404,6 +4414,12 @@ function App() {
                   await fireSuperGun(viewRoom.id, userId, angle)
                 })
               }}
+              gunTargetKey={touchGun ? gunTargetKey : null}
+              onPickGunTarget={
+                touchGun && canFireSuperGun(viewRoom, userId)
+                  ? (playerId, tokenId) => setGunTargetKey(`${playerId}:${tokenId}`)
+                  : undefined
+              }
             />
             <PowerToast
               type={powerToast?.type ?? 'star'}
@@ -4454,7 +4470,39 @@ function App() {
               value={rolling ? diceFace : displayDice}
               rolling={rolling}
             />
-            {canFireSuperGun(viewRoom, userId) ? (
+            {canFireSuperGun(viewRoom, userId) && touchGun ? (
+              <div className="super-gun-picker">
+                <p className="action-hint super-gun-hint">
+                  {listSuperGunTargets(viewRoom).length === 0
+                    ? 'No opponent token is in the open. Stars and the home path are safe.'
+                    : gunTargetKey
+                      ? 'That token is selected. Tap Fire.'
+                      : 'Tap an opponent token on the board, then Fire. You have 30s.'}
+                </p>
+                <button
+                  type="button"
+                  className="start-button"
+                  disabled={busy || !gunTargetKey}
+                  onClick={() => {
+                    if (!gunTargetKey) return
+                    const [playerId, tokenIdRaw] = gunTargetKey.split(':')
+                    const tokenId = Number(tokenIdRaw)
+                    void perform(async () => {
+                      await fireSuperGun(
+                        viewRoom.id,
+                        userId,
+                        angleTowardToken(viewRoom, playerId, tokenId),
+                        Date.now(),
+                        { playerId, tokenId },
+                      )
+                      setGunTargetKey(null)
+                    })
+                  }}
+                >
+                  Fire
+                </button>
+              </div>
+            ) : canFireSuperGun(viewRoom, userId) ? (
               <p className="action-hint super-gun-hint">
                 Super Gun — point the laser at a token, then left-click to fire. You have 30s.
               </p>
@@ -4612,6 +4660,24 @@ function App() {
                 ) : null}
               </div>
             ) : null}
+            {!isBlitz && liveMotmStandings.length > 1 ? (
+              <div className="motm-live-panel">
+                <p className="power-rules-title"><strong>Live MotM points</strong></p>
+                <ol className="motm-live-board">
+                  {liveMotmStandings.slice(1).map((entry, index) => (
+                    <li
+                      key={entry.player.id}
+                      className={playerColorClass(entry.player.color)}
+                      style={playerColorStyle(entry.player.color)}
+                    >
+                      <span>#{index + 2}</span>
+                      <strong>{entry.player.name}</strong>
+                      <em>{formatAwardScore(entry.score)}</em>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
             <div className="rules">
               <h3>Quick rules</h3>
               {isBlitz ? (
@@ -4708,24 +4774,6 @@ function App() {
                 <strong>Man of the Match:</strong> scored from eliminations, finish place,
                 tokens home, sixes, and times eliminated. Highest score wins (not always the champion).
               </p>
-              {!isBlitz && liveMotmStandings.length > 1 ? (
-                <>
-                  <p className="power-rules-title"><strong>Live MotM points</strong></p>
-                  <ol className="motm-live-board">
-                    {liveMotmStandings.slice(1).map((entry, index) => (
-                      <li
-                        key={entry.player.id}
-                        className={playerColorClass(entry.player.color)}
-                        style={playerColorStyle(entry.player.color)}
-                      >
-                        <span>#{index + 2}</span>
-                        <strong>{entry.player.name}</strong>
-                        <em>{formatAwardScore(entry.score)}</em>
-                      </li>
-                    ))}
-                  </ol>
-                </>
-              ) : null}
             </div>
             {error && <p className="error">{error}</p>}
           </aside>

@@ -1263,17 +1263,29 @@ io.on('connection', (socket) => {
   socket.on(
     'fireSuperGun',
     (
-      payload: { roomId: string; userId: string; angle: number; startedAt?: number },
+      payload: {
+        roomId: string
+        userId: string
+        angle: number
+        startedAt?: number
+        targetPlayerId?: string
+        targetTokenId?: number
+      },
       callback?: Ack<{ room: Room }>,
     ) => {
       try {
         const startedAt = payload.startedAt ?? Date.now()
         stopSuperGunTimer(payload.roomId)
+        const target =
+          payload.targetPlayerId != null && payload.targetTokenId != null
+            ? { playerId: payload.targetPlayerId, tokenId: payload.targetTokenId }
+            : undefined
         const { previewRoom, room } = fireSuperGun(
           payload.roomId,
           payload.userId,
           payload.angle,
           startedAt,
+          target,
         )
         if (previewRoom.game?.activeMove) {
           emitAnimatedMove(payload.roomId, previewRoom, room)

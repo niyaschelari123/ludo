@@ -1296,6 +1296,7 @@ export function fireSuperGun(
   userId: string,
   angle: number,
   startedAt = Date.now(),
+  target?: { playerId: string; tokenId: number },
 ) {
   const current = getRoom(roomId)
   if (current.status !== 'playing' || !current.game) {
@@ -1303,7 +1304,7 @@ export function fireSuperGun(
   }
 
   const finalRoom = structuredClone(current) as Room
-  applySuperGunShot(finalRoom, userId, angle, startedAt)
+  applySuperGunShot(finalRoom, userId, angle, startedAt, target)
   finalRoom.updatedAt = Date.now()
   rooms.set(roomId, finalRoom)
 

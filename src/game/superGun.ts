@@ -16,6 +16,7 @@ import {
   safeCells,
 } from './engine'
 import { boardCenterPoint, boardSizeForRoom, tokenBoardPoint } from './tokenPoints'
+import { areTeammates } from './teams'
 
 const HIT_RADIUS = 22
 const MAX_BOUNCES = 18
@@ -88,6 +89,47 @@ function playfield(room: Room) {
   const size = boardSizeForRoom(room)
   const pad = size * 0.08
   return { min: pad, max: size - pad }
+}
+
+export type SuperGunTarget = {
+  playerId: string
+  tokenId: number
+  name: string
+  color: string
+}
+
+/** Tokens the gun can send home right now (not stars, home path, or sole-token safe). */
+export function listSuperGunTargets(room: Room): SuperGunTarget[] {
+  const game = room.game
+  if (!game) return []
+  const shooter = room.players[game.turnIndex]
+  if (!shooter) return []
+  const targets: SuperGunTarget[] = []
+  for (const token of game.tokens) {
+    if (!isSuperGunVulnerable(room, token, shooter.id)) continue
+    if (areTeammates(room, shooter.id, token.playerId)) continue
+    const player =
+      room.players.find((entry) => entry.id === token.playerId) ??
+      (room.departedPlayers ?? []).find((entry) => entry.id === token.playerId)
+    if (!player) continue
+    targets.push({
+      playerId: token.playerId,
+      tokenId: token.id,
+      name: player.name,
+      color: player.color,
+    })
+  }
+  return targets
+}
+
+export function angleTowardToken(room: Room, playerId: string, tokenId: number) {
+  const token = room.game?.tokens.find(
+    (entry) => entry.playerId === playerId && entry.id === tokenId,
+  )
+  const center = boardCenterPoint(room)
+  if (!token) return -Math.PI / 2
+  const point = tokenBoardPoint(room, token)
+  return Math.atan2(point.y - center.y, point.x - center.x)
 }
 
 /** Tokens the bullet can send home. Stars, home path, and other safe seats are skipped. */
@@ -239,6 +281,7 @@ export function applySuperGunShot(
   userId: string,
   rawAngle: number,
   startedAt = Date.now(),
+  target?: { playerId: string; tokenId: number },
 ) {
   const game = room.game
   if (!game || room.status !== 'playing') {
@@ -262,8 +305,25 @@ export function applySuperGunShot(
     throw new Error('Bad aim angle.')
   }
 
-  const angle = ((rawAngle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
-  const traced = traceSuperGunShot(room, angle, shooter.id)
+  let angle = ((rawAngle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
+  let traced = traceSuperGunShot(room, angle, shooter.id)
+  if (target) {
+    const chosen = game.tokens.find(
+      (token) =>
+        token.playerId === target.playerId && token.id === target.tokenId,
+    )
+    if (chosen && isSuperGunVulnerable(room, chosen, shooter.id)) {
+      const center = boardCenterPoint(room)
+      const point = tokenBoardPoint(room, chosen)
+      angle = Math.atan2(point.y - center.y, point.x - center.x)
+      traced = {
+        path: [center, point],
+        hit: chosen,
+        hitX: point.x,
+        hitY: point.y,
+      }
+    }
+  }
 
   game.superGunReady = { ...(game.superGunReady ?? {}), [shooter.id]: false }
   game.superGunUsed = { ...(game.superGunUsed ?? {}), [shooter.id]: true }

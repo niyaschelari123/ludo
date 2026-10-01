@@ -27,7 +27,7 @@ import {
 import { isTeamMode } from '../game/teams'
 import { PowerUpLayer } from './PowerUpLayer'
 import { SuperGunLayer } from './SuperGunLayer'
-import { canFireSuperGun } from '../game/superGun'
+import { canFireSuperGun, listSuperGunTargets } from '../game/superGun'
 
 const SIZE = BOARD_SIZE
 const CENTER = SIZE / 2
@@ -754,6 +754,8 @@ interface Props {
   highlightPlayerId?: string | null
   onMove: (tokenId: number) => void
   onFireGun?: (angle: number) => void
+  gunTargetKey?: string | null
+  onPickGunTarget?: (playerId: string, tokenId: number) => void
 }
 
 export function LudoBoard({
@@ -763,6 +765,8 @@ export function LudoBoard({
   highlightPlayerId,
   onMove,
   onFireGun,
+  gunTargetKey,
+  onPickGunTarget,
 }: Props) {
   const gunAimRef = useRef<() => number>(() => -Math.PI / 2)
   const boardCount = boardSeatCount(room)
@@ -950,11 +954,22 @@ export function LudoBoard({
     !hoveredStack.every((entry) => entry.isFinished)
 
   const gunReady = canFireSuperGun(room, userId)
+  const touchAim =
+    typeof window !== 'undefined' &&
+    window.matchMedia('(pointer: coarse), (max-width: 820px)').matches
+  const gunTargetKeys = new Set(
+    gunReady && touchAim
+      ? listSuperGunTargets(room).map(
+          (target) => `${target.playerId}:${target.tokenId}`,
+        )
+      : [],
+  )
 
   return (
     <div
       className={`board-wrap ${isSquare ? 'square' : 'radial'} ${largeNgon ? 'large-ngon-board' : ''} ${highlightPlayerId ? 'is-locating' : ''} ${gunReady ? 'is-gun-aiming' : ''}`}
       onPointerDown={(event) => {
+        if (touchAim) return
         if (!onFireGun || !gunReady || event.button !== 0) return
         event.preventDefault()
         onFireGun(gunAimRef.current())
@@ -1025,6 +1040,9 @@ export function LudoBoard({
               smokeHit?.playerId === originalToken.playerId &&
               smokeHit.tokenId === originalToken.id
             const located = highlightPlayerId === originalToken.playerId
+            const gunKey = `${originalToken.playerId}:${originalToken.id}`
+            const canGunPick = gunTargetKeys.has(gunKey)
+            const gunPicked = canGunPick && gunTargetKey === gunKey
             const tokenRadius = tokenDisplayRadius(
               boardCount,
               isSquare,
@@ -1059,14 +1077,21 @@ export function LudoBoard({
             return (
               <g
                 key={`${originalToken.playerId}-${originalToken.id}`}
-                className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''} ${shielded ? 'shielded' : ''} ${bombHit ? 'token--bomb-hit' : ''} ${located ? 'located' : ''}`}
+                className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''} ${shielded ? 'shielded' : ''} ${bombHit ? 'token--bomb-hit' : ''} ${located ? 'located' : ''} ${canGunPick ? 'gun-pickable' : ''} ${gunPicked ? 'gun-picked' : ''}`}
                 style={{
                   transform: `translate(${position.x + offsetX}px, ${position.y + offsetY}px)`,
                   // Let taps reach your token when opponents overlap the same cell
                   pointerEvents:
                     stacked && stackHasMine && !isMine ? 'none' : undefined,
                 }}
-                onClick={() => canSelect && onMove(originalToken.id)}
+                onClick={(event) => {
+                  if (canGunPick && onPickGunTarget) {
+                    event.stopPropagation()
+                    onPickGunTarget(originalToken.playerId, originalToken.id)
+                    return
+                  }
+                  if (canSelect) onMove(originalToken.id)
+                }}
                 onPointerEnter={(event) => {
                   if (crowded && isHoverPointer(event.pointerType)) {
                     keepStackHover(groupKey)
@@ -1077,7 +1102,7 @@ export function LudoBoard({
                     clearStackHoverSoon()
                   }
                 }}
-                role={canSelect ? 'button' : undefined}
+                role={canSelect || canGunPick ? 'button' : undefined}
               >
                 <TokenDisc
                   color={player.color}

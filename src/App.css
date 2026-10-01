@@ -2887,6 +2887,20 @@ select:focus {
   color: #fecaca;
 }
 
+.super-gun-picker {
+  display: grid;
+  gap: 10px;
+}
+
+.token.gun-pickable {
+  cursor: pointer;
+  filter: drop-shadow(0 0 7px #fb7185);
+}
+
+.token.gun-picked {
+  filter: drop-shadow(0 0 4px #fff) drop-shadow(0 0 12px #fde68a);
+}
+
 @keyframes token-locate {
   to {
     filter:
@@ -4695,6 +4709,10 @@ select:focus {
 .blitz-breakdown-total strong {
   color: #fbbf24;
   font-size: 18px;
+}
+
+.motm-live-panel {
+  margin: 12px 0 0;
 }
 
 .motm-live-board {
