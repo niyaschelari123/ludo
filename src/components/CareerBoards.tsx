@@ -281,10 +281,10 @@ export function MostStatsPanels({
             formatCount={(value) => `${value}`}
           />
           <CareerLobbyBoard
-            title="Most +3"
+            title="Most +10"
             board={board}
             roomPlayers={roomPlayers}
-            statKey="plus3"
+            statKey="plus10"
             formatCount={(value) => `${value}`}
           />
           <CareerLobbyBoard

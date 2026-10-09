@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { playEnter, playStep } from '../audio'
+import { playEnter, playSmoke, playStep } from '../audio'
 import {
   allSeatPlayers,
   CELLS_PER_PLAYER,
@@ -23,6 +23,7 @@ import type { MovingToken, Room, Token } from '../game/types'
 import { resolveColorHex, tokenStyleFor } from '../game/colors'
 import {
   resolveAnimationProgress,
+  SMOKE_VANISH_MS,
 } from '../game/types'
 import { isTeamMode } from '../game/teams'
 import { PowerUpLayer } from './PowerUpLayer'
@@ -870,7 +871,7 @@ export function LudoBoard({
     let lastProgress: number | null = null
     const tick = () => {
       const { progress, done, target } = resolveAnimationProgress(movingToken)
-      if (lastProgress !== null && progress !== lastProgress) {
+      if (lastProgress !== null && progress !== lastProgress && !movingToken.warp) {
         if (progress === -1 || lastProgress === -1) playEnter()
         else playStep()
       }
@@ -886,6 +887,18 @@ export function LudoBoard({
 
     return () => window.clearInterval(timer)
   }, [moveAnimationKey, movingToken])
+
+  useEffect(() => {
+    if (!movingToken?.warp || !movingToken.startedAt) return
+    playSmoke()
+    const appear = window.setTimeout(() => playSmoke(), SMOKE_VANISH_MS)
+    return () => window.clearTimeout(appear)
+  }, [
+    movingToken?.warp,
+    movingToken?.startedAt,
+    movingToken?.playerId,
+    movingToken?.id,
+  ])
 
   const displayedTokens = (room.game?.tokens ?? []).map((originalToken) => {
     const player = room.players.find(
@@ -1039,6 +1052,11 @@ export function LudoBoard({
             const bombHit =
               smokeHit?.playerId === originalToken.playerId &&
               smokeHit.tokenId === originalToken.id
+            const smokeWarp = Boolean(movingToken?.warp && isMoving)
+            const smokeVanish =
+              smokeWarp &&
+              (animatedProgress ?? movingToken?.fromProgress) ===
+                movingToken?.fromProgress
             const located = highlightPlayerId === originalToken.playerId
             const gunKey = `${originalToken.playerId}:${originalToken.id}`
             const canGunPick = gunTargetKeys.has(gunKey)
@@ -1077,7 +1095,7 @@ export function LudoBoard({
             return (
               <g
                 key={`${originalToken.playerId}-${originalToken.id}`}
-                className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''} ${shielded ? 'shielded' : ''} ${bombHit ? 'token--bomb-hit' : ''} ${located ? 'located' : ''} ${canGunPick ? 'gun-pickable' : ''} ${gunPicked ? 'gun-picked' : ''}`}
+                className={`token token--${player.color} ${isFinished ? 'finished' : ''} ${stacked ? 'stacked' : ''} ${canSelect ? 'movable' : ''} ${isMoving ? 'moving' : ''} ${shielded ? 'shielded' : ''} ${bombHit ? 'token--bomb-hit' : ''} ${smokeVanish ? 'token--smoke-vanish' : ''} ${located ? 'located' : ''} ${canGunPick ? 'gun-pickable' : ''} ${gunPicked ? 'gun-picked' : ''}`}
                 style={{
                   transform: `translate(${position.x + offsetX}px, ${position.y + offsetY}px)`,
                   // Let taps reach your token when opponents overlap the same cell
@@ -1110,7 +1128,7 @@ export function LudoBoard({
                   finished={isFinished}
                   shielded={shielded}
                 />
-                {bombHit ? <TokenSmoke radius={tokenRadius} /> : null}
+                {bombHit || smokeWarp ? <TokenSmoke radius={tokenRadius} /> : null}
                 {located ? (
                   <g className="locate-arrow" pointerEvents="none" aria-hidden="true">
                     <g transform={`translate(0 ${-tokenRadius - 10})`}>

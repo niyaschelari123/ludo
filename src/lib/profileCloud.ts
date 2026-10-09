@@ -51,8 +51,8 @@ export type CareerBoardEntry = {
   negativePowers: number
   /** Career Super (⚡) leaps used. */
   superPowers: number
-  /** Career landings on the +3 power tile. */
-  plus3: number
+  /** Career landings on the +10 power tile. */
+  plus10: number
   /** Best (lowest) all-tokens-home finish time in ms; 0 = none. */
   bestFinishMs: number
   /** Career eliminations of each rival login account (victimId → count). */
@@ -72,7 +72,7 @@ export type CareerStatKey =
   | 'motmPoints'
   | 'negativePowers'
   | 'superPowers'
-  | 'plus3'
+  | 'plus10'
   | 'bestFinishMs'
 
 const CAREER_STAT_KEYS: CareerStatKey[] = [
@@ -88,7 +88,7 @@ const CAREER_STAT_KEYS: CareerStatKey[] = [
   'motmPoints',
   'negativePowers',
   'superPowers',
-  'plus3',
+  'plus10',
   'bestFinishMs',
 ]
 
@@ -121,7 +121,7 @@ function emptyCareerStats(accountId: string): Pick<
     motmPoints: 0,
     negativePowers: 0,
     superPowers: 0,
-    plus3: 0,
+    plus10: 0,
     bestFinishMs: 0,
   }
 }
@@ -154,7 +154,7 @@ export type CloudProfile = {
   motmPoints?: number
   negativePowers?: number
   superPowers?: number
-  plus3?: number
+  plus10?: number
   bestFinishMs?: number
   /** victimAccountId → career elimination count. */
   elimPairs?: Record<string, number>
@@ -278,7 +278,7 @@ function readCareerStats(
     motmPoints: readStatCount(data, 'motmPoints', accountId),
     negativePowers: readStatCount(data, 'negativePowers', accountId),
     superPowers: readStatCount(data, 'superPowers', accountId),
-    plus3: readStatCount(data, 'plus3', accountId),
+    plus10: readStatCount(data, 'plus10', accountId),
     bestFinishMs: readStatCount(data, 'bestFinishMs', accountId),
   }
 }
@@ -298,6 +298,20 @@ export function countLoginPlayersInMatch(room: Room): number {
 export function isCareerEligibleMatch(room: Room): boolean {
   if (room.skipCareerPoints) return false
   return countLoginPlayersInMatch(room) >= 3
+}
+
+/**
+ * Fastest-finish board: Quick, Classic, Power, and Blitz longer than 60 minutes.
+ * Race, Team, and shorter Blitz clocks do not update that record.
+ */
+export function countsForFastestFinish(room: Room): boolean {
+  const mode = room.gameMode ?? 'classic'
+  if (mode === 'classic' || mode === 'power' || mode === 'quick') return true
+  if (mode === 'blitz') {
+    const ms = room.blitzDurationMs ?? 0
+    return ms > 60 * 60 * 1000
+  }
+  return false
 }
 
 /** Load name/color/wins/motm for an account from Firestore (never stores PIN). */
@@ -606,7 +620,7 @@ export type MatchCareerExtras = {
     motmPoints: number
     negativePowers: number
     superPowers: number
-    plus3: number
+    plus10: number
     finishTimeMs: number
     /** victimAccountId → eliminations this match. */
     elimPairs?: Record<string, number>
@@ -639,7 +653,7 @@ export async function recordMatchCareerExtras(
       motmPoints: roundCareerPoints(entry.motmPoints),
       negativePowers: Math.max(0, Math.floor(entry.negativePowers)),
       superPowers: Math.max(0, Math.floor(entry.superPowers)),
-      plus3: Math.max(0, Math.floor(entry.plus3)),
+      plus10: Math.max(0, Math.floor(entry.plus10)),
       finishTimeMs: Math.max(0, Math.floor(entry.finishTimeMs)),
       elimPairs: sanitizeElimPairDelta(entry.elimPairs),
     }))
@@ -702,7 +716,7 @@ export async function recordMatchCareerExtras(
           )
           next.negativePowers += delta.negativePowers
           next.superPowers += delta.superPowers
-          next.plus3 += delta.plus3
+          next.plus10 += delta.plus10
           if (
             delta.finishTimeMs > 0 &&
             (next.bestFinishMs <= 0 || delta.finishTimeMs < next.bestFinishMs)
@@ -725,7 +739,7 @@ export async function recordMatchCareerExtras(
             motmPoints: next.motmPoints,
             negativePowers: next.negativePowers,
             superPowers: next.superPowers,
-            plus3: next.plus3,
+            plus10: next.plus10,
             bestFinishMs: next.bestFinishMs,
             elimPairs: nextElimPairs,
             updatedAt: serverTimestamp(),
@@ -868,7 +882,7 @@ export const CAREER_STAT_EDIT_LABELS: Record<CareerStatKey, string> = {
   motmPoints: 'MotM points',
   negativePowers: 'Oonjaal',
   superPowers: 'Super ⚡',
-  plus3: '+3 landings',
+  plus10: '+10 landings',
   bestFinishMs: 'Best finish (ms)',
 }
 

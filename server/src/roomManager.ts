@@ -1204,6 +1204,7 @@ export function movePawn(
   tokenId: number,
   startedAt: number,
   targetProgress?: number,
+  smokeSteps?: number,
 ) {
   const room = structuredClone(getRoom(roomId)) as Room
   const turnPlayer = room.players[room.game?.turnIndex ?? -1]
@@ -1232,7 +1233,7 @@ export function movePawn(
   rooms.set(roomId, room)
 
   const finalRoom = structuredClone(room) as Room
-  applyMove(finalRoom, tokenId)
+  applyMove(finalRoom, tokenId, smokeSteps)
   const willCapture =
     Boolean(finalRoom.game?.lastAction?.includes('captured')) ||
     Boolean(finalRoom.game?.pendingPower?.captured)

@@ -166,7 +166,8 @@ export type PowerUpType =
   | "back5"
   | "yard"
   | "tnt"
-  | "bomb";
+  | "bomb"
+  | "smoke";
 
 export interface PowerTile {
   cell: number;
@@ -251,6 +252,8 @@ export interface MovingToken {
   targetProgress?: number;
   /** True when this hop will capture — used to time the eliminate SFX. */
   willCapture?: boolean;
+  /** Vanish at the start cell and reappear at the target (smoke super). */
+  warp?: boolean;
   /** Player ids whose tokens were sent back by this capture. */
   captureVictimIds?: string[];
 }
@@ -263,9 +266,14 @@ export interface ActiveMove {
   startedAt: number;
   targetProgress?: number;
   willCapture?: boolean;
+  /** Vanish at the start cell and reappear at the target (smoke super). */
+  warp?: boolean;
 }
 
 export const SUPER_GUN_TIMEOUT_MS = 30_000;
+export const SMOKE_VANISH_MS = 520;
+export const SMOKE_APPEAR_MS = 700;
+export const SMOKE_WARP_MS = SMOKE_VANISH_MS + SMOKE_APPEAR_MS;
 
 export const TOKEN_MOVE_STEP_MS = 135;
 export const TOKEN_MOVE_END_PADDING_MS = 240;
@@ -296,10 +304,12 @@ export const moveAnimStepCount = (move: MovingToken) => {
 };
 
 export const tokenMoveDurationMs = (
-  move: Pick<MovingToken, "fromProgress" | "dice" | "targetProgress">,
+  move: Pick<MovingToken, "fromProgress" | "dice" | "targetProgress" | "warp">,
 ) =>
-  moveAnimStepCount(move as MovingToken) * TOKEN_MOVE_STEP_MS +
-  TOKEN_MOVE_END_PADDING_MS;
+  move.warp
+    ? SMOKE_WARP_MS
+    : moveAnimStepCount(move as MovingToken) * TOKEN_MOVE_STEP_MS +
+      TOKEN_MOVE_END_PADDING_MS;
 
 export const moveBaseSignature = (move: MovingToken) =>
   `${move.playerId}:${move.id}:${move.fromProgress}:${movingTokenTarget(move)}`;
@@ -308,6 +318,18 @@ export const resolveAnimationProgress = (movingToken: MovingToken) => {
   const target = movingTokenTarget(movingToken);
   if (!movingToken.startedAt) {
     return { progress: movingToken.fromProgress, done: false, target };
+  }
+
+  if (movingToken.warp) {
+    const elapsed = Date.now() - movingToken.startedAt;
+    if (elapsed < SMOKE_VANISH_MS) {
+      return { progress: movingToken.fromProgress, done: false, target };
+    }
+    return {
+      progress: target,
+      done: elapsed >= SMOKE_WARP_MS,
+      target,
+    };
   }
 
   const stepsTaken = Math.floor(
@@ -372,6 +394,8 @@ export interface PendingPower {
   forfeitedProtection: boolean;
   /** Bomb: true only if this landing actually removed a shield. */
   strippedShield?: boolean;
+  /** Smoke: forward steps rolled for this landing (1–20). */
+  smokeSteps?: number;
 }
 
 export interface PlayerStats {
@@ -387,6 +411,8 @@ export interface PlayerStats {
   superPowers?: number;
   /** Landings on the +3 (spring) power tile this match. */
   plus3?: number;
+  /** Landings on the +10 power tile this match. */
+  plus10?: number;
   /** Times this player broke another player's shield. */
   shieldBreaks?: number;
 }

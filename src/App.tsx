@@ -97,6 +97,7 @@ import {
   formatCareerFinishTime,
   hasAllZeroCareerStats,
   isCareerEligibleMatch,
+  countsForFastestFinish,
   recordMatchCareerExtras,
   recordMatchMotm,
   recordMatchWins,
@@ -311,6 +312,12 @@ function MatchAwardCard({
           <span>Shields broken ({award.stats.shieldBreaks ?? 0})</span>
           <em>+{award.breakdown.shieldBreaks}</em>
         </li>
+        {award.breakdown.lastPlacePenalty > 0 ? (
+          <li className="motm-breakdown-penalty">
+            <span>Last place</span>
+            <em>−{award.breakdown.lastPlacePenalty}</em>
+          </li>
+        ) : null}
         <li className="motm-breakdown-penalty">
           <span>Times eliminated ({award.stats.eliminated})</span>
           <em>−{award.breakdown.timesEliminated}</em>
@@ -395,6 +402,12 @@ function App() {
     message?: string
   } | null>(null)
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false)
+  const [leaveApprovalPrompt, setLeaveApprovalPrompt] = useState<{
+    id: string
+    name: string
+    leftAt: number
+  } | null>(null)
+  const [dismissedLeaveKeys, setDismissedLeaveKeys] = useState<string[]>([])
   const [hostLeaveOpen, setHostLeaveOpen] = useState(false)
   const [newHostId, setNewHostId] = useState('')
   const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmTarget | null>(null)
@@ -634,8 +647,10 @@ function App() {
           motmPoints: motmById.get(player.id) ?? 0,
           negativePowers: stats.negativePowers ?? 0,
           superPowers: stats.superPowers ?? 0,
-          plus3: stats.plus3 ?? 0,
-          finishTimeMs: finishedRoom.game?.finishTimesMs?.[player.id] ?? 0,
+          plus10: stats.plus10 ?? 0,
+          finishTimeMs: countsForFastestFinish(finishedRoom)
+            ? (finishedRoom.game?.finishTimesMs?.[player.id] ?? 0)
+            : 0,
           elimPairs: Object.fromEntries(
             Object.entries(stats.eliminatedPlayers ?? {}).filter(([victimId]) =>
               isCareerAccountId(victimId),
@@ -1574,6 +1589,7 @@ function App() {
       startedAt,
       movedToken.progress,
       waitForRoll,
+      nextRoom.game?.pendingPower?.smokeSteps,
     ).then(() => {
       setMoveReadyToClear(true)
     })
@@ -1653,6 +1669,33 @@ function App() {
       return () => window.clearTimeout(timer)
     }
   }, [displayRoom?.game?.pendingPower, displayRoom?.game, displayRoom?.players])
+
+  useEffect(() => {
+    const current = displayRoom
+    if (!current || current.hostId !== userId || current.status !== 'playing') {
+      setLeaveApprovalPrompt(null)
+      return
+    }
+    const pending = (current.departedPlayers ?? []).filter(
+      (player) => !player.isBot && player.hostApprovedLeave !== true,
+    )
+    setLeaveApprovalPrompt((open) => {
+      if (
+        open &&
+        pending.some(
+          (player) => player.id === open.id && player.leftAt === open.leftAt,
+        )
+      ) {
+        return open
+      }
+      const next = pending.find(
+        (player) =>
+          !dismissedLeaveKeys.includes(`${player.id}:${player.leftAt}`),
+      )
+      if (!next) return null
+      return { id: next.id, name: next.name, leftAt: next.leftAt }
+    })
+  }, [displayRoom, userId, dismissedLeaveKeys])
 
   useEffect(() => {
     const shot = displayRoom?.game?.activeShot
@@ -3844,10 +3887,10 @@ function App() {
                 formatCount={(value) => `${value}`}
               />
               <CareerLobbyBoard
-                title="Most +3"
+                title="Most +10"
                 board={careerBoard}
                 roomPlayers={room.players}
-                statKey="plus3"
+                statKey="plus10"
                 formatCount={(value) => `${value}`}
               />
               <CareerLobbyBoard
@@ -4136,14 +4179,17 @@ function App() {
                             </strong>
                             <small>
                               {`${departed.name} left · waiting for a player`}
-                              {room.hostId === userId && departed.rejoinCode
-                                ? ` · Code ${departed.rejoinCode}`
+                              {room.hostId === userId
+                                ? ''
                                 : ' · ask host, or send a join request'}
                             </small>
                           </div>
                         </div>
                         {room.hostId === userId && departed.rejoinCode ? (
                           <div className="player-row-actions">
+                            <em className="seat-code-label">
+                              Seat code {departed.rejoinCode}
+                            </em>
                             <button
                               type="button"
                               className="slot-action"
@@ -4196,10 +4242,15 @@ function App() {
                               {`Seat ${player.seat + 1} · ${formatSeatColorName(player.color)}`}
                               {player.reclaimable
                                 ? room.hostId === userId
-                                  ? ` · Open for join · Code ${player.rejoinCode ?? '—'}`
+                                  ? ''
                                   : ' · Open for join · ask host for the seat code'
                                 : ''}
                             </small>
+                            {room.hostId === userId && player.rejoinCode ? (
+                              <em className="seat-code-label">
+                                Seat code {player.rejoinCode}
+                              </em>
+                            ) : null}
                             <span
                               className={`leave-approval-badge ${approved ? 'is-approved' : 'is-denied'}`}
                             >
@@ -5007,6 +5058,16 @@ function App() {
                   detail: `${stats.shieldBreaks ?? 0} × +1`,
                   points: breakdown.shieldBreaks,
                 },
+                ...(breakdown.lastPlacePenalty > 0
+                  ? [
+                      {
+                        label: 'Last place',
+                        detail: '−5',
+                        points: -breakdown.lastPlacePenalty,
+                        negative: true,
+                      },
+                    ]
+                  : []),
                 {
                   label: 'Times eliminated',
                   detail: `${stats.eliminated} × −1`,
@@ -5970,6 +6031,63 @@ function App() {
                 }
               >
                 Accept
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {leaveApprovalPrompt && room.hostId === userId && room.status === 'playing' ? (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Approve leave"
+          onClick={() => {
+            if (busy) return
+            const key = `${leaveApprovalPrompt.id}:${leaveApprovalPrompt.leftAt}`
+            setDismissedLeaveKeys((keys) =>
+              keys.includes(key) ? keys : [...keys, key],
+            )
+            setLeaveApprovalPrompt(null)
+          }}
+        >
+          <div className="confirm-card" onClick={(event) => event.stopPropagation()}>
+            <div className="confirm-icon">!</div>
+            <h2>{leaveApprovalPrompt.name} left</h2>
+            <p>
+              Approve this leave if it was fair. If you don’t, they become Worst of the match.
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="cancel-button"
+                disabled={busy}
+                onClick={() => {
+                  const key = `${leaveApprovalPrompt.id}:${leaveApprovalPrompt.leftAt}`
+                  setDismissedLeaveKeys((keys) =>
+                    keys.includes(key) ? keys : [...keys, key],
+                  )
+                  setLeaveApprovalPrompt(null)
+                }}
+              >
+                Don’t approve
+              </button>
+              <button
+                className="start-button"
+                disabled={busy}
+                onClick={() => {
+                  const prompt = leaveApprovalPrompt
+                  void perform(async () => {
+                    await setHostApprovedLeave(room.id, userId, prompt.id, true)
+                    const key = `${prompt.id}:${prompt.leftAt}`
+                    setDismissedLeaveKeys((keys) =>
+                      keys.includes(key) ? keys : [...keys, key],
+                    )
+                    setLeaveApprovalPrompt(null)
+                  })
+                }}
+              >
+                {busy ? 'Saving…' : 'Approve leave'}
               </button>
             </div>
           </div>

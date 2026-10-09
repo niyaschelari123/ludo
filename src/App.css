@@ -872,6 +872,13 @@ select:focus {
   color: #fbbf24 !important;
   font-weight: 700;
   letter-spacing: 0.08em;
+  white-space: normal;
+}
+
+.player-row--open .player-row-copy small {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
 }
 
 .reclaim-panel {
@@ -943,6 +950,13 @@ select:focus {
 .reclaim-copy small {
   color: #7c8aa5;
   font-size: 10px;
+}
+
+.reclaim-copy .seat-code-label {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-style: normal;
 }
 
 .leave-approval-badge {
@@ -2774,6 +2788,10 @@ select:focus {
 
 .token.token--bomb-hit {
   animation: token-bomb-hit 0.7s ease-out;
+}
+
+.token.token--smoke-vanish > :not(.token-smoke) {
+  opacity: 0;
 }
 
 .token-smoke {
@@ -4919,6 +4937,12 @@ select:focus {
 
 .power-super .power-marker-bg {
   fill: #fbbf24;
+}
+
+.power-smoke .power-marker-bg {
+  fill: #e2e8f0;
+  stroke: #64748b;
+  stroke-width: 1.4;
 }
 
 .power-bomb .power-marker-bg {

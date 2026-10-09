@@ -61,6 +61,7 @@ export const POWER_UP_ICONS: Record<PowerUpType, string> = {
   back5: "-5",
   yard: "YRD",
   bomb: "💣",
+  smoke: "💨",
 };
 
 export const POWER_UP_INFO: {
@@ -141,6 +142,12 @@ export const POWER_UP_INFO: {
     description:
       "Sits just outside a track square — stepping onto that square blasts your shield off",
   },
+  {
+    type: "smoke",
+    label: "Smoke",
+    description:
+      "Vanishes in smoke and reappears 1–20 steps ahead",
+  },
 ];
 
 export function powerInfoForMode(
@@ -193,6 +200,10 @@ export function powerInfoForMode(
   } else if (mode === "power" && playerCount === 5) {
     // Classic Power: Super only on 5-player boards (upper-path leaps).
     entries = POWER_UP_INFO.filter((entry) => entry.type !== "yard");
+  }
+
+  if (playerCount !== 5 || mode === "race") {
+    entries = entries.filter((entry) => entry.type !== "smoke");
   }
 
   if (!tokenLimit) return entries
@@ -431,6 +442,9 @@ function placeCommonAndRare(
   if (options.includeSuper) {
     placeSuperPowers(tiles, playerCount, length);
     placeBombPowers(tiles, playerCount, length);
+    if (playerCount === 5) {
+      placeSmokePowers(tiles, length);
+    }
   }
 
   // After Super so mid-path shields do not steal upper-path Super cells.
@@ -543,6 +557,48 @@ function placeSuperPowers(
  * Offset 6 is the center of a 13-cell side; nearby free cells are fine.
  */
 const BOMB_PATH_OFFSETS = [6, 5, 7, 4, 9, 3, 10, 2, 11, 1, 12];
+
+/**
+ * 5-player only. Flash Super sits on the upper paths, so these two Smoke
+ * supers go on the right-side path (seat 1) and the bottom path (seat 2).
+ */
+const SMOKE_PATH_SEATS = [1, 2];
+const SMOKE_PATH_OFFSETS = [5, 7, 4, 9, 3, 10, 2, 11, 1, 12];
+
+function placeSmokePowers(
+  tiles: Record<number, PowerUpType>,
+  length: number,
+) {
+  for (const seat of SMOKE_PATH_SEATS) {
+    const base = seat * CELLS_PER_PLAYER;
+    for (const offset of SMOKE_PATH_OFFSETS) {
+      const cell = (base + offset) % length;
+      if (tiles[cell] || isPowerBlockedCell(cell)) continue;
+      tiles[cell] = "smoke";
+      break;
+    }
+  }
+}
+
+/** 1–20 steps ahead, skipping a landing on another Smoke tile. */
+export function rollSmokeSteps(room: Room, player: Player, token: Token) {
+  const length = trackLength(room);
+  const homeEntry = homeEntryProgress(room);
+  const startCell = player.seat * CELLS_PER_PLAYER;
+  const choices: number[] = [];
+  for (let step = 1; step <= 20; step += 1) {
+    const next = token.progress + step;
+    if (next >= homeEntry) {
+      choices.push(step);
+      continue;
+    }
+    const cell = (startCell + next) % length;
+    if (powerUpAtCell(room.game, cell) === "smoke") continue;
+    choices.push(step);
+  }
+  const pool = choices.length > 0 ? choices : [1];
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 
 function placeBombPowers(
   tiles: Record<number, PowerUpType>,
@@ -809,6 +865,8 @@ export function applyPowerUp(
     }
     case "plus10":
     case "half": {
+      const stats = ensurePlayerStats(game, player.id);
+      stats.plus10 = (stats.plus10 ?? 0) + 1;
       advanceToken(token, 10, room);
       return `${player.name} surged +10`;
     }
@@ -921,6 +979,15 @@ export function applyPowerUp(
       // Entry / start square (progress 0) — not the nest (−1).
       token.progress = 0;
       return `${player.name} was sent back to the start entry`;
+    }
+    case "smoke": {
+      const rolled = game.pendingPower?.smokeSteps;
+      const steps =
+        rolled != null && rolled >= 1 && rolled <= 20
+          ? Math.floor(rolled)
+          : rollSmokeSteps(room, player, token);
+      advanceToken(token, steps, room);
+      return `${player.name} vanished in smoke and surged +${steps}`;
     }
     case "bomb": {
       const hadShield = Boolean(game.pendingPower?.strippedShield);

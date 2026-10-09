@@ -604,6 +604,7 @@ export async function movePawn(
   tokenId: number,
   startedAt: number,
   targetProgress: number,
+  smokeSteps?: number,
 ) {
   await emitAck('movePawn', {
     roomId,
@@ -611,6 +612,7 @@ export async function movePawn(
     tokenId,
     startedAt,
     targetProgress,
+    ...(smokeSteps != null ? { smokeSteps } : {}),
   })
 }
 
@@ -648,9 +650,10 @@ export async function moveTokenWithRetry(
   startedAt: number,
   targetProgress: number,
   waitForRoll?: () => Promise<unknown>,
+  smokeSteps?: number,
 ) {
   try {
-    await movePawn(roomId, userId, tokenId, startedAt, targetProgress)
+    await movePawn(roomId, userId, tokenId, startedAt, targetProgress, smokeSteps)
   } catch (error) {
     const message = error instanceof Error ? error.message : ''
     if (
@@ -660,7 +663,7 @@ export async function moveTokenWithRetry(
         message.includes('not your turn'))
     ) {
       await waitForRoll()
-      await movePawn(roomId, userId, tokenId, startedAt, targetProgress)
+      await movePawn(roomId, userId, tokenId, startedAt, targetProgress, smokeSteps)
       return
     }
     throw error

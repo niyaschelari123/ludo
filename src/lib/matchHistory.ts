@@ -63,7 +63,7 @@ export type MatchHistoryPlayerStat = {
   tokensHome: number
   negativePowers: number
   superPowers: number
-  plus3: number
+  plus10: number
   shieldBreaks: number
   motmPoints: number
 }
@@ -107,7 +107,7 @@ export const MOST_HISTORY_LABELS: Record<CareerStatKey, string> = {
   motmPoints: 'Most MotM points',
   negativePowers: 'Most Oonjaal',
   superPowers: 'Most Super ⚡',
-  plus3: 'Most +3',
+  plus10: 'Most +10',
   bestFinishMs: 'Fastest finish',
 }
 
@@ -211,7 +211,7 @@ export function buildMatchStats(room: Room): MatchHistoryPlayerStat[] {
         tokensHome: stats.tokensHome,
         negativePowers: stats.negativePowers ?? 0,
         superPowers: stats.superPowers ?? 0,
-        plus3: stats.plus3 ?? 0,
+        plus10: stats.plus10 ?? 0,
         shieldBreaks: stats.shieldBreaks ?? 0,
         motmPoints: motmById.get(player.id) ?? 0,
       } satisfies MatchHistoryPlayerStat
@@ -275,7 +275,7 @@ export function buildMatchCareerDeltas(
       add(player.accountId, 'sixes', player.sixes, player.name)
       add(player.accountId, 'negativePowers', player.negativePowers, player.name)
       add(player.accountId, 'superPowers', player.superPowers, player.name)
-      add(player.accountId, 'plus3', player.plus3, player.name)
+      add(player.accountId, 'plus10', player.plus10, player.name)
       add(player.accountId, 'motmPoints', player.motmPoints, player.name)
       add(player.accountId, 'matchesPlayed', 1, player.name)
     }
@@ -499,7 +499,7 @@ function readMatchStats(raw: unknown): MatchHistoryPlayerStat[] {
         tokensHome: numberOf(data.tokensHome),
         negativePowers: numberOf(data.negativePowers),
         superPowers: numberOf(data.superPowers),
-        plus3: numberOf(data.plus3),
+        plus10: numberOf(data.plus10),
         shieldBreaks: numberOf(data.shieldBreaks),
         motmPoints: numberOf(data.motmPoints),
       } satisfies MatchHistoryPlayerStat

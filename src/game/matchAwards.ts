@@ -6,6 +6,8 @@ import { isTeamMode, winningTeam } from './teams'
 export type MotmBreakdown = {
   eliminations: number
   placeBonus: number
+  /** −5 for the last place once the finish order is complete. */
+  lastPlacePenalty: number
   tokensHome: number
   sixes: number
   shieldBreaks: number
@@ -38,6 +40,7 @@ function emptyStats(): PlayerStats {
     negativePowers: 0,
     superPowers: 0,
     plus3: 0,
+    plus10: 0,
     shieldBreaks: 0,
   }
 }
@@ -54,6 +57,7 @@ export function readPlayerStats(
     negativePowers: stats.negativePowers ?? 0,
     superPowers: stats.superPowers ?? 0,
     plus3: stats.plus3 ?? 0,
+    plus10: stats.plus10 ?? 0,
     shieldBreaks: stats.shieldBreaks ?? 0,
   }
 }
@@ -65,10 +69,12 @@ export function readPlayerStats(
 export function motmBreakdown(
   stats: PlayerStats,
   placeIndex: number | null,
+  lastPlace = false,
 ): MotmBreakdown {
   const eliminations = stats.captures * 3
   const placeBonus =
     placeIndex === 0 ? 5 : placeIndex === 1 ? 3 : placeIndex === 2 ? 1 : 0
+  const lastPlacePenalty = lastPlace ? 5 : 0
   const tokensHome = stats.tokensHome * 2
   const sixes = stats.sixes * 0.5
   const shieldBreaks = stats.shieldBreaks ?? 0
@@ -76,6 +82,7 @@ export function motmBreakdown(
   return {
     eliminations,
     placeBonus,
+    lastPlacePenalty,
     tokensHome,
     sixes,
     shieldBreaks,
@@ -86,12 +93,17 @@ export function motmBreakdown(
       tokensHome +
       sixes +
       shieldBreaks -
-      timesEliminated,
+      timesEliminated -
+      lastPlacePenalty,
   }
 }
 
-export function scoreMotm(stats: PlayerStats, placeIndex: number | null): number {
-  return motmBreakdown(stats, placeIndex).total
+export function scoreMotm(
+  stats: PlayerStats,
+  placeIndex: number | null,
+  lastPlace = false,
+): number {
+  return motmBreakdown(stats, placeIndex, lastPlace).total
 }
 
 export function motmReason(
@@ -120,11 +132,16 @@ export function motmReason(
 function scoreCandidates(room: Room, players: Player[]): MotmCandidate[] {
   if (!room.game || players.length === 0) return []
 
+  const winnerIds = room.game.winnerIds
+  const rankingComplete =
+    room.status === 'finished' && winnerIds.length > 1
   return players.map((player) => {
-    const finishIndex = room.game!.winnerIds.indexOf(player.id)
+    const finishIndex = winnerIds.indexOf(player.id)
     const placeIndex = finishIndex === -1 ? null : finishIndex
+    const lastPlace =
+      rankingComplete && finishIndex === winnerIds.length - 1
     const stats = readPlayerStats(room, player.id)
-    const breakdown = motmBreakdown(stats, placeIndex)
+    const breakdown = motmBreakdown(stats, placeIndex, lastPlace)
     return {
       player,
       stats,
@@ -406,8 +423,13 @@ export function rankBlitzPlayers(room: Room): BlitzScoreEntry[] {
   })
 
   const motmOf = (playerId: string, stats: PlayerStats) => {
-    const finishIndex = room.game!.winnerIds.indexOf(playerId)
-    return scoreMotm(stats, finishIndex === -1 ? null : finishIndex)
+    const winnerIds = room.game!.winnerIds
+    const finishIndex = winnerIds.indexOf(playerId)
+    const lastPlace =
+      room.status === 'finished' &&
+      winnerIds.length > 1 &&
+      finishIndex === winnerIds.length - 1
+    return scoreMotm(stats, finishIndex === -1 ? null : finishIndex, lastPlace)
   }
 
   entries.sort(

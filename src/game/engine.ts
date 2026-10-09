@@ -10,6 +10,7 @@ import type {
 } from "./types";
 import {
   applyPowerUp,
+  rollSmokeSteps,
   generatePowerTiles,
   generateQuickPowerTiles,
   generateRacePowerTiles,
@@ -128,6 +129,7 @@ function emptyPlayerStats(): PlayerStats {
     negativePowers: 0,
     superPowers: 0,
     plus3: 0,
+    plus10: 0,
     shieldBreaks: 0,
   };
 }
@@ -144,6 +146,7 @@ export function ensurePlayerStats(
     game.stats[playerId].negativePowers ??= 0;
     game.stats[playerId].superPowers ??= 0;
     game.stats[playerId].plus3 ??= 0;
+    game.stats[playerId].plus10 ??= 0;
     game.stats[playerId].shieldBreaks ??= 0;
   }
   return game.stats[playerId];
@@ -690,6 +693,7 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
   }
 
   const pending = game.pendingPower;
+  const smokeWarp = pending.type === "smoke";
   const player = room.players.find(
     (candidate) => candidate.id === pending.playerId,
   );
@@ -749,6 +753,7 @@ export function applyPendingPower(room: Room, startedAt = Date.now()) {
       startedAt,
       targetProgress: token.progress,
       willCapture: captured,
+      ...(smokeWarp ? { warp: true } : {}),
     };
   } else {
     game.activeMove = null;
@@ -796,7 +801,7 @@ export function performLocalResolvePower(room: Room, userId: string) {
   return next;
 }
 
-export function applyMove(room: Room, tokenId: number) {
+export function applyMove(room: Room, tokenId: number, smokeSteps?: number) {
   const game = room.game;
   const dice = game?.dice;
   if (!game || game.phase !== "move" || !dice) {
@@ -875,6 +880,12 @@ export function applyMove(room: Room, tokenId: number) {
         bombStrippedShield = Boolean(game.shieldBuff[player.id]);
         game.shieldBuff[player.id] = false;
       }
+      const chosenSmoke =
+        powerType === "smoke"
+          ? smokeSteps != null && smokeSteps >= 1 && smokeSteps <= 20
+            ? Math.floor(smokeSteps)
+            : rollSmokeSteps(room, player, token)
+          : undefined;
       game.pendingPower = {
         playerId: player.id,
         tokenId: token.id,
@@ -886,6 +897,7 @@ export function applyMove(room: Room, tokenId: number) {
         ...(powerType === "bomb"
           ? { strippedShield: bombStrippedShield }
           : {}),
+        ...(chosenSmoke != null ? { smokeSteps: chosenSmoke } : {}),
       };
       game.phase = "power";
       game.activeMove = null;
@@ -988,5 +1000,6 @@ export function activeMoveToMovingToken(active: ActiveMove): MovingToken {
     startedAt: active.startedAt,
     targetProgress: active.targetProgress,
     willCapture: active.willCapture,
+    warp: active.warp,
   };
 }

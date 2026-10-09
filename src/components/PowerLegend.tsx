@@ -56,6 +56,7 @@ export function PowerLegend({
             <ul>
               <li>+3 per elimination</li>
               <li>+5 / +3 / +1 for 1st / 2nd / 3rd place</li>
+              <li>−5 for last place</li>
               <li>+2 per token home</li>
               <li>+0.5 per six rolled</li>
               <li>+1 per rival shield broken</li>

@@ -179,6 +179,14 @@ export function playGun() {
   tone(90, 0.18, { delay: 0.02, volume: 0.07, type: 'triangle', endFrequency: 40 })
 }
 
+/** Soft whoosh when a token vanishes or reappears in smoke. */
+export function playSmoke() {
+  tone(420, 0.16, { volume: 0.045, type: 'triangle', endFrequency: 140 })
+  tone(880, 0.22, { volume: 0.03, type: 'sawtooth', endFrequency: 180 })
+  tone(240, 0.28, { delay: 0.04, volume: 0.035, type: 'sine', endFrequency: 70 })
+  tone(1400, 0.12, { delay: 0.02, volume: 0.018, type: 'square', endFrequency: 320 })
+}
+
 /** Low boom + smoke hiss when a bomb tile goes off. */
 export function playBomb() {
   tone(88, 0.36, { volume: 0.11, type: 'sawtooth', endFrequency: 34 })

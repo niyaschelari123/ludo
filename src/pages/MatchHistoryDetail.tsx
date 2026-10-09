@@ -47,7 +47,7 @@ const MATCH_STAT_COLUMNS = [
   { key: 'place', label: 'Place' },
   { key: 'motmPoints', label: 'MotM pts' },
   { key: 'superPowers', label: 'Super ⚡' },
-  { key: 'plus3', label: '+3' },
+  { key: 'plus10', label: '+10' },
   { key: 'negativePowers', label: 'Oonjaal' },
   { key: 'sixes', label: 'Sixes' },
   { key: 'captures', label: 'Elims' },
@@ -228,7 +228,7 @@ export function MatchHistoryDetailPage() {
         <section className="history-detail-panel">
           <h2>Add to current stats</h2>
           <p className="history-detail-empty">
-            Add this match’s places, MotM, Super, +3, and the rest on top of
+            Add this match’s places, MotM, Super, +10, and the rest on top of
             the numbers now on the Most stats page.
           </p>
           <button
@@ -303,7 +303,7 @@ export function MatchHistoryDetailPage() {
           {entry.matchStats.length === 0 ? (
             <p className="history-detail-empty">
               This older history did not store per-player match stats. Newer
-              matches keep Super, +3, sixes, and the rest here.
+              matches keep Super, +10, sixes, and the rest here.
             </p>
           ) : (
             <div className="history-detail-table-wrap">

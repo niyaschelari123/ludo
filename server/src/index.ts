@@ -1208,6 +1208,7 @@ io.on('connection', (socket) => {
         tokenId: number
         startedAt?: number
         targetProgress?: number
+        smokeSteps?: number
       },
       callback?: Ack<{ room: Room }>,
     ) => {
@@ -1219,6 +1220,7 @@ io.on('connection', (socket) => {
           payload.tokenId,
           startedAt,
           payload.targetProgress,
+          payload.smokeSteps,
         )
 
         if (previewRoom.game?.activeMove) {
