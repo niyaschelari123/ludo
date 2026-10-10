@@ -8,6 +8,7 @@
  */
 import cors from 'cors'
 import express from 'express'
+import { handleAnalyst } from './analyst.js'
 import { createServer } from 'node:http'
 import { Server, type Socket } from 'socket.io'
 import {
@@ -91,10 +92,17 @@ interface SocketSession {
 }
 
 const app = express()
+app.set('trust proxy', 1)
 app.use(cors({ origin: CORS_ORIGIN }))
 app.get('/health', (_request, response) => {
   response.json({ ok: true, service: 'ludo-socket-server' })
 })
+app.get('/api/player-analyst', handleAnalyst)
+app.post(
+  '/api/player-analyst',
+  express.json({ limit: '80kb' }),
+  handleAnalyst,
+)
 
 const httpServer = createServer(app)
 const io = new Server(httpServer, {

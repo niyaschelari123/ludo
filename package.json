@@ -9,6 +9,7 @@
     "dev:all": "concurrently -n web,api -c cyan,magenta \"npm run dev\" \"npm run dev:server\"",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test:analyst": "tsx src/lib/playerAnalyst.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

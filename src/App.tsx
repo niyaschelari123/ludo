@@ -682,6 +682,9 @@ function App() {
       const board = await finalizeEligibleMatchHistory(finishedRoom)
       if (cancelled || !board) return
       setCareerBoard(board)
+      void import('./lib/playerAnalystClient').then(({ refreshPlayerAnalyst }) =>
+        refreshPlayerAnalyst(board),
+      )
     })()
 
     return () => {

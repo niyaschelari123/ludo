@@ -570,6 +570,165 @@ button:disabled {
   margin: 0 auto;
 }
 
+.analyst-jump {
+  display: grid;
+  width: 100%;
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(251, 191, 36, 0.2), transparent 46%),
+    rgba(8, 14, 28, 0.92);
+}
+
+.analyst-jump-kicker {
+  color: #fbbf24;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.analyst-jump-title {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.analyst-jump-hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.analyst-anchor {
+  scroll-margin-top: 16px;
+  padding-top: 18px;
+}
+
+.analyst {
+  margin: 8px 0 22px;
+  padding: 16px;
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(251, 191, 36, 0.14), transparent 42%),
+    rgba(8, 14, 28, 0.88);
+}
+
+.analyst-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.analyst-head h2,
+.analyst-verdict h3,
+.analyst-card h3 {
+  margin: 0;
+}
+
+.analyst-kicker {
+  margin: 0 0 4px;
+  color: #fbbf24;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.analyst-meaning {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.analyst-note,
+.analyst-status,
+.analyst-evidence,
+.analyst-reason,
+.analyst-runner,
+.analyst-empty,
+.analyst-tie {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.analyst-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.analyst-card {
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.analyst-card.insufficient {
+  opacity: 0.78;
+}
+
+.analyst-icon {
+  margin: 0;
+  font-size: 22px;
+}
+
+.analyst-winner {
+  margin: 6px 0;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.analyst-stats {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.analyst-stats li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.analyst-reason {
+  color: #fde68a;
+}
+
+.analyst-verdict {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.analyst-verdict ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.analyst-verdict h4 {
+  margin: 12px 0 0;
+  font-size: 13px;
+}
+
+@media (max-width: 700px) {
+  .analyst-head {
+    flex-direction: column;
+  }
+}
+
 .most-stats-stack {
   padding-bottom: 8px;
 }

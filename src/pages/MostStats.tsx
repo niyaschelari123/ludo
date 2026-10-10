@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { MostStatsPanels } from '../components/CareerBoards'
+import { PlayerAnalystPanel } from '../components/PlayerAnalystPanel'
+import { isAdminAccountId } from '../lib/profile'
 import {
   hydrateProfileFromCloud,
   loadProfile,
@@ -20,6 +22,8 @@ export function MostStatsPage() {
   const [board, setBoard] = useState<CareerBoardEntry[] | null>(null)
   const [error, setError] = useState('')
   const [ready, setReady] = useState(false)
+  const [analystOpen, setAnalystOpen] = useState(false)
+  const analystRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -50,6 +54,11 @@ export function MostStatsPage() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!analystOpen) return
+    analystRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [analystOpen])
+
   if (!ready) {
     return (
       <main className="most-stats-screen">
@@ -78,7 +87,31 @@ export function MostStatsPage() {
 
       <section className="most-stats-body" aria-label="Most career stats">
         {error ? <p className="error">{error}</p> : null}
+        <button
+          type="button"
+          className="analyst-jump"
+          onClick={() => {
+            if (analystOpen) {
+              analystRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              return
+            }
+            setAnalystOpen(true)
+          }}
+        >
+          <span className="analyst-jump-kicker">AI Player Analyst</span>
+          <span className="analyst-jump-title">See the awards</span>
+          <span className="analyst-jump-hint">Opens below the Most stats</span>
+        </button>
         <MostStatsPanels board={board} />
+        {analystOpen ? (
+          <div ref={analystRef} className="analyst-anchor">
+            <PlayerAnalystPanel
+              board={board}
+              isAdmin={isAdminAccountId(profile.accountId)}
+              adminPin={profile.pin}
+            />
+          </div>
+        ) : null}
       </section>
     </main>
   )

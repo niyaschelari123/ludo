@@ -14,6 +14,11 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? 'http://localhost:3001'
 
 let socket: Socket | null = null
 
+/** HTTP origin of the game server (no trailing slash). */
+export function getSocketUrl() {
+  return SOCKET_URL.replace(/\/$/, '')
+}
+
 /** Shared Socket.IO client for the game backend. */
 export function getSocket() {
   if (!socket) {
