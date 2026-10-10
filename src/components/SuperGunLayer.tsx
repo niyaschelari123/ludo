@@ -12,10 +12,13 @@ export function SuperGunLayer({
   room,
   userId,
   aimRef,
+  aimLock,
 }: {
   room: Room
   userId: string
   aimRef: MutableRefObject<() => number>
+  /** undefined follows the pointer. null keeps the gun centered. A number points the laser. */
+  aimLock?: number | null
 }) {
   const groupRef = useRef<SVGGElement>(null)
   const pointerAngleRef = useRef(-Math.PI / 2)
@@ -57,26 +60,30 @@ export function SuperGunLayer({
   }, [canAim, shot, shotMs])
 
   useEffect(() => {
-    if (!canAim) return
+    if (!canAim || aimLock !== undefined) return
     const onMove = (event: PointerEvent) => {
       const svg = groupRef.current?.ownerSVGElement
       if (!svg) return
       const ctm = svg.getScreenCTM()
       if (!ctm) return
-      const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(
-        ctm.inverse(),
-      )
+      const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(ctm.inverse())
       const next = Math.atan2(point.y - center.y, point.x - center.x)
       pointerAngleRef.current = next
       setAimAngle(next)
     }
     window.addEventListener('pointermove', onMove)
     return () => window.removeEventListener('pointermove', onMove)
-  }, [canAim, center.x, center.y])
+  }, [canAim, aimLock, center.x, center.y])
 
   if (!showGun) return null
 
-  const drawAngle = shotFresh && shot ? shot.angle : canAim ? aimAngle : -Math.PI / 2
+  const freeAim = aimLock === undefined
+  const drawAngle = shotFresh && shot
+    ? shot.angle
+    : freeAim
+      ? aimAngle
+      : aimLock ?? -Math.PI / 2
+  const showLaser = Boolean(shotFresh || (canAim && (freeAim || aimLock != null)))
   const laserX = center.x + Math.cos(drawAngle) * laserLen
   const laserY = center.y + Math.sin(drawAngle) * laserLen
   const shotAge = shotFresh && shot ? now - shot.startedAt : 0
@@ -103,7 +110,7 @@ export function SuperGunLayer({
           points={shotPath.map((point) => `${point.x},${point.y}`).join(' ')}
           fill="none"
         />
-      ) : canAim ? (
+      ) : showLaser ? (
         <line
           className="super-gun-laser"
           x1={center.x}

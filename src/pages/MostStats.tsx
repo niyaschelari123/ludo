@@ -98,7 +98,7 @@ export function MostStatsPage() {
             setAnalystOpen(true)
           }}
         >
-          <span className="analyst-jump-kicker">AI Player Analyst</span>
+          <span className="analyst-jump-kicker">Player Analyst</span>
           <span className="analyst-jump-title">See the awards</span>
           <span className="analyst-jump-hint">Opens below the Most stats</span>
         </button>

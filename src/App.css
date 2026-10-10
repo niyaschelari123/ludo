@@ -659,6 +659,58 @@ button:disabled {
   line-height: 1.45;
 }
 
+.analyst-ranking {
+  margin: 4px 0 16px;
+}
+
+.analyst-ranking h3 {
+  margin: 0 0 4px;
+}
+
+.analyst-rank-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.analyst-rank-list li {
+  display: grid;
+  grid-template-columns: 28px minmax(90px, 1fr) auto;
+  grid-template-areas:
+    'place name score'
+    'place meta score';
+  align-items: center;
+  gap: 0 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.analyst-rank-place {
+  grid-area: place;
+  font-weight: 800;
+  color: #fbbf24;
+}
+
+.analyst-rank-name {
+  grid-area: name;
+  font-weight: 800;
+}
+
+.analyst-rank-score {
+  grid-area: score;
+  font-weight: 800;
+}
+
+.analyst-rank-meta {
+  grid-area: meta;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .analyst-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -3067,6 +3119,32 @@ select:focus {
 .super-gun-picker {
   display: grid;
   gap: 10px;
+}
+
+.super-gun-players {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.super-gun-players button {
+  border: 1px solid rgba(251, 113, 133, 0.45);
+  background: rgba(15, 23, 42, 0.72);
+  color: inherit;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: 800;
+}
+
+.super-gun-players button.active {
+  background: #9f1239;
+  border-color: #fb7185;
+  color: #fff1f2;
+}
+
+.player-row--gun-target {
+  outline: 2px solid #fb7185;
+  outline-offset: 2px;
 }
 
 .token.gun-pickable {

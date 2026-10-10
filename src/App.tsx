@@ -361,7 +361,7 @@ function App() {
   const [matchNoticeOpen, setMatchNoticeOpen] = useState(false)
   const [seatTossDismissedCount, setSeatTossDismissedCount] = useState<number | null>(null)
   const [seatBoardOpen, setSeatBoardOpen] = useState(false)
-  const [gunTargetKey, setGunTargetKey] = useState<string | null>(null)
+  const [gunTarget, setGunTarget] = useState<{ playerId: string; tokenId: number } | null>(null)
   const [touchGun, setTouchGun] = useState(false)
   const [seatSwapPick, setSeatSwapPick] = useState<string[]>([])
   const [stopMatchConfirmOpen, setStopMatchConfirmOpen] = useState(false)
@@ -3923,7 +3923,7 @@ function App() {
               return (
                 <div
                   key={player.id}
-                  className={`player-row ${playerColorClass(player.color)} ${viewRoom.game?.turnIndex === index ? 'active' : ''} ${hasShield ? 'has-shield' : ''} ${onMyTeam ? 'player-row--ally' : ''}`}
+                  className={`player-row ${playerColorClass(player.color)} ${viewRoom.game?.turnIndex === index ? 'active' : ''} ${hasShield ? 'has-shield' : ''} ${onMyTeam ? 'player-row--ally' : ''} ${touchGun && gunTarget?.playerId === player.id ? 'player-row--gun-target' : ''}`}
                   style={playerColorStyle(player.color)}
                 >
                   <div className="player-row-main">
@@ -4458,7 +4458,11 @@ function App() {
               room={viewRoom}
               userId={userId}
               movingToken={movingToken}
-              highlightPlayerId={highlightPlayerId}
+              highlightPlayerId={
+                touchGun && canFireSuperGun(viewRoom, userId)
+                  ? gunTarget?.playerId ?? null
+                  : highlightPlayerId
+              }
               onMove={(tokenId) => {
                 if (isSpectator) return
                 void animateMove(tokenId)
@@ -4469,10 +4473,19 @@ function App() {
                   await fireSuperGun(viewRoom.id, userId, angle)
                 })
               }}
-              gunTargetKey={touchGun ? gunTargetKey : null}
+              gunAimAngle={
+                touchGun && gunTarget
+                  ? angleTowardToken(viewRoom, gunTarget.playerId, gunTarget.tokenId)
+                  : touchGun
+                    ? null
+                    : undefined
+              }
+              gunTargetKey={
+                touchGun && gunTarget ? `${gunTarget.playerId}:${gunTarget.tokenId}` : null
+              }
               onPickGunTarget={
                 touchGun && canFireSuperGun(viewRoom, userId)
-                  ? (playerId, tokenId) => setGunTargetKey(`${playerId}:${tokenId}`)
+                  ? (playerId, tokenId) => setGunTarget({ playerId, tokenId })
                   : undefined
               }
             />
@@ -4530,27 +4543,44 @@ function App() {
                 <p className="action-hint super-gun-hint">
                   {listSuperGunTargets(viewRoom).length === 0
                     ? 'No opponent token is in the open. Stars and the home path are safe.'
-                    : gunTargetKey
-                      ? 'That token is selected. Tap Fire.'
-                      : 'Tap an opponent token on the board, then Fire. You have 30s.'}
+                    : gunTarget
+                      ? 'That player is highlighted. Tap Fire.'
+                      : 'Select a player, then tap Fire. You have 30s.'}
                 </p>
+                <div className="super-gun-players">
+                  {Array.from(
+                    new Map(
+                      listSuperGunTargets(viewRoom).map((target) => [target.playerId, target]),
+                    ).values(),
+                  ).map((target) => (
+                    <button
+                      key={target.playerId}
+                      type="button"
+                      className={gunTarget?.playerId === target.playerId ? 'active' : ''}
+                      onClick={() =>
+                        setGunTarget({ playerId: target.playerId, tokenId: target.tokenId })
+                      }
+                    >
+                      {target.name}
+                    </button>
+                  ))}
+                </div>
                 <button
                   type="button"
                   className="start-button"
-                  disabled={busy || !gunTargetKey}
+                  disabled={busy || !gunTarget}
                   onClick={() => {
-                    if (!gunTargetKey) return
-                    const [playerId, tokenIdRaw] = gunTargetKey.split(':')
-                    const tokenId = Number(tokenIdRaw)
+                    if (!gunTarget) return
+                    const chosen = gunTarget
                     void perform(async () => {
                       await fireSuperGun(
                         viewRoom.id,
                         userId,
-                        angleTowardToken(viewRoom, playerId, tokenId),
+                        angleTowardToken(viewRoom, chosen.playerId, chosen.tokenId),
                         Date.now(),
-                        { playerId, tokenId },
+                        chosen,
                       )
-                      setGunTargetKey(null)
+                      setGunTarget(null)
                     })
                   }}
                 >

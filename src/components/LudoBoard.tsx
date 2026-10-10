@@ -755,6 +755,8 @@ interface Props {
   highlightPlayerId?: string | null
   onMove: (tokenId: number) => void
   onFireGun?: (angle: number) => void
+  /** On touch, null keeps the gun centered. A number points it at the chosen player. */
+  gunAimAngle?: number | null
   gunTargetKey?: string | null
   onPickGunTarget?: (playerId: string, tokenId: number) => void
 }
@@ -766,6 +768,7 @@ export function LudoBoard({
   highlightPlayerId,
   onMove,
   onFireGun,
+  gunAimAngle,
   gunTargetKey,
   onPickGunTarget,
 }: Props) {
@@ -971,7 +974,7 @@ export function LudoBoard({
     typeof window !== 'undefined' &&
     window.matchMedia('(pointer: coarse), (max-width: 820px)').matches
   const gunTargetKeys = new Set(
-    gunReady && touchAim
+    gunReady && onPickGunTarget
       ? listSuperGunTargets(room).map(
           (target) => `${target.playerId}:${target.tokenId}`,
         )
@@ -1149,7 +1152,12 @@ export function LudoBoard({
               </g>
             )
           })}
-        <SuperGunLayer room={room} userId={userId} aimRef={gunAimRef} />
+        <SuperGunLayer
+          room={room}
+          userId={userId}
+          aimRef={gunAimRef}
+          aimLock={touchAim ? gunAimAngle ?? null : undefined}
+        />
       </svg>
 
       {showStackPeek && hoveredStack ? (

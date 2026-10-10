@@ -296,6 +296,44 @@ function rankRate(
   return { pool: pool.length, ranked }
 }
 
+export type OverallRank = {
+  rank: number
+  accountId: string
+  name: string
+  score: number
+  matchesPlayed: number
+  wins: number
+  motm: number
+  worst: number
+}
+
+/** Same order as Best Overall: Ultimate points per match, inside the match range. */
+export function overallRanking(players: AnalystPlayer[]): OverallRank[] {
+  const ranked = rankRate(
+    players,
+    (player) => rate(ultimatePoints(player), player.matchesPlayed),
+    () => [],
+  ).ranked
+  let place = 0
+  let lastScore: number | null = null
+  return ranked.map((entry, index) => {
+    if (lastScore == null || Math.abs(entry.score - lastScore) >= 1e-9) {
+      place = index + 1
+      lastScore = entry.score
+    }
+    return {
+      rank: place,
+      accountId: entry.player.accountId,
+      name: entry.player.name,
+      score: round(entry.score),
+      matchesPlayed: entry.player.matchesPlayed,
+      wins: entry.player.wins,
+      motm: entry.player.motm,
+      worst: entry.player.worst,
+    }
+  })
+}
+
 function awardFromRank(
   category: AnalystCategory,
   ranked: Ranked[],

@@ -9,7 +9,7 @@ import {
   requestPlayerAnalyst,
   type AnalystAnalysis,
 } from '../lib/playerAnalystClient'
-import { categoryMeaning, type AnalystAward } from '../lib/playerAnalyst'
+import { categoryMeaning, overallRanking, type AnalystAward } from '../lib/playerAnalyst'
 
 export function PlayerAnalystPanel({
   board,
@@ -79,7 +79,7 @@ export function PlayerAnalystPanel({
 
   if (!board) {
     return (
-      <section className="analyst" aria-label="AI player awards">
+      <section className="analyst" aria-label="Player awards">
         <p className="analyst-status">Loading player awards…</p>
       </section>
     )
@@ -87,12 +87,13 @@ export function PlayerAnalystPanel({
 
   const narrative = analysis?.aiStatus === 'ready' ? analysis.narrative : null
   const shown = awards ?? []
+  const ranking = overallRanking(boardToAnalystPlayers(board))
 
   return (
-    <section className="analyst" aria-label="AI player awards">
+    <section className="analyst" aria-label="Player awards">
       <header className="analyst-head">
         <div>
-          <p className="analyst-kicker">AI Player Analyst</p>
+          <p className="analyst-kicker">Player Analyst</p>
           <h2>Awards from the Most stats</h2>
         </div>
         {isAdmin ? (
@@ -109,6 +110,29 @@ export function PlayerAnalystPanel({
             ? '. Commentary is unavailable right now.'
             : '.'}
       </p>
+
+      <section className="analyst-ranking" aria-label="Overall performance ranking">
+        <h3>Overall ranking</h3>
+        <p className="analyst-meaning">
+          Ordered by Ultimate score per match: MotM × 40 + wins × 50 − Worst × 10. Players with far fewer matches are left out.
+        </p>
+        {ranking.length === 0 ? (
+          <p className="analyst-empty">Not enough matches to rank players yet.</p>
+        ) : (
+          <ol className="analyst-rank-list">
+            {ranking.map((row) => (
+              <li key={row.accountId}>
+                <span className="analyst-rank-place">{row.rank}</span>
+                <span className="analyst-rank-name">{row.name}</span>
+                <span className="analyst-rank-score">{row.score}</span>
+                <span className="analyst-rank-meta">
+                  {row.matchesPlayed} matches · {row.wins} wins · {row.motm} MotM · {row.worst} Worst
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
 
       <div className="analyst-grid">
         {shown.map((award) => (
@@ -147,7 +171,7 @@ export function PlayerAnalystPanel({
       </div>
 
       <aside className="analyst-verdict">
-        <h3>AI Analyst&apos;s Verdict</h3>
+        <h3>Analyst&apos;s Verdict</h3>
         {narrative?.overallVerdict ? (
           <p>{narrative.overallVerdict}</p>
         ) : (
@@ -156,7 +180,7 @@ export function PlayerAnalystPanel({
               ? `${shown.find((award) => award.category === 'best_overall')?.playerName} leads Best Overall on the calculated scores.`
               : 'Not enough finished matches to name a Best Overall player yet.'}
             {' '}
-            AI commentary appears after the stats server writes it.
+            Commentary appears after the stats server writes it.
           </p>
         )}
         {narrative && narrative.rivalries.length > 0 ? (

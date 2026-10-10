@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   acceptNarrative,
+  overallRanking,
   scoreAwards,
   statsVersion,
   type AnalystPlayer,
@@ -87,6 +88,20 @@ test('a short career is left out of a similar match group', () => {
   const overall = awards.find((award) => award.category === 'best_overall')
   assert.notEqual(overall?.playerId, 'acct:anjal')
   assert.equal(overall?.status, 'winner')
+})
+
+test('overall ranking follows Ultimate points per match', () => {
+  const ranking = overallRanking([
+    player({ accountId: 'acct:low', name: 'Low', matchesPlayed: 40, wins: 4, motm: 2, worst: 6 }),
+    player({ accountId: 'acct:high', name: 'High', matchesPlayed: 40, wins: 16, motm: 10, worst: 1 }),
+    player({ accountId: 'acct:short', name: 'Short', matchesPlayed: 4, wins: 4, motm: 4 }),
+  ])
+  assert.deepEqual(
+    ranking.map((row) => row.name),
+    ['High', 'Low'],
+  )
+  assert.equal(ranking[0]?.rank, 1)
+  assert.equal(ranking[1]?.rank, 2)
 })
 
 test('podium rate uses 1st, 2nd, and 3rd among the main group', () => {
