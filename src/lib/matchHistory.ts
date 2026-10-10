@@ -574,6 +574,7 @@ export async function fetchMatchHistoryById(
 export async function finalizeEligibleMatchHistory(room: Room) {
   if (!isCareerEligibleMatch(room)) return null
   const board = await fetchCareerBoard()
+  if (!board) return null
   await recordMatchHistory(room, board)
   return board
 }

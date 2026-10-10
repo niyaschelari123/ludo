@@ -324,29 +324,20 @@ export async function fetchCloudProfile(
     const ref = doc(db, 'profiles', profileDocId(accountId))
     const snap = await getDoc(ref)
     if (!snap.exists()) {
-      const stats = emptyCareerStats(accountId)
       await setDoc(
         ref,
         {
           accountId,
           name: '',
           color: '',
-          ...stats,
           updatedAt: serverTimestamp(),
         },
         { merge: true },
       )
-      return { accountId, name: '', color: '', ...stats }
+      return { accountId, name: '', color: '', ...emptyCareerStats(accountId) }
     }
     const data = snap.data() as Partial<CloudProfile>
     const stats = readCareerStats(data, accountId)
-    const patch: Record<string, unknown> = { accountId }
-    for (const key of CAREER_STAT_KEYS) {
-      if (typeof data[key] !== 'number') patch[key] = stats[key]
-    }
-    if (Object.keys(patch).length > 1) {
-      await setDoc(ref, patch, { merge: true })
-    }
     return {
       accountId,
       name: typeof data.name === 'string' ? data.name.trim().slice(0, 18) : '',
@@ -405,6 +396,7 @@ export async function fetchAccountWins(
 ): Promise<Record<string, number>> {
   const board = await fetchCareerBoard(accountIds)
   const result: Record<string, number> = {}
+  if (!board) return result
   for (const entry of board) {
     result[entry.accountId] = entry.wins
   }
@@ -415,10 +407,11 @@ export async function fetchAccountWins(
  * Career standings for login accounts (all of them by default).
  * Uses Firestore name/color/wins/motm when present; falls back to defaults.
  * Admin is excluded unless explicitly requested in `accountIds`.
+ * Returns null when the cloud read fails so callers keep the last good board.
  */
 export async function fetchCareerBoard(
   accountIds?: string[],
-): Promise<CareerBoardEntry[]> {
+): Promise<CareerBoardEntry[] | null> {
   const defaults = Object.values(CAREER_LOGIN_ACCOUNTS)
   const wanted = accountIds?.length
     ? [...new Set(accountIds.filter(isCareerAccountId))]
@@ -471,7 +464,7 @@ export async function fetchCareerBoard(
         typeof data.accountId === 'string' && isLoginAccountId(data.accountId)
           ? data.accountId
           : ids.find((id) => profileDocId(id) === snap.id)
-      if (!accountId) return
+      if (!accountId || !ids.includes(accountId)) return
       found.add(accountId)
       const prev = byId.get(accountId)
       byId.set(accountId, {
@@ -488,52 +481,13 @@ export async function fetchCareerBoard(
         elimPairs: readElimPairs(data),
       })
     })
-    await Promise.all(
-      ids
-        .filter((id) => !found.has(id))
-        .map((accountId) => {
-          const entry = byId.get(accountId)!
-          return setDoc(
-            doc(db, 'profiles', profileDocId(accountId)),
-            {
-              accountId,
-              name: entry.name,
-              wins: entry.wins,
-              motm: entry.motm,
-              worst: entry.worst,
-              second: entry.second,
-              third: entry.third,
-              eliminations: entry.eliminations,
-              timesEliminated: entry.timesEliminated,
-              sixes: entry.sixes,
-              matchesPlayed: entry.matchesPlayed,
-              motmPoints: entry.motmPoints,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true },
-          ).catch(() => {})
-        }),
-    )
-    // Backfill missing career fields on existing docs.
-    await Promise.all(
-      ids
-        .filter((id) => found.has(id))
-        .map(async (accountId) => {
-          const ref = doc(db, 'profiles', profileDocId(accountId))
-          const snap = await getDoc(ref)
-          if (!snap.exists()) return
-          const data = snap.data() as Partial<CloudProfile>
-          const stats = readCareerStats(data, accountId)
-          const patch: Record<string, unknown> = { accountId }
-          for (const key of CAREER_STAT_KEYS) {
-            if (typeof data[key] !== 'number') patch[key] = stats[key]
-          }
-          if (Object.keys(patch).length <= 1) return
-          await setDoc(ref, patch, { merge: true }).catch(() => {})
-        }),
-    )
+    if (found.size === 0 && ids.length > 0) {
+      console.warn('Career board read returned no profiles')
+      return null
+    }
   } catch (error) {
     console.warn('Failed to load career board', error)
+    return null
   }
 
   return ids
@@ -1007,6 +961,7 @@ export async function addMatchDetailsToCareer(
   >,
 ): Promise<number> {
   const board = await fetchCareerBoard()
+  if (!board) return 0
   const current = new Map(board.map((entry) => [entry.accountId, entry]))
   let written = 0
 

@@ -12,7 +12,7 @@ service cloud.firestore {
           'accountId', 'name', 'color', 'photoUrl', 'updatedAt',
           'wins', 'motm', 'worst', 'second', 'third',
           'eliminations', 'timesEliminated', 'sixes', 'matchesPlayed',
-          'motmPoints', 'negativePowers', 'superPowers', 'plus3', 'bestFinishMs',
+          'motmPoints', 'negativePowers', 'superPowers', 'plus3', 'plus10', 'bestFinishMs',
           'elimPairs'
         ])
         && (
@@ -34,6 +34,7 @@ service cloud.firestore {
         && (!('negativePowers' in request.resource.data) || (request.resource.data.negativePowers is number && request.resource.data.negativePowers >= 0))
         && (!('superPowers' in request.resource.data) || (request.resource.data.superPowers is number && request.resource.data.superPowers >= 0))
         && (!('plus3' in request.resource.data) || (request.resource.data.plus3 is number && request.resource.data.plus3 >= 0))
+        && (!('plus10' in request.resource.data) || (request.resource.data.plus10 is number && request.resource.data.plus10 >= 0))
         && (!('bestFinishMs' in request.resource.data) || (request.resource.data.bestFinishMs is number && request.resource.data.bestFinishMs >= 0))
         && (!('elimPairs' in request.resource.data) || request.resource.data.elimPairs is map);
 

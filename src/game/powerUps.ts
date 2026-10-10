@@ -202,7 +202,7 @@ export function powerInfoForMode(
     entries = POWER_UP_INFO.filter((entry) => entry.type !== "yard");
   }
 
-  if (playerCount !== 5 || mode === "race") {
+  if (mode === "race") {
     entries = entries.filter((entry) => entry.type !== "smoke");
   }
 
@@ -442,10 +442,8 @@ function placeCommonAndRare(
   if (options.includeSuper) {
     placeSuperPowers(tiles, playerCount, length);
     placeBombPowers(tiles, playerCount, length);
-    if (playerCount === 5) {
-      placeSmokePowers(tiles, length);
-    }
   }
+  placeSmokePowers(tiles, playerCount, length);
 
   // After Super so mid-path shields do not steal upper-path Super cells.
   if (playerCount === 5) {
@@ -559,17 +557,38 @@ function placeSuperPowers(
 const BOMB_PATH_OFFSETS = [6, 5, 7, 4, 9, 3, 10, 2, 11, 1, 12];
 
 /**
- * 5-player only. Flash Super sits on the upper paths, so these two Smoke
- * supers go on the right-side path (seat 1) and the bottom path (seat 2).
+ * Two Smoke jumps. On a 5-player board they stay on the right and bottom
+ * paths. On other boards they sit on two paths that do not already hold Flash.
  */
-const SMOKE_PATH_SEATS = [1, 2];
+const SMOKE_FIVE_PLAYER_SEATS = [1, 2];
 const SMOKE_PATH_OFFSETS = [5, 7, 4, 9, 3, 10, 2, 11, 1, 12];
+
+function smokeSeatsFor(
+  tiles: Record<number, PowerUpType>,
+  playerCount: number,
+) {
+  if (playerCount === 5) return SMOKE_FIVE_PLAYER_SEATS;
+  const superSeats = new Set(
+    Object.entries(tiles)
+      .filter(([, type]) => type === "super")
+      .map(([cell]) => Math.floor(Number(cell) / CELLS_PER_PLAYER) % playerCount),
+  );
+  const step = Math.max(1, Math.floor(playerCount / 2));
+  for (let start = 0; start < playerCount; start += 1) {
+    const other = (start + step) % playerCount;
+    if (start === other) continue;
+    if (superSeats.has(start) || superSeats.has(other)) continue;
+    return [start, other];
+  }
+  return spacedSeats(playerCount, 2, 0);
+}
 
 function placeSmokePowers(
   tiles: Record<number, PowerUpType>,
+  playerCount: number,
   length: number,
 ) {
-  for (const seat of SMOKE_PATH_SEATS) {
+  for (const seat of smokeSeatsFor(tiles, playerCount)) {
     const base = seat * CELLS_PER_PLAYER;
     for (const offset of SMOKE_PATH_OFFSETS) {
       const cell = (base + offset) % length;

@@ -590,7 +590,7 @@ function App() {
     let cancelled = false
     const refresh = () => {
       void fetchCareerBoard().then((board) => {
-        if (cancelled) return
+        if (cancelled || !board) return
         setCareerBoard(board)
         if (!board.some((entry) => hasAllZeroCareerStats(entry))) {
           setZeroStatsDismissed(false)
@@ -1242,6 +1242,7 @@ function App() {
     setAdminEditOpen(true)
     void (async () => {
       const board = await fetchCareerBoard()
+      if (!board) return
       setCareerBoard(board)
       const first = board[0]
       const targetId = adminEditTargetId || first?.accountId || ''
@@ -1289,7 +1290,7 @@ function App() {
         }
         await adminSetCareerStats(profile.accountId, adminEditTargetId, stats)
         const board = await fetchCareerBoard()
-        setCareerBoard(board)
+        if (board) setCareerBoard(board)
         setAdminEditMsg('Saved.')
       } catch (reason) {
         setAdminEditMsg(
@@ -1787,7 +1788,7 @@ function App() {
           setHistoryApplyMsg('No career values to apply from this history.')
         } else {
           const board = await fetchCareerBoard()
-          setCareerBoard(board)
+          if (board) setCareerBoard(board)
           setHistoryApplyMsg(
             snapshot.length > 0
               ? `Replaced most values from ${entry.code} for ${written} player${written === 1 ? '' : 's'}.`

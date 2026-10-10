@@ -31,7 +31,10 @@ export function MostStatsPage() {
       if (!next) return
       try {
         const career = await fetchCareerBoard()
-        if (!cancelled) setBoard(career)
+        if (!cancelled && career) setBoard(career)
+        if (!cancelled && !career) {
+          setError('Failed to load career stats.')
+        }
       } catch (reason) {
         if (!cancelled) {
           setError(
