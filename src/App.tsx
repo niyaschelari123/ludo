@@ -21,6 +21,7 @@ import {
 import { LudoBoard } from './components/LudoBoard'
 import { SeatBoardMap } from './components/SeatBoardMap'
 import { Dice3D } from './components/Dice3D'
+import { BoardReactions } from './components/BoardReactions'
 import { GameChat } from './components/GameChat'
 import { PlayerAvatar } from './components/PlayerAvatar'
 import { ProfilePhotoCropper } from './components/ProfilePhotoCropper'
@@ -4879,11 +4880,18 @@ function App() {
       )}
 
       {!isPendingWatch ? (
-        <GameChat
-          room={viewRoom}
-          userId={userId}
-          canSend={isSeatPlayer}
-        />
+        <>
+          <BoardReactions
+            room={viewRoom}
+            userId={userId}
+            canSend={isSeatPlayer}
+          />
+          <GameChat
+            room={viewRoom}
+            userId={userId}
+            canSend={isSeatPlayer}
+          />
+        </>
       ) : null}
 
       {elimBoardOpen && viewRoom.game ? (

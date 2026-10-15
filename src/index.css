@@ -9,5 +9,22 @@
   -webkit-font-smoothing: antialiased;
 }
 
-body { margin: 0; min-width: 320px; min-height: 100vh; }
+html {
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+#root {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 h1, h2, h3, p { margin-top: 0; }

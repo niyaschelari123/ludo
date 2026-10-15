@@ -474,6 +474,17 @@ export interface ChatMessage {
   at: number;
 }
 
+/** Ephemeral board emoji — not stored in chat history. */
+export interface BoardReaction {
+  id: string;
+  roomId: string;
+  fromId: string;
+  fromName: string;
+  fromColor: string;
+  kind: string;
+  at: number;
+}
+
 export interface Room {
   id: string;
   code: string;

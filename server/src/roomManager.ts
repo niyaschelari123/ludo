@@ -33,6 +33,7 @@ import { normalizeColorKey } from '../../src/game/colors.js'
 import { sanitizePhotoDataUrl } from '../../src/lib/profilePhoto.js'
 import { isLoginAccountId } from '../../src/lib/profile.js'
 import { clearRoomChat } from './chat.js'
+import { clearRoomReactions } from './reactions.js'
 
 const rooms = new Map<string, Room>()
 const codeIndex = new Map<string, string>()
@@ -128,6 +129,7 @@ export function closeAllRooms() {
   const roomIds = [...rooms.keys()]
   for (const room of rooms.values()) {
     clearRoomChat(room.id)
+    clearRoomReactions(room.id)
     clearRollHints(room.id)
   }
   rooms.clear()
@@ -1638,6 +1640,7 @@ export function removePlayerFromRoom(
     rooms.delete(room.id)
     codeIndex.delete(room.code)
     clearRoomChat(room.id)
+    clearRoomReactions(room.id)
     clearRollHints(room.id)
     return null
   }

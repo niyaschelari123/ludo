@@ -73,7 +73,8 @@ import { schedulePowerTimer, stopPowerTimer } from './powerTimer.js'
 import { scheduleSuperGunTimer, stopSuperGunTimer } from './gunTimer.js'
 import { scheduleBlitzTimer, stopBlitzTimer } from './blitzTimer.js'
 import { chatHistoryFor, postChatMessage } from './chat.js'
-import type { ActiveMove, ChatMessage, Room } from '../../src/game/types.js'
+import { postBoardReaction } from './reactions.js'
+import type { ActiveMove, BoardReaction, ChatMessage, Room } from '../../src/game/types.js'
 import { isBlitzMode } from '../../src/game/types.js'
 import { tokenMoveDurationMs } from '../../src/game/types.js'
 import { ADMIN_PIN } from '../../src/lib/profile.js'
@@ -305,6 +306,10 @@ function emitAnimatedMove(roomId: string, previewRoom: Room, finalRoom: Room) {
   setTimeout(() => {
     scheduleBotTurn(roomId, handleBotAction, 'afterMove')
   }, animMs)
+}
+
+function emitBoardReaction(roomId: string, reaction: BoardReaction) {
+  io.to(roomId).emit('boardReaction', reaction)
 }
 
 function emitChatMessage(roomId: string, message: ChatMessage) {
@@ -1356,6 +1361,23 @@ io.on('connection', (socket) => {
         })
         callback?.({ ok: true, data: { message } })
         emitChatMessage(payload.roomId, message)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'sendReaction',
+    (
+      payload: { roomId: string; userId: string; kind: string },
+      callback?: Ack<{ reaction: BoardReaction }>,
+    ) => {
+      try {
+        const room = getRoom(payload.roomId)
+        const reaction = postBoardReaction(room, payload.userId, payload.kind)
+        callback?.({ ok: true, data: { reaction } })
+        emitBoardReaction(payload.roomId, reaction)
       } catch (error) {
         ackError(callback, error)
       }

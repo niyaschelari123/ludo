@@ -3,7 +3,14 @@
  * Replaces the previous Firebase/Firestore implementation.
  */
 import { emitAck, getSocket, whenConnected } from './socket'
-import type { ActiveMove, ChatMessage, Room, SpectatorAccess } from './types'
+import type { ReactionKind } from './reactions'
+import type {
+  ActiveMove,
+  BoardReaction,
+  ChatMessage,
+  Room,
+  SpectatorAccess,
+} from './types'
 
 export async function createRoom(
   userId: string,
@@ -466,6 +473,35 @@ export function watchChat(
 
   return () => {
     socket.off('chatMessage', handleMessage)
+  }
+}
+
+export async function sendReaction(
+  roomId: string,
+  userId: string,
+  kind: ReactionKind,
+) {
+  const { reaction } = await emitAck<{ reaction: BoardReaction }>('sendReaction', {
+    roomId,
+    userId,
+    kind,
+  })
+  return reaction
+}
+
+/** Live board reactions for the current room. */
+export function watchReactions(
+  roomId: string,
+  onReaction: (reaction: BoardReaction) => void,
+) {
+  const socket = getSocket()
+  const handle = (reaction: BoardReaction) => {
+    if (reaction.roomId !== roomId) return
+    onReaction(reaction)
+  }
+  socket.on('boardReaction', handle)
+  return () => {
+    socket.off('boardReaction', handle)
   }
 }
 
