@@ -423,6 +423,7 @@ function App() {
   const [motmBreakdownTabId, setMotmBreakdownTabId] = useState<string | null>(null)
   const [elimBoardOpen, setElimBoardOpen] = useState(false)
   const [worstBoardOpen, setWorstBoardOpen] = useState(false)
+  const [motmListOpen, setMotmListOpen] = useState(false)
   /** Client-side watch flow: pending host approve, or actively watching. */
   const [watchRole, setWatchRole] = useState<
     'pending' | 'watching' | 'join-pending' | null
@@ -4744,51 +4745,57 @@ function App() {
                     </button>
                   </>
                 ) : null}
-                {liveMotmStandings.length > 0 ? (
+                {extraCtrl && liveMotmStandings.length > 1 ? (
+                  <button
+                    type="button"
+                    className={`live-motm live-motm--list ${liveMotm ? playerColorClass(liveMotm.player.color) : ''}`}
+                    style={liveMotm ? playerColorStyle(liveMotm.player.color) : undefined}
+                    onClick={() => setMotmListOpen(true)}
+                  >
+                    <span className="live-motm-label">MOTM</span>
+                    <strong>Full list</strong>
+                  </button>
+                ) : liveMotmStandings.length > 1 ? (
                   <>
-                    <p className="power-rules-title"><strong>MotM standings</strong></p>
+                    <p className="power-rules-title"><strong>Runner-up</strong></p>
                     <ol className="motm-live-board">
-                      {liveMotmStandings.map((entry, index) => (
+                      {liveMotmStandings.slice(1, 2).map((entry) => (
                         <li
                           key={entry.player.id}
                           className={playerColorClass(entry.player.color)}
                           style={playerColorStyle(entry.player.color)}
                         >
-                          <span>#{index + 1}</span>
+                          <span>#2</span>
                           <strong>{entry.player.name}</strong>
                           <em>{formatAwardScore(entry.score)}</em>
                         </li>
                       ))}
                     </ol>
-                    <button
-                      type="button"
-                      className="blitz-breakdown-open"
-                      onClick={() => {
-                        setMotmBreakdownTabId(
-                          liveMotmStandings.find((entry) => entry.player.id === userId)?.player.id
-                          ?? liveMotmStandings[0]?.player.id
-                          ?? null,
-                        )
-                        setMotmBreakdownOpen(true)
-                      }}
-                    >
-                      MotM point breakdown
-                    </button>
                   </>
                 ) : null}
               </div>
             ) : null}
-            {!isBlitz && liveMotmStandings.length > 1 ? (
+            {!isBlitz && extraCtrl && liveMotmStandings.length > 1 ? (
+              <button
+                type="button"
+                className={`live-motm live-motm--list ${liveMotm ? playerColorClass(liveMotm.player.color) : ''}`}
+                style={liveMotm ? playerColorStyle(liveMotm.player.color) : undefined}
+                onClick={() => setMotmListOpen(true)}
+              >
+                <span className="live-motm-label">MOTM</span>
+                <strong>Full list</strong>
+              </button>
+            ) : !isBlitz && liveMotmStandings.length > 1 ? (
               <div className="motm-live-panel">
-                <p className="power-rules-title"><strong>Live MotM points</strong></p>
+                <p className="power-rules-title"><strong>Runner-up</strong></p>
                 <ol className="motm-live-board">
-                  {liveMotmStandings.slice(1).map((entry, index) => (
+                  {liveMotmStandings.slice(1, 2).map((entry) => (
                     <li
                       key={entry.player.id}
                       className={playerColorClass(entry.player.color)}
                       style={playerColorStyle(entry.player.color)}
                     >
-                      <span>#{index + 2}</span>
+                      <span>#2</span>
                       <strong>{entry.player.name}</strong>
                       <em>{formatAwardScore(entry.score)}</em>
                     </li>
@@ -5004,6 +5011,59 @@ function App() {
                 },
               )}
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {motmListOpen && extraCtrl && liveMotmStandings.length > 0 ? (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="MotM list"
+          onClick={() => setMotmListOpen(false)}
+        >
+          <div
+            className="confirm-card elim-board-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="blitz-breakdown-header">
+              <h2>MotM list</h2>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setMotmListOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <ol className="motm-live-board">
+              {liveMotmStandings.map((entry, index) => (
+                <li
+                  key={`motm-list-${entry.player.id}`}
+                  className={playerColorClass(entry.player.color)}
+                  style={playerColorStyle(entry.player.color)}
+                >
+                  <span>#{index + 1}</span>
+                  <strong>{entry.player.name}</strong>
+                  <em>{formatAwardScore(entry.score)}</em>
+                </li>
+              ))}
+            </ol>
+            <button
+              type="button"
+              className="blitz-breakdown-open"
+              onClick={() => {
+                setMotmBreakdownTabId(
+                  liveMotmStandings.find((entry) => entry.player.id === userId)?.player.id
+                  ?? liveMotmStandings[0]?.player.id
+                  ?? null,
+                )
+                setMotmBreakdownOpen(true)
+              }}
+            >
+              MotM point breakdown
+            </button>
           </div>
         </div>
       ) : null}

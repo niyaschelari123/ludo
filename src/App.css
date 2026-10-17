@@ -1433,6 +1433,17 @@ select:focus {
   max-width: min(420px, 55vw);
 }
 
+button.live-motm {
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.live-motm--list {
+  margin: 12px 0 0;
+  width: fit-content;
+}
+
 .room-code strong {
   color: white;
   letter-spacing: .16em;
