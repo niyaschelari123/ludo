@@ -16,6 +16,8 @@ import {
   generateRacePowerTiles,
   generateTeamPowerTiles,
   powerUpAtCell,
+  randomizeFlashSupers,
+  randomizeSmoke,
 } from "./powerUps";
 import { areTeammates, isTeamMode } from "./teams";
 import {
@@ -176,7 +178,12 @@ export function recordEliminated(game: GameState, playerId: string) {
 export function createGame(
   players: Player[],
   gameMode: GameMode = "classic",
-  options?: { blitzDurationMs?: number | null; quickTokens?: number | null },
+  options?: {
+    blitzDurationMs?: number | null
+    quickTokens?: number | null
+    randomFlash?: boolean | null
+    randomSmoke?: boolean | null
+  },
 ): GameState {
   const boardPlayerCount = players.length;
   const blitzMs = normalizeBlitzDurationMs(options?.blitzDurationMs);
@@ -208,15 +215,24 @@ export function createGame(
       players.map((player) => [player.id, emptyPlayerStats()]),
     ),
     activeMove: null,
-    powerTiles: usesTeamPowerBoard(gameMode)
-      ? generateTeamPowerTiles(boardPlayerCount)
-      : usesRacePowerBoard(gameMode)
-        ? generateRacePowerTiles(boardPlayerCount)
-        : usesQuickPowerBoard(gameMode)
-          ? generateQuickPowerTiles(boardPlayerCount)
-          : gameMode === "power"
-            ? generatePowerTiles(boardPlayerCount)
-            : {},
+    powerTiles: (() => {
+      const tiles = usesTeamPowerBoard(gameMode)
+        ? generateTeamPowerTiles(boardPlayerCount)
+        : usesRacePowerBoard(gameMode)
+          ? generateRacePowerTiles(boardPlayerCount)
+          : usesQuickPowerBoard(gameMode)
+            ? generateQuickPowerTiles(boardPlayerCount)
+            : gameMode === "power"
+              ? generatePowerTiles(boardPlayerCount)
+              : {}
+      if (options?.randomFlash) {
+        randomizeFlashSupers(tiles, boardPlayerCount)
+      }
+      if (options?.randomSmoke) {
+        randomizeSmoke(tiles, boardPlayerCount)
+      }
+      return tiles
+    })(),
     shieldBuff: {},
     superUses: {},
     superGunReady: {},

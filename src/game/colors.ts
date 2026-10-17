@@ -30,6 +30,40 @@ export function resolveColorHex(color: string): string {
   return '#64748b'
 }
 
+/** Host in-match picker. The first 10 match the named player colors. */
+export const HOST_PICK_COLORS = [
+  '#ed1c24',
+  '#00a651',
+  '#ffd400',
+  '#0095da',
+  '#f58220',
+  '#92278f',
+  '#00bcd4',
+  '#ec407a',
+  '#14b8a6',
+  '#84cc16',
+  '#7f1d1d',
+  '#b45309',
+  '#a16207',
+  '#166534',
+  '#0f766e',
+  '#155e75',
+  '#1d4ed8',
+  '#312e81',
+  '#6d28d9',
+  '#a21caf',
+  '#be185d',
+  '#9f1239',
+  '#ea580c',
+  '#ca8a04',
+  '#65a30d',
+  '#059669',
+  '#0891b2',
+  '#2563eb',
+  '#7c3aed',
+  '#db2777',
+] as const
+
 function mixHex(hex: string, toward: number, amount: number) {
   const value = hex.replace('#', '')
   const mix = (channel: number) =>

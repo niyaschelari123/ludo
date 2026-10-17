@@ -15,9 +15,9 @@ import {
   resolveDiceValue,
   TURN_ROLL_TIMEOUT_MS,
 } from '../../src/game/engine.js'
-import { sanitizePowerTiles } from '../../src/game/powerUps.js'
+import { isLoginAccountId } from '../../src/lib/profile.js'
 import { applySuperGunShot } from '../../src/game/superGun.js'
-import { PLAYER_COLORS, canControlSeat, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, BLITZ_EXTEND_MS, BLITZ_REDUCE_MS, BLITZ_MIN_REMAINING_MS, type Room, type SpectatorAccess, type Team, type TeamAssignMode, type TeamSize } from '../../src/game/types.js'
+import { PLAYER_COLORS, canControlSeat, hasPowerBoard, isAutoControlled, isBlitzMode, normalizeBlitzDurationMs, BLITZ_EXTEND_MS, BLITZ_REDUCE_MS, BLITZ_MIN_REMAINING_MS, type Room, type SpectatorAccess, type Team, type TeamAssignMode, type TeamSize } from '../../src/game/types.js'
 import {
   buildRandomTeams,
   buildSequentialTeams,
@@ -29,9 +29,9 @@ import {
 } from '../../src/game/teams.js'
 import { finalizeBlitzGame, finalizeHostStoppedGame } from '../../src/game/matchAwards.js'
 import { pickUniqueBotName } from '../../src/game/botNames.js'
-import { normalizeColorKey } from '../../src/game/colors.js'
+import { normalizeColorKey, resolveColorHex } from '../../src/game/colors.js'
+import { sanitizePowerTiles } from '../../src/game/powerUps.js'
 import { sanitizePhotoDataUrl } from '../../src/lib/profilePhoto.js'
-import { isLoginAccountId } from '../../src/lib/profile.js'
 import { clearRoomChat } from './chat.js'
 import { clearRoomReactions } from './reactions.js'
 
@@ -255,7 +255,8 @@ export function roomViewFor(room: Room, viewerId: string | null | undefined): Ro
   // Relocate shields (etc.) that were generated on player entry / safe cells.
   if (room.game?.powerTiles && Object.keys(room.game.powerTiles).length > 0) {
     sanitizePowerTiles(room.game.powerTiles, getBoardPlayerCount(room), {
-      relocateFivePlayerLayout: room.gameMode !== 'race',
+      relocateFivePlayerLayout:
+        room.gameMode !== 'race' && room.randomFlash !== true,
     })
   }
   const view = structuredClone(room) as Room
@@ -381,6 +382,9 @@ export function createRoom(
     teams: null,
     winningTeamId: null,
     seatToss: null,
+    randomFlash: hasPowerBoard(gameMode) ? true : null,
+    randomSmoke:
+      hasPowerBoard(gameMode) && gameMode !== 'race' ? true : null,
     spectatorAccess: 'request',
     spectators: [],
     spectatorRequests: [],
@@ -635,6 +639,8 @@ export function startRoom(roomId: string, userId: string) {
   room.game = createGame(room.players, room.gameMode ?? 'classic', {
     blitzDurationMs: room.blitzDurationMs,
     quickTokens: room.quickTokens,
+    randomFlash: room.randomFlash !== false,
+    randomSmoke: room.randomSmoke !== false && room.gameMode !== 'race',
   })
   room.seatToss = null
   room.status = 'playing'
@@ -873,6 +879,48 @@ export function cancelSeatSwap(roomId: string, hostId: string) {
   return room
 }
 
+/** Host can turn random Flash placement on or off before the match starts. */
+export function setRandomFlash(
+  roomId: string,
+  hostId: string,
+  enabled: boolean,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can change Flash placement.')
+  }
+  if (room.status !== 'lobby') {
+    throw new Error('Flash placement can only be changed in the lobby.')
+  }
+  if (!hasPowerBoard(room.gameMode)) {
+    throw new Error('This mode has no Flash tiles.')
+  }
+  room.randomFlash = enabled
+  room.updatedAt = Date.now()
+  return room
+}
+
+/** Host can turn random Smoke placement on or off before the match starts. */
+export function setRandomSmoke(
+  roomId: string,
+  hostId: string,
+  enabled: boolean,
+) {
+  const room = getRoom(roomId)
+  if (room.hostId !== hostId) {
+    throw new Error('Only the host can change Smoke placement.')
+  }
+  if (room.status !== 'lobby') {
+    throw new Error('Smoke placement can only be changed in the lobby.')
+  }
+  if (!hasPowerBoard(room.gameMode) || room.gameMode === 'race') {
+    throw new Error('This mode has no Smoke tiles.')
+  }
+  room.randomSmoke = enabled
+  room.updatedAt = Date.now()
+  return room
+}
+
 /** Host can change Quick / Race token count while still in the lobby. */
 export function setQuickTokens(
   roomId: string,
@@ -1022,9 +1070,8 @@ export function setPlayerColorByHost(
   }
 
   const key = normalizeColorKey(color)
-  const nextColor = PLAYER_COLORS.includes(color as (typeof PLAYER_COLORS)[number])
-    ? color
-    : key
+  const nextColor = key
+  const nextHex = resolveColorHex(nextColor)
 
   const next = structuredClone(room) as Room
   const player = next.players.find((entry) => entry.id === playerId)
@@ -1032,24 +1079,20 @@ export function setPlayerColorByHost(
     throw new Error('Player not found.')
   }
 
-  let previousKey: string
-  try {
-    previousKey = normalizeColorKey(player.color)
-  } catch {
-    previousKey = player.color
+  const sameHex = (value: string) => {
+    try {
+      return resolveColorHex(value) === nextHex
+    } catch {
+      return value === nextColor
+    }
   }
-  if (previousKey === key) {
+  if (sameHex(player.color)) {
     return room
   }
 
-  const other = next.players.find((entry) => {
-    if (entry.id === playerId) return false
-    try {
-      return normalizeColorKey(entry.color) === key
-    } catch {
-      return entry.color === key
-    }
-  })
+  const other = next.players.find(
+    (entry) => entry.id !== playerId && sameHex(entry.color),
+  )
 
   if (other) {
     other.color = player.color
@@ -2008,6 +2051,8 @@ export function requestJoin(
     color?: string
     lockColor?: boolean
     photoUrl?: string | null
+    /** Logged-in players from a match notice sit immediately. */
+    direct?: boolean
   },
 ) {
   const roomId = codeIndex.get(code.trim().toUpperCase())
@@ -2039,6 +2084,21 @@ export function requestJoin(
   }
 
   const photo = cleanPhotoUrl(options?.photoUrl)
+  const request = {
+    id: userId,
+    name: displayName,
+    requestedAt: Date.now(),
+    ...(options?.color ? { color: options.color } : {}),
+    ...(options?.lockColor ? { lockColor: true } : {}),
+    ...(photo ? { photoUrl: photo } : {}),
+  }
+
+  if (options?.direct && isLoginAccountId(userId)) {
+    room.joinRequests = room.joinRequests.filter((entry) => entry.id !== userId)
+    const seated = seatJoinRequest(room, request)
+    return { room: seated, status: 'joined' as const }
+  }
+
   const existing = room.joinRequests.find((entry) => entry.id === userId)
   if (existing) {
     existing.name = displayName

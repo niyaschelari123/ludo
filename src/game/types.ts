@@ -496,6 +496,16 @@ export interface Room {
   blitzDurationMs?: number | null;
   /** Quick / Race: how many tokens each player starts with (1–4). */
   quickTokens?: number | null;
+  /**
+   * When true, the two Flash tiles (or each Race Flash) are placed at random.
+   * Off keeps the usual fixed layout. Default on for new power-board rooms.
+   */
+  randomFlash?: boolean | null;
+  /**
+   * When true, the two Smoke tiles are placed at random, never on a Flash path.
+   * Off keeps the usual fixed Smoke spots. Default on for boards that have Smoke.
+   */
+  randomSmoke?: boolean | null;
   /** Team mode: 2 or 3 players per team. */
   teamSize?: TeamSize | null;
   /** Team mode: random shuffle or host-picked teams. */

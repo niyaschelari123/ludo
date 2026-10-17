@@ -635,6 +635,135 @@ function placeBombPowers(
   }
 }
 
+/** Offsets a first roll of 6 from a start square cannot reach, and that are not the star. */
+const FLASH_RANDOM_OFFSETS = [7, 9, 10, 11, 12]
+
+function shuffleNumbers(values: number[], random: () => number) {
+  const next = [...values]
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(random() * (index + 1))
+    const current = next[index]
+    next[index] = next[swap]
+    next[swap] = current
+  }
+  return next
+}
+
+function flashCellIsClear(
+  tiles: Record<number, PowerUpType>,
+  cell: number,
+  length: number,
+) {
+  if (tiles[cell]) return false
+  if (isPowerBlockedCell(cell)) return false
+  const offset =
+    ((cell % CELLS_PER_PLAYER) + CELLS_PER_PLAYER) % CELLS_PER_PLAYER
+  if (offset <= 6) return false
+  for (let seat = 0; seat < length / CELLS_PER_PLAYER; seat += 1) {
+    const entry = seat * CELLS_PER_PLAYER
+    const steps = (cell - entry + length) % length
+    if (steps > 0 && steps <= 6) return false
+  }
+  return true
+}
+
+function placeRandomPowerOnSeat(
+  tiles: Record<number, PowerUpType>,
+  seat: number,
+  length: number,
+  type: "super" | "smoke",
+  random: () => number,
+) {
+  const open = shuffleNumbers(FLASH_RANDOM_OFFSETS, random).filter((offset) => {
+    const cell = (seat * CELLS_PER_PLAYER + offset) % length
+    return flashCellIsClear(tiles, cell, length)
+  })
+  if (open.length === 0) return false
+  tiles[(seat * CELLS_PER_PLAYER + open[0]) % length] = type
+  return true
+}
+
+function placeRandomFlashOnSeat(
+  tiles: Record<number, PowerUpType>,
+  seat: number,
+  length: number,
+  random: () => number,
+) {
+  return placeRandomPowerOnSeat(tiles, seat, length, "super", random)
+}
+
+/**
+ * Move Flash tiles onto random free cells.
+ * The two-tile boards use two different paths. Race keeps one Flash per path.
+ */
+export function randomizeFlashSupers(
+  tiles: Record<number, PowerUpType>,
+  playerCount: number,
+  random: () => number = Math.random,
+) {
+  const length = playerCount * CELLS_PER_PLAYER
+  const existing = Object.entries(tiles)
+    .filter(([, type]) => type === "super")
+    .map(([cell]) => Number(cell))
+  if (existing.length === 0) return
+
+  for (const cell of existing) delete tiles[cell]
+
+  if (existing.length > SUPER_COUNT) {
+    const seats = existing.map(
+      (cell) => Math.floor(cell / CELLS_PER_PLAYER) % playerCount,
+    )
+    for (const seat of seats) {
+      if (!placeRandomFlashOnSeat(tiles, seat, length, random)) {
+        const fallback = (seat * CELLS_PER_PLAYER + SUPER_OFFSET) % length
+        if (!tiles[fallback]) tiles[fallback] = "super"
+      }
+    }
+    return
+  }
+
+  const seats = shuffleNumbers(
+    Array.from({ length: playerCount }, (_, seat) => seat),
+    random,
+  )
+  let placed = 0
+  for (const seat of seats) {
+    if (placed >= SUPER_COUNT) break
+    if (placeRandomFlashOnSeat(tiles, seat, length, random)) placed += 1
+  }
+}
+
+/** Two Smoke tiles, same spacing rules as Flash, never on a Flash path. */
+export function randomizeSmoke(
+  tiles: Record<number, PowerUpType>,
+  playerCount: number,
+  random: () => number = Math.random,
+) {
+  const length = playerCount * CELLS_PER_PLAYER
+  const existing = Object.entries(tiles)
+    .filter(([, type]) => type === "smoke")
+    .map(([cell]) => Number(cell))
+  if (existing.length === 0) return
+
+  for (const cell of existing) delete tiles[cell]
+
+  const flashSeats = new Set(
+    Object.entries(tiles)
+      .filter(([, type]) => type === "super")
+      .map(([cell]) => Math.floor(Number(cell) / CELLS_PER_PLAYER) % playerCount),
+  )
+  const seats = shuffleNumbers(
+    Array.from({ length: playerCount }, (_, seat) => seat),
+    random,
+  ).filter((seat) => !flashSeats.has(seat))
+
+  let placed = 0
+  for (const seat of seats) {
+    if (placed >= SUPER_COUNT) break
+    if (placeRandomPowerOnSeat(tiles, seat, length, "smoke", random)) placed += 1
+  }
+}
+
 export function generatePowerTiles(
   playerCount: number,
 ): Record<number, PowerUpType> {

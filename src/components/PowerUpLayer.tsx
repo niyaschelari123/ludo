@@ -158,7 +158,8 @@ export function PowerUpLayer({
   if (!hasPowerBoard(room.gameMode) || !room.game?.powerTiles) return null
 
   sanitizePowerTiles(room.game.powerTiles, getBoardPlayerCount(room), {
-    relocateFivePlayerLayout: room.gameMode !== 'race',
+    relocateFivePlayerLayout:
+      room.gameMode !== 'race' && room.randomFlash !== true,
   })
 
   const count = boardSeatCount(room)

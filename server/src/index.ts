@@ -59,6 +59,8 @@ import {
   setOwnProfile,
   setTeams,
   setQuickTokens,
+  setRandomFlash,
+  setRandomSmoke,
   runSeatToss,
   confirmSeatToss,
   proposeSeatSwap,
@@ -549,6 +551,38 @@ io.on('connection', (socket) => {
   )
 
   socket.on(
+    'setRandomFlash',
+    (
+      payload: { roomId: string; userId: string; enabled: boolean },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = setRandomFlash(payload.roomId, payload.userId, payload.enabled)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
+    'setRandomSmoke',
+    (
+      payload: { roomId: string; userId: string; enabled: boolean },
+      callback?: Ack<{ room: Room }>,
+    ) => {
+      try {
+        const room = setRandomSmoke(payload.roomId, payload.userId, payload.enabled)
+        ackRoom(callback, room, payload.userId)
+        broadcastState(room)
+      } catch (error) {
+        ackError(callback, error)
+      }
+    },
+  )
+
+  socket.on(
     'setTeams',
     (
       payload: {
@@ -834,8 +868,9 @@ io.on('connection', (socket) => {
         color?: string
         lockColor?: boolean
         photoUrl?: string
+        direct?: boolean
       },
-      callback?: Ack<{ room: Room; status: 'pending' }>,
+      callback?: Ack<{ room: Room; status: 'pending' | 'joined' }>,
     ) => {
       try {
         const { room, status } = requestJoin(
@@ -846,6 +881,7 @@ io.on('connection', (socket) => {
             color: payload.color,
             lockColor: payload.lockColor,
             photoUrl: payload.photoUrl,
+            direct: payload.direct,
           },
         )
         bindSession(socket, payload.userId, room.id)

@@ -50,6 +50,32 @@ export async function createRoom(
   return room
 }
 
+export async function setRandomFlash(
+  roomId: string,
+  userId: string,
+  enabled: boolean,
+) {
+  const { room } = await emitAck<{ room: Room }>('setRandomFlash', {
+    roomId,
+    userId,
+    enabled,
+  })
+  return room
+}
+
+export async function setRandomSmoke(
+  roomId: string,
+  userId: string,
+  enabled: boolean,
+) {
+  const { room } = await emitAck<{ room: Room }>('setRandomSmoke', {
+    roomId,
+    userId,
+    enabled,
+  })
+  return room
+}
+
 export async function setQuickTokens(
   roomId: string,
   userId: string,
@@ -271,14 +297,15 @@ export async function requestJoin(
   userId: string,
   name: string,
   code: string,
-  options?: { color?: string; lockColor?: boolean; photoUrl?: string },
+  options?: { color?: string; lockColor?: boolean; photoUrl?: string; direct?: boolean },
 ) {
-  return emitAck<{ room: Room; status: 'pending' }>('requestJoin', {
+  return emitAck<{ room: Room; status: 'pending' | 'joined' }>('requestJoin', {
     userId,
     name,
     code,
     ...(options?.color ? { color: options.color, lockColor: options.lockColor } : {}),
     ...(options?.photoUrl ? { photoUrl: options.photoUrl } : {}),
+    ...(options?.direct ? { direct: true } : {}),
   })
 }
 

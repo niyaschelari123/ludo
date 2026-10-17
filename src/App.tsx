@@ -54,6 +54,8 @@ import {
   setHostApprovedLeave,
   setBlitzDuration,
   setQuickTokens,
+  setRandomFlash,
+  setRandomSmoke,
   setSpectatorAccess,
   extendBlitzTime,
   reduceBlitzTime,
@@ -131,7 +133,7 @@ import {
   watchLiveMatches,
   type LiveMatchNotice,
 } from './lib/matchNotices'
-import { PLAYER_COLOR_HEX, isNamedPlayerColor, normalizeColorKey, resolveColorHex } from './game/colors'
+import { HOST_PICK_COLORS, PLAYER_COLOR_HEX, isNamedPlayerColor, normalizeColorKey, resolveColorHex } from './game/colors'
 import {
   activeMoveToMovingToken,
   findCaptureVictimIds,
@@ -336,8 +338,8 @@ function App() {
   )
   const [joinCode, setJoinCode] = useState('')
   const [seatCode, setSeatCode] = useState('')
-  const [maxPlayers, setMaxPlayers] = useState(6)
-  const [gameMode, setGameMode] = useState<GameMode>('classic')
+  const [maxPlayers, setMaxPlayers] = useState(5)
+  const [gameMode, setGameMode] = useState<GameMode>('quick')
   const [blitzDurationMs, setBlitzDurationMs] = useState(DEFAULT_BLITZ_DURATION_MS)
   const [quickTokens, setQuickTokensChoice] = useState<QuickTokenCount>(3)
   const [teamSize, setTeamSize] = useState<TeamSize>(2)
@@ -1907,16 +1909,17 @@ function App() {
           setRoomId(watched.id)
           return
         }
-        const { room: pendingRoom } = await requestJoin(
+        const joined = await requestJoin(
           userId,
           name,
           notice.code,
-          roomProfileOptions,
+          { ...roomProfileOptions, direct: Boolean(profile) },
         )
-        wasSeatPlayerRef.current = false
-        setWatchRole('join-pending')
-        setRoom(pendingRoom)
-        setRoomId(pendingRoom.id)
+        const seated = joined.status === 'joined'
+        wasSeatPlayerRef.current = seated
+        setWatchRole(seated ? null : 'join-pending')
+        setRoom(joined.room)
+        setRoomId(joined.room.id)
       })
     }
     const zeroStatsPlayers =
@@ -2019,7 +2022,9 @@ function App() {
                                 >
                                   {notice.status === 'playing' && !notice.openSeat
                                     ? 'Watch match'
-                                    : 'Ask to join'}
+                                    : profile
+                                      ? 'Join'
+                                      : 'Ask to join'}
                                 </button>
                                 <button
                                   type="button"
@@ -3470,6 +3475,51 @@ function App() {
                     Positions locked from toss 3. You can still swap seats if players accept.
                   </p>
                 ) : null}
+                {(hasPowerBoard(room.gameMode) &&
+                  (room.gameMode !== 'power' ||
+                    room.players.length === 5 ||
+                    room.maxPlayers === 5)) ||
+                (hasPowerBoard(room.gameMode) && room.gameMode !== 'race') ? (
+                  <div className="lobby-rule-switches">
+                    {hasPowerBoard(room.gameMode) &&
+                    (room.gameMode !== 'power' ||
+                      room.players.length === 5 ||
+                      room.maxPlayers === 5) ? (
+                      <label className="flash-random-switch">
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          checked={room.randomFlash !== false}
+                          disabled={busy}
+                          onChange={(event) => {
+                            const enabled = event.target.checked
+                            void perform(async () => {
+                              await setRandomFlash(room.id, userId, enabled)
+                            })
+                          }}
+                        />
+                        <span>Random Flash</span>
+                      </label>
+                    ) : null}
+                    {hasPowerBoard(room.gameMode) && room.gameMode !== 'race' ? (
+                      <label className="flash-random-switch">
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          checked={room.randomSmoke !== false}
+                          disabled={busy}
+                          onChange={(event) => {
+                            const enabled = event.target.checked
+                            void perform(async () => {
+                              await setRandomSmoke(room.id, userId, enabled)
+                            })
+                          }}
+                        />
+                        <span>Random Smoke</span>
+                      </label>
+                    ) : null}
+                  </div>
+                ) : null}
                 <button
                 className="start-button"
                 disabled={busy || room.players.length < 2}
@@ -4081,40 +4131,22 @@ function App() {
                       role="group"
                       aria-label={`Color for ${player.name}`}
                     >
-                      {PLAYER_COLORS.map((color) => {
-                        let takenBy: string | null = null
-                        try {
-                          const key = normalizeColorKey(color)
-                          const owner = viewRoom.players.find((entry) => {
-                            if (entry.id === player.id) return false
-                            try {
-                              return normalizeColorKey(entry.color) === key
-                            } catch {
-                              return entry.color === key
-                            }
-                          })
-                          takenBy = owner?.name ?? null
-                        } catch {
-                          takenBy = null
-                        }
-                        const selected =
-                          (() => {
-                            try {
-                              return normalizeColorKey(player.color) === normalizeColorKey(color)
-                            } catch {
-                              return player.color === color
-                            }
-                          })()
+                      {HOST_PICK_COLORS.map((color) => {
+                        const owner = viewRoom.players.find((entry) => {
+                          if (entry.id === player.id) return false
+                          return resolveColorHex(entry.color) === color
+                        })
+                        const selected = resolveColorHex(player.color) === color
                         return (
                           <button
                             key={color}
                             type="button"
                             className={`color-swatch ${selected ? 'selected' : ''}`}
-                            style={{ background: PLAYER_COLOR_HEX[color] }}
+                            style={{ background: color }}
                             disabled={busy}
                             title={
-                              takenBy
-                                ? `${color} (swap with ${takenBy})`
+                              owner
+                                ? `${color} (swap with ${owner.name})`
                                 : color
                             }
                             onClick={() =>
