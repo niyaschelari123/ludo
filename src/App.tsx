@@ -265,6 +265,60 @@ function formatAwardScore(score: number) {
   return Number.isInteger(score) ? String(score) : score.toFixed(1)
 }
 
+function awardScoreRows(entry: MotmCandidate) {
+  const { breakdown, stats } = entry
+  const rows: Array<{
+    label: string
+    detail: string
+    points: number
+    negative?: boolean
+  }> = [
+    {
+      label: 'Eliminations',
+      detail: `${stats.captures} × +3`,
+      points: breakdown.eliminations,
+    },
+    {
+      label: 'Finish place',
+      detail:
+        entry.place <= 3
+          ? `#${entry.place} (+${breakdown.placeBonus})`
+          : 'Not finished yet',
+      points: breakdown.placeBonus,
+    },
+    {
+      label: 'Tokens home',
+      detail: `${stats.tokensHome} × +2`,
+      points: breakdown.tokensHome,
+    },
+    {
+      label: 'Sixes rolled',
+      detail: `${stats.sixes} × +0.5`,
+      points: breakdown.sixes,
+    },
+    {
+      label: 'Shields broken',
+      detail: `${stats.shieldBreaks ?? 0} × +1`,
+      points: breakdown.shieldBreaks,
+    },
+  ]
+  if (breakdown.lastPlacePenalty > 0) {
+    rows.push({
+      label: 'Last place',
+      detail: '−5',
+      points: -breakdown.lastPlacePenalty,
+      negative: true,
+    })
+  }
+  rows.push({
+    label: 'Times eliminated',
+    detail: `${stats.eliminated} × −1`,
+    points: -breakdown.timesEliminated,
+    negative: true,
+  })
+  return rows
+}
+
 function MatchAwardCard({
   title,
   award,
@@ -423,7 +477,7 @@ function App() {
   const [motmBreakdownTabId, setMotmBreakdownTabId] = useState<string | null>(null)
   const [elimBoardOpen, setElimBoardOpen] = useState(false)
   const [worstBoardOpen, setWorstBoardOpen] = useState(false)
-  const [motmListOpen, setMotmListOpen] = useState(false)
+  const [worstBreakdownId, setWorstBreakdownId] = useState<string | null>(null)
   /** Client-side watch flow: pending host approve, or actively watching. */
   const [watchRole, setWatchRole] = useState<
     'pending' | 'watching' | 'join-pending' | null
@@ -4745,57 +4799,51 @@ function App() {
                     </button>
                   </>
                 ) : null}
-                {extraCtrl && liveMotmStandings.length > 1 ? (
-                  <button
-                    type="button"
-                    className={`live-motm live-motm--list ${liveMotm ? playerColorClass(liveMotm.player.color) : ''}`}
-                    style={liveMotm ? playerColorStyle(liveMotm.player.color) : undefined}
-                    onClick={() => setMotmListOpen(true)}
-                  >
-                    <span className="live-motm-label">MOTM</span>
-                    <strong>Full list</strong>
-                  </button>
-                ) : liveMotmStandings.length > 1 ? (
+                {liveMotmStandings.length > 0 ? (
                   <>
-                    <p className="power-rules-title"><strong>Runner-up</strong></p>
+                    <p className="power-rules-title"><strong>MotM standings</strong></p>
                     <ol className="motm-live-board">
-                      {liveMotmStandings.slice(1, 2).map((entry) => (
+                      {liveMotmStandings.map((entry, index) => (
                         <li
                           key={entry.player.id}
                           className={playerColorClass(entry.player.color)}
                           style={playerColorStyle(entry.player.color)}
                         >
-                          <span>#2</span>
+                          <span>#{index + 1}</span>
                           <strong>{entry.player.name}</strong>
                           <em>{formatAwardScore(entry.score)}</em>
                         </li>
                       ))}
                     </ol>
+                    <button
+                      type="button"
+                      className="blitz-breakdown-open"
+                      onClick={() => {
+                        setMotmBreakdownTabId(
+                          liveMotmStandings.find((entry) => entry.player.id === userId)?.player.id
+                          ?? liveMotmStandings[0]?.player.id
+                          ?? null,
+                        )
+                        setMotmBreakdownOpen(true)
+                      }}
+                    >
+                      MotM point breakdown
+                    </button>
                   </>
                 ) : null}
               </div>
             ) : null}
-            {!isBlitz && extraCtrl && liveMotmStandings.length > 1 ? (
-              <button
-                type="button"
-                className={`live-motm live-motm--list ${liveMotm ? playerColorClass(liveMotm.player.color) : ''}`}
-                style={liveMotm ? playerColorStyle(liveMotm.player.color) : undefined}
-                onClick={() => setMotmListOpen(true)}
-              >
-                <span className="live-motm-label">MOTM</span>
-                <strong>Full list</strong>
-              </button>
-            ) : !isBlitz && liveMotmStandings.length > 1 ? (
+            {!isBlitz && liveMotmStandings.length > 1 ? (
               <div className="motm-live-panel">
-                <p className="power-rules-title"><strong>Runner-up</strong></p>
+                <p className="power-rules-title"><strong>Live MotM points</strong></p>
                 <ol className="motm-live-board">
-                  {liveMotmStandings.slice(1, 2).map((entry) => (
+                  {liveMotmStandings.slice(1).map((entry, index) => (
                     <li
                       key={entry.player.id}
                       className={playerColorClass(entry.player.color)}
                       style={playerColorStyle(entry.player.color)}
                     >
-                      <span>#2</span>
+                      <span>#{index + 2}</span>
                       <strong>{entry.player.name}</strong>
                       <em>{formatAwardScore(entry.score)}</em>
                     </li>
@@ -5011,59 +5059,6 @@ function App() {
                 },
               )}
             </div>
-          </div>
-        </div>
-      ) : null}
-
-      {motmListOpen && extraCtrl && liveMotmStandings.length > 0 ? (
-        <div
-          className="confirm-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label="MotM list"
-          onClick={() => setMotmListOpen(false)}
-        >
-          <div
-            className="confirm-card elim-board-card"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="blitz-breakdown-header">
-              <h2>MotM list</h2>
-              <button
-                type="button"
-                className="text-button"
-                onClick={() => setMotmListOpen(false)}
-              >
-                Close
-              </button>
-            </div>
-            <ol className="motm-live-board">
-              {liveMotmStandings.map((entry, index) => (
-                <li
-                  key={`motm-list-${entry.player.id}`}
-                  className={playerColorClass(entry.player.color)}
-                  style={playerColorStyle(entry.player.color)}
-                >
-                  <span>#{index + 1}</span>
-                  <strong>{entry.player.name}</strong>
-                  <em>{formatAwardScore(entry.score)}</em>
-                </li>
-              ))}
-            </ol>
-            <button
-              type="button"
-              className="blitz-breakdown-open"
-              onClick={() => {
-                setMotmBreakdownTabId(
-                  liveMotmStandings.find((entry) => entry.player.id === userId)?.player.id
-                  ?? liveMotmStandings[0]?.player.id
-                  ?? null,
-                )
-                setMotmBreakdownOpen(true)
-              }}
-            >
-              MotM point breakdown
-            </button>
           </div>
         </div>
       ) : null}
@@ -6352,6 +6347,32 @@ function App() {
               />
             ) : null}
 
+            {liveWorstStandings.length > 0 ? (
+              <div className="worst-end-panel">
+                <h2>Worst players</h2>
+                <p>Lowest MotM score first. Tap a score to see how it was built.</p>
+                <ol className="motm-live-board worst-end-list">
+                  {liveWorstStandings.map((entry, index) => (
+                    <li
+                      key={`worst-end-${entry.player.id}`}
+                      className={playerColorClass(entry.player.color)}
+                      style={playerColorStyle(entry.player.color)}
+                    >
+                      <span>#{index + 1}</span>
+                      <strong>{entry.player.name}</strong>
+                      <button
+                        type="button"
+                        className="worst-score-button"
+                        onClick={() => setWorstBreakdownId(entry.player.id)}
+                      >
+                        {formatAwardScore(entry.score)}
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
+
             <div className="match-stats">
               <h2>Eliminations</h2>
               {topEliminations.length > 0 ? (
@@ -6408,6 +6429,69 @@ function App() {
           </div>
         </div>
       )}
+
+      {room.status === 'finished' && worstBreakdownId ? (
+        <div
+          className="confirm-overlay worst-breakdown-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Worst score breakdown"
+          onClick={() => setWorstBreakdownId(null)}
+        >
+          <div
+            className="confirm-card blitz-breakdown-card"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {(() => {
+              const selected = liveWorstStandings.find(
+                (entry) => entry.player.id === worstBreakdownId,
+              )
+              if (!selected) return null
+              const forcedQuit = leftWithoutHostApproval(viewRoom, selected.player.id)
+              return (
+                <>
+                  <div className="blitz-breakdown-header">
+                    <h2>Worst score</h2>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => setWorstBreakdownId(null)}
+                    >
+                      Close
+                    </button>
+                  </div>
+                  <p className="blitz-breakdown-player">
+                    <strong>{selected.player.name}</strong>
+                    <em>{formatAwardScore(selected.score)} pts</em>
+                  </p>
+                  {forcedQuit ? (
+                    <p className="worst-breakdown-note">Left without host approval.</p>
+                  ) : null}
+                  <ul className="blitz-breakdown-list">
+                    {awardScoreRows(selected).map((row) => (
+                      <li key={row.label}>
+                        <div>
+                          <strong>{row.label}</strong>
+                          <small>{row.detail}</small>
+                        </div>
+                        <em className={row.negative && row.points < 0 ? 'neg' : ''}>
+                          {row.points > 0
+                            ? `+${formatAwardScore(row.points)}`
+                            : formatAwardScore(row.points)}
+                        </em>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="blitz-breakdown-total">
+                    <span>Total</span>
+                    <strong>{formatAwardScore(selected.breakdown.total)} pts</strong>
+                  </div>
+                </>
+              )
+            })()}
+          </div>
+        </div>
+      ) : null}
 
       {cropImage ? (
         <ProfilePhotoCropper

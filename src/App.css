@@ -1433,17 +1433,6 @@ select:focus {
   max-width: min(420px, 55vw);
 }
 
-button.live-motm {
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-}
-
-.live-motm--list {
-  margin: 12px 0 0;
-  width: fit-content;
-}
-
 .room-code strong {
   color: white;
   letter-spacing: .16em;
@@ -1480,6 +1469,55 @@ button.live-motm {
 
 .worst-board-list {
   margin-top: 8px;
+}
+
+.worst-end-panel {
+  width: 100%;
+  margin-top: 18px;
+  text-align: left;
+}
+
+.worst-end-panel h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: #fecaca;
+}
+
+.worst-end-panel p {
+  margin: 0 0 10px;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.worst-end-list {
+  margin-bottom: 0;
+}
+
+.worst-score-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #fca5a5;
+  font: inherit;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.worst-score-button:hover {
+  color: #fecaca;
+}
+
+.worst-breakdown-overlay {
+  z-index: 140;
+}
+
+.worst-breakdown-note {
+  margin: 0 0 12px;
+  color: #fca5a5;
+  font-size: 13px;
 }
 
 
