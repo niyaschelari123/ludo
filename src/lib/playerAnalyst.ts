@@ -214,7 +214,7 @@ function sanitizePairs(raw: unknown) {
 export function sanitizeMatches(raw: unknown): AnalystMatch[] {
   if (!Array.isArray(raw)) return []
   const out: AnalystMatch[] = []
-  for (const item of raw.slice(0, 25)) {
+  for (const item of raw.slice(0, 80)) {
     if (!item || typeof item !== 'object') continue
     const row = item as Partial<AnalystMatch>
     if (typeof row.id !== 'string' || !row.id) continue
@@ -576,19 +576,19 @@ function scoreRivalry(players: AnalystPlayer[], matchFloor: number): AnalystAwar
 function scoreImproved(
   players: AnalystPlayer[],
   matches: AnalystMatch[],
-  matchFloor: number,
+  _matchFloor: number,
 ): AnalystAward {
   const byId = new Map(players.map((player) => [player.accountId, player]))
   const ranked: Ranked[] = []
   for (const player of players) {
-    if (player.matchesPlayed < matchFloor) continue
+    // Use saved match rows only — career match-range floors can hide a real rise.
     const rows = matches
       .map((match) => {
         const row = match.players.find((entry) => entry.accountId === player.accountId)
         return row ? { at: match.finishedAt, score: matchPerformance(row) } : null
       })
       .filter((row): row is { at: number; score: number } => row != null)
-      .sort((a, b) => a.at - b.at)
+      .sort((a, b) => a.at - b.at || a.score - b.score)
     if (rows.length < MIN_SPLIT * 2) continue
     const mid = Math.floor(rows.length / 2)
     const earlier = rows.slice(0, mid)
@@ -617,7 +617,7 @@ function scoreImproved(
     'most_improved',
     positive,
     positive.length,
-    `Needs at least ${MIN_SPLIT} earlier and ${MIN_SPLIT} recent matches, and a higher recent average.`,
+    `Needs at least ${MIN_SPLIT} earlier and ${MIN_SPLIT} recent matches in history, and a higher recent average.`,
   )
 }
 

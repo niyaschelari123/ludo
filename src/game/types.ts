@@ -435,6 +435,11 @@ export interface GameState {
   stats?: Record<string, PlayerStats>;
   activeMove?: ActiveMove | null;
   powerTiles?: Record<number, PowerUpType>;
+  /**
+   * Steps from each seat start to that path's safe star.
+   * Default 8. Random Flash may move this so Super leaps still land on a star.
+   */
+  starOffset?: number | null;
   shieldBuff?: Record<string, boolean>;
   /** Super (⚡) leaps used this match, keyed by player id. */
   superUses?: Record<string, number>;

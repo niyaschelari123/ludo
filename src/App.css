@@ -1766,6 +1766,26 @@ select:focus {
   letter-spacing: 0.02em;
 }
 
+.lobby-elim-show-more {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.45);
+  color: #e2e8f0;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lobby-elim-show-more:hover {
+  border-color: rgba(251, 191, 36, 0.4);
+  color: #fde68a;
+}
+
 .lobby-elim-pair-row.in-room .lobby-elim-pair-copy small {
   color: #86efac;
 }

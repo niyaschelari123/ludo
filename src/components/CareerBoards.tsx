@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { useState, type CSSProperties } from 'react'
 import {
   buildElimPairLeaders,
   formatCareerFinishTime,
@@ -15,6 +15,9 @@ import {
 } from '../lib/profileCloud'
 import { isNamedPlayerColor, resolveColorHex } from '../game/colors'
 import type { Room } from '../game/types'
+
+const ELIM_PAIRS_PREVIEW = 7
+const ELIM_PAIRS_EXPANDED = 15
 
 function playerColorClass(color: string) {
   return isNamedPlayerColor(color) ? color : 'custom-color'
@@ -96,57 +99,75 @@ export function CareerLobbyBoard({
 export function CareerElimPairsBoard({
   board,
   roomPlayers = [],
-  limit = 8,
+  previewLimit = ELIM_PAIRS_PREVIEW,
+  expandedLimit = ELIM_PAIRS_EXPANDED,
 }: {
   board: CareerBoardEntry[] | null
   roomPlayers?: Room['players']
-  limit?: number
+  previewLimit?: number
+  expandedLimit?: number
 }) {
+  const [expanded, setExpanded] = useState(false)
   const leaders: ElimPairLeader[] | null = board
-    ? buildElimPairLeaders(board, limit)
+    ? buildElimPairLeaders(board, expandedLimit)
     : null
+  const visible = leaders
+    ? leaders.slice(0, expanded ? expandedLimit : previewLimit)
+    : null
+  const canExpand = Boolean(leaders && leaders.length > previewLimit)
   const hasRoomContext = roomPlayers.length > 0
   return (
     <aside className="lobby-wins-board lobby-stat-board lobby-elim-pairs-board">
       <h3>Who eliminated whom (most)</h3>
-      {leaders === null ? (
+      {visible === null ? (
         <p className="lobby-wins-loading">Loading…</p>
-      ) : leaders.length === 0 ? (
+      ) : visible.length === 0 ? (
         <p className="lobby-wins-loading">No eliminations yet</p>
       ) : (
-        <ol className="lobby-wins-list lobby-elim-pair-list">
-          {leaders.map((entry, index) => {
-            const attackerInRoom = roomPlayers.some(
-              (player) => player.id === entry.attackerId,
-            )
-            return (
-              <li
-                key={`${entry.attackerId}-${entry.victimId}`}
-                className={`lobby-elim-pair-row ${playerColorClass(entry.attackerColor)} ${hasRoomContext ? (attackerInRoom ? 'in-room' : 'away') : 'in-room'}`}
-                style={playerColorStyle(entry.attackerColor)}
-              >
-                <span className="lobby-wins-rank">#{index + 1}</span>
-                <div className="lobby-elim-pair-copy">
-                  <p className="lobby-elim-pair-names">
-                    <span className="lobby-elim-attacker">{entry.attackerName}</span>
-                    <span className="lobby-elim-vs" aria-hidden="true">
-                      →
-                    </span>
-                    <span className="lobby-elim-victim">{entry.victimName}</span>
-                  </p>
-                  <small>
-                    {hasRoomContext
-                      ? attackerInRoom
-                        ? 'Attacker in room'
-                        : 'Career total'
-                      : 'Career eliminations'}
-                  </small>
-                </div>
-                <em className="lobby-wins-count">×{entry.count}</em>
-              </li>
-            )
-          })}
-        </ol>
+        <>
+          <ol className="lobby-wins-list lobby-elim-pair-list">
+            {visible.map((entry, index) => {
+              const attackerInRoom = roomPlayers.some(
+                (player) => player.id === entry.attackerId,
+              )
+              return (
+                <li
+                  key={`${entry.attackerId}-${entry.victimId}`}
+                  className={`lobby-elim-pair-row ${playerColorClass(entry.attackerColor)} ${hasRoomContext ? (attackerInRoom ? 'in-room' : 'away') : 'in-room'}`}
+                  style={playerColorStyle(entry.attackerColor)}
+                >
+                  <span className="lobby-wins-rank">#{index + 1}</span>
+                  <div className="lobby-elim-pair-copy">
+                    <p className="lobby-elim-pair-names">
+                      <span className="lobby-elim-attacker">{entry.attackerName}</span>
+                      <span className="lobby-elim-vs" aria-hidden="true">
+                        →
+                      </span>
+                      <span className="lobby-elim-victim">{entry.victimName}</span>
+                    </p>
+                    <small>
+                      {hasRoomContext
+                        ? attackerInRoom
+                          ? 'Attacker in room'
+                          : 'Career total'
+                        : 'Career eliminations'}
+                    </small>
+                  </div>
+                  <em className="lobby-wins-count">×{entry.count}</em>
+                </li>
+              )
+            })}
+          </ol>
+          {canExpand ? (
+            <button
+              type="button"
+              className="lobby-elim-show-more"
+              onClick={() => setExpanded((open) => !open)}
+            >
+              {expanded ? 'Show less' : 'Show more'}
+            </button>
+          ) : null}
+        </>
       )}
     </aside>
   )
@@ -271,7 +292,6 @@ export function MostStatsPanels({
           <CareerElimPairsBoard
             board={board}
             roomPlayers={roomPlayers}
-            limit={8}
           />
           <CareerLobbyBoard
             title="Most Super ⚡"

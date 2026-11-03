@@ -18,6 +18,7 @@ import {
   powerUpAtCell,
   randomizeFlashSupers,
   randomizeSmoke,
+  sanitizePowerTiles,
 } from "./powerUps";
 import { areTeammates, isTeamMode } from "./teams";
 import {
@@ -105,12 +106,29 @@ export const homeEntryProgress = (room: Room) => trackLength(room);
 export const finishedProgress = (room: Room) =>
   homeEntryProgress(room) + homeLengthForBoard(getBoardPlayerCount(room));
 
+/** Default steps from a seat start to that path's safe star. */
+export const DEFAULT_STAR_OFFSET = 8;
+
+export function starOffsetForRoom(room: Room) {
+  const offset = room.game?.starOffset;
+  if (
+    typeof offset === "number" &&
+    Number.isInteger(offset) &&
+    offset > 0 &&
+    offset < CELLS_PER_PLAYER
+  ) {
+    return offset;
+  }
+  return DEFAULT_STAR_OFFSET;
+}
+
 export const safeCells = (room: Room) => {
   const length = trackLength(room);
+  const starOffset = starOffsetForRoom(room);
   return new Set(
     allSeatPlayers(room).flatMap((player) => {
       const start = player.seat * CELLS_PER_PLAYER;
-      return [start, (start + 8) % length];
+      return [start, (start + starOffset) % length];
     }),
   );
 };
@@ -188,6 +206,30 @@ export function createGame(
   const boardPlayerCount = players.length;
   const blitzMs = normalizeBlitzDurationMs(options?.blitzDurationMs);
   const tokenCount = tokensPerPlayer(gameMode, options?.quickTokens);
+  const tiles = usesTeamPowerBoard(gameMode)
+    ? generateTeamPowerTiles(boardPlayerCount)
+    : usesRacePowerBoard(gameMode)
+      ? generateRacePowerTiles(boardPlayerCount)
+      : usesQuickPowerBoard(gameMode)
+        ? generateQuickPowerTiles(boardPlayerCount)
+        : gameMode === "power"
+          ? generatePowerTiles(boardPlayerCount)
+          : {};
+  let starOffset = DEFAULT_STAR_OFFSET;
+  if (options?.randomFlash) {
+    starOffset = randomizeFlashSupers(tiles, boardPlayerCount);
+    sanitizePowerTiles(tiles, boardPlayerCount, {
+      relocateFivePlayerLayout: false,
+      starOffset,
+    });
+  }
+  if (options?.randomSmoke) {
+    randomizeSmoke(tiles, boardPlayerCount, Math.random, starOffset);
+    sanitizePowerTiles(tiles, boardPlayerCount, {
+      relocateFivePlayerLayout: false,
+      starOffset,
+    });
+  }
   return {
     turnIndex: 0,
     phase: "roll",
@@ -215,24 +257,8 @@ export function createGame(
       players.map((player) => [player.id, emptyPlayerStats()]),
     ),
     activeMove: null,
-    powerTiles: (() => {
-      const tiles = usesTeamPowerBoard(gameMode)
-        ? generateTeamPowerTiles(boardPlayerCount)
-        : usesRacePowerBoard(gameMode)
-          ? generateRacePowerTiles(boardPlayerCount)
-          : usesQuickPowerBoard(gameMode)
-            ? generateQuickPowerTiles(boardPlayerCount)
-            : gameMode === "power"
-              ? generatePowerTiles(boardPlayerCount)
-              : {}
-      if (options?.randomFlash) {
-        randomizeFlashSupers(tiles, boardPlayerCount)
-      }
-      if (options?.randomSmoke) {
-        randomizeSmoke(tiles, boardPlayerCount)
-      }
-      return tiles
-    })(),
+    powerTiles: tiles,
+    starOffset: options?.randomFlash ? starOffset : DEFAULT_STAR_OFFSET,
     shieldBuff: {},
     superUses: {},
     superGunReady: {},

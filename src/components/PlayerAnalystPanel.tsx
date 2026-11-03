@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CareerBoardEntry } from '../lib/profileCloud'
-import { fetchMatchHistory } from '../lib/matchHistory'
+import { ANALYST_HISTORY_LIMIT, fetchMatchHistory } from '../lib/matchHistory'
 import {
   boardToAnalystPlayers,
   historyToAnalystMatches,
@@ -30,7 +30,7 @@ export function PlayerAnalystPanel({
     let cancelled = false
     setPhase('loading')
     void (async () => {
-      const history = await fetchMatchHistory().catch(() => [])
+      const history = await fetchMatchHistory(ANALYST_HISTORY_LIMIT).catch(() => [])
       if (cancelled) return
       const prepared = prepareAnalyst(
         boardToAnalystPlayers(board),
@@ -59,7 +59,7 @@ export function PlayerAnalystPanel({
     if (!board || !isAdmin || refreshing) return
     setRefreshing(true)
     void (async () => {
-      const history = await fetchMatchHistory().catch(() => [])
+      const history = await fetchMatchHistory(ANALYST_HISTORY_LIMIT).catch(() => [])
       const prepared = prepareAnalyst(
         boardToAnalystPlayers(board),
         historyToAnalystMatches(history),

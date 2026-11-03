@@ -3987,7 +3987,6 @@ function App() {
               <CareerElimPairsBoard
                 board={careerBoard}
                 roomPlayers={room.players}
-                limit={8}
               />
               <CareerLobbyBoard
                 title="Most Super ⚡"

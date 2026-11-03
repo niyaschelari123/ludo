@@ -1,5 +1,6 @@
 import {
   CELLS_PER_PLAYER,
+  DEFAULT_STAR_OFFSET,
   eliminatedProgress,
   ensurePlayerStats,
   finishedProgress,
@@ -276,25 +277,29 @@ function spacedSeats(
 }
 
 /** Start squares and the per-seat star safes — keep power icons off these. */
-function isPowerBlockedCell(cell: number): boolean {
+function isPowerBlockedCell(
+  cell: number,
+  starOffset: number = DEFAULT_STAR_OFFSET,
+): boolean {
   const offset =
     ((cell % CELLS_PER_PLAYER) + CELLS_PER_PLAYER) % CELLS_PER_PLAYER;
-  return offset === 0 || offset === 8;
+  return offset === 0 || offset === starOffset;
 }
 
 /** Move any powers that landed on entry/safe cells to the next free track cell. */
 export function sanitizePowerTiles(
   tiles: Record<number, PowerUpType>,
   playerCount: number,
-  options?: { relocateFivePlayerLayout?: boolean },
+  options?: { relocateFivePlayerLayout?: boolean; starOffset?: number },
 ): void {
   const length = playerCount * CELLS_PER_PLAYER;
+  const starOffset = options?.starOffset ?? DEFAULT_STAR_OFFSET;
   const displaced: Array<{ from: number; type: PowerUpType }> = [];
 
   for (const [cellKey, type] of Object.entries(tiles)) {
     const cell = Number(cellKey);
-    // Super may sit on a star (5p upper-path layout uses offset 8).
-    if (type === "super" || !isPowerBlockedCell(cell)) continue;
+    // Super may sit on a star (5p upper-path layout uses the classic star).
+    if (type === "super" || !isPowerBlockedCell(cell, starOffset)) continue;
     displaced.push({ from: cell, type });
     delete tiles[cell];
   }
@@ -302,7 +307,7 @@ export function sanitizePowerTiles(
   for (const { from, type } of displaced) {
     for (let offset = 1; offset < length; offset += 1) {
       const cell = (from + offset) % length;
-      if (tiles[cell] || isPowerBlockedCell(cell)) continue;
+      if (tiles[cell] || isPowerBlockedCell(cell, starOffset)) continue;
       tiles[cell] = type;
       break;
     }
@@ -314,6 +319,14 @@ export function sanitizePowerTiles(
     relocateFivePlayerSupers(tiles, length);
     relocateFivePlayerShields(tiles, length);
   }
+}
+
+/** Star sits just after Flash so a half-board Super leap snaps onto a star. */
+export function starOffsetAfterFlash(flashOffset: number) {
+  if (flashOffset >= 1 && flashOffset < CELLS_PER_PLAYER - 1) {
+    return flashOffset + 1;
+  }
+  return DEFAULT_STAR_OFFSET;
 }
 
 function placeSpacedPower(
@@ -635,8 +648,11 @@ function placeBombPowers(
   }
 }
 
-/** Offsets a first roll of 6 from a start square cannot reach, and that are not the star. */
-const FLASH_RANDOM_OFFSETS = [7, 9, 10, 11, 12]
+/**
+ * Offsets a first roll of 6 cannot reach.
+ * Skip 12 so the star can sit at offset+1 without wrapping onto a start.
+ */
+const FLASH_RANDOM_OFFSETS = [7, 9, 10, 11]
 
 function shuffleNumbers(values: number[], random: () => number) {
   const next = [...values]
@@ -653,9 +669,10 @@ function flashCellIsClear(
   tiles: Record<number, PowerUpType>,
   cell: number,
   length: number,
+  starOffset: number = DEFAULT_STAR_OFFSET,
 ) {
   if (tiles[cell]) return false
-  if (isPowerBlockedCell(cell)) return false
+  if (isPowerBlockedCell(cell, starOffset)) return false
   const offset =
     ((cell % CELLS_PER_PLAYER) + CELLS_PER_PLAYER) % CELLS_PER_PLAYER
   if (offset <= 6) return false
@@ -673,39 +690,53 @@ function placeRandomPowerOnSeat(
   length: number,
   type: "super" | "smoke",
   random: () => number,
+  starOffset: number = DEFAULT_STAR_OFFSET,
 ) {
   const open = shuffleNumbers(FLASH_RANDOM_OFFSETS, random).filter((offset) => {
     const cell = (seat * CELLS_PER_PLAYER + offset) % length
-    return flashCellIsClear(tiles, cell, length)
+    return flashCellIsClear(tiles, cell, length, starOffset)
   })
   if (open.length === 0) return false
   tiles[(seat * CELLS_PER_PLAYER + open[0]) % length] = type
   return true
 }
 
-function placeRandomFlashOnSeat(
+function pickSharedFlashOffset(
   tiles: Record<number, PowerUpType>,
-  seat: number,
+  seats: number[],
   length: number,
   random: () => number,
+  starOffset: number = DEFAULT_STAR_OFFSET,
 ) {
-  return placeRandomPowerOnSeat(tiles, seat, length, "super", random)
+  const open = shuffleNumbers(FLASH_RANDOM_OFFSETS, random).filter((offset) =>
+    seats.every((seat) => {
+      const cell = (seat * CELLS_PER_PLAYER + offset) % length
+      return flashCellIsClear(tiles, cell, length, starOffset)
+    }),
+  )
+  return open[0] ?? null
+}
+
+function oppositeSeatStep(playerCount: number) {
+  return Math.max(1, Math.floor(playerCount / 2))
 }
 
 /**
- * Move Flash tiles onto random free cells.
- * The two-tile boards use two different paths. Race keeps one Flash per path.
+ * Move Flash tiles onto random free cells on opposite paths.
+ * Stars later move to flashOffset+1 so Super leaps still land on a star.
+ * Returns the star offset to store on the game.
+ * Race keeps one Flash per path at the same relative offset.
  */
 export function randomizeFlashSupers(
   tiles: Record<number, PowerUpType>,
   playerCount: number,
   random: () => number = Math.random,
-) {
+): number {
   const length = playerCount * CELLS_PER_PLAYER
   const existing = Object.entries(tiles)
     .filter(([, type]) => type === "super")
     .map(([cell]) => Number(cell))
-  if (existing.length === 0) return
+  if (existing.length === 0) return DEFAULT_STAR_OFFSET
 
   for (const cell of existing) delete tiles[cell]
 
@@ -713,24 +744,46 @@ export function randomizeFlashSupers(
     const seats = existing.map(
       (cell) => Math.floor(cell / CELLS_PER_PLAYER) % playerCount,
     )
+    const offset =
+      pickSharedFlashOffset(tiles, seats, length, random) ?? SUPER_OFFSET
     for (const seat of seats) {
-      if (!placeRandomFlashOnSeat(tiles, seat, length, random)) {
+      const cell = (seat * CELLS_PER_PLAYER + offset) % length
+      if (!tiles[cell]) tiles[cell] = "super"
+      else if (!placeRandomPowerOnSeat(tiles, seat, length, "super", random)) {
         const fallback = (seat * CELLS_PER_PLAYER + SUPER_OFFSET) % length
         if (!tiles[fallback]) tiles[fallback] = "super"
       }
     }
-    return
+    return starOffsetAfterFlash(offset)
   }
 
-  const seats = shuffleNumbers(
+  const step = oppositeSeatStep(playerCount)
+  const starts = shuffleNumbers(
     Array.from({ length: playerCount }, (_, seat) => seat),
     random,
   )
-  let placed = 0
-  for (const seat of seats) {
-    if (placed >= SUPER_COUNT) break
-    if (placeRandomFlashOnSeat(tiles, seat, length, random)) placed += 1
+  for (const first of starts) {
+    const second = (first + step) % playerCount
+    if (second === first) continue
+    const offset = pickSharedFlashOffset(tiles, [first, second], length, random)
+    if (offset == null) continue
+    tiles[(first * CELLS_PER_PLAYER + offset) % length] = "super"
+    tiles[(second * CELLS_PER_PLAYER + offset) % length] = "super"
+    return starOffsetAfterFlash(offset)
   }
+
+  // Fallback: any two different seats if opposite pair was blocked.
+  let placed = 0
+  let usedOffset = SUPER_OFFSET
+  for (const seat of starts) {
+    if (placed >= SUPER_COUNT) break
+    const offset = pickSharedFlashOffset(tiles, [seat], length, random)
+    if (offset == null) continue
+    tiles[(seat * CELLS_PER_PLAYER + offset) % length] = "super"
+    usedOffset = offset
+    placed += 1
+  }
+  return starOffsetAfterFlash(usedOffset)
 }
 
 /** Two Smoke tiles, same spacing rules as Flash, never on a Flash path. */
@@ -738,6 +791,7 @@ export function randomizeSmoke(
   tiles: Record<number, PowerUpType>,
   playerCount: number,
   random: () => number = Math.random,
+  starOffset: number = DEFAULT_STAR_OFFSET,
 ) {
   const length = playerCount * CELLS_PER_PLAYER
   const existing = Object.entries(tiles)
@@ -760,7 +814,9 @@ export function randomizeSmoke(
   let placed = 0
   for (const seat of seats) {
     if (placed >= SUPER_COUNT) break
-    if (placeRandomPowerOnSeat(tiles, seat, length, "smoke", random)) placed += 1
+    if (placeRandomPowerOnSeat(tiles, seat, length, "smoke", random, starOffset)) {
+      placed += 1
+    }
   }
 }
 

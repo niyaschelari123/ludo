@@ -257,6 +257,7 @@ export function roomViewFor(room: Room, viewerId: string | null | undefined): Ro
     sanitizePowerTiles(room.game.powerTiles, getBoardPlayerCount(room), {
       relocateFivePlayerLayout:
         room.gameMode !== 'race' && room.randomFlash !== true,
+      starOffset: room.game.starOffset ?? undefined,
     })
   }
   const view = structuredClone(room) as Room

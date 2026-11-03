@@ -1,6 +1,6 @@
 import type { CareerBoardEntry } from './profileCloud'
 import type { MatchHistoryEntry } from './matchHistory'
-import { fetchMatchHistory } from './matchHistory'
+import { ANALYST_HISTORY_LIMIT, fetchMatchHistory } from './matchHistory'
 import { getSocketUrl } from '../game/socket'
 import {
   sanitizeMatches,
@@ -123,7 +123,7 @@ export async function requestPlayerAnalyst(
 /** After a career update, refresh commentary once if the stats hash changed. */
 export async function refreshPlayerAnalyst(board: CareerBoardEntry[]) {
   const players = boardToAnalystPlayers(board)
-  const history = await fetchMatchHistory().catch(() => [])
+  const history = await fetchMatchHistory(ANALYST_HISTORY_LIMIT).catch(() => [])
   await requestPlayerAnalyst(players, historyToAnalystMatches(history))
 }
 

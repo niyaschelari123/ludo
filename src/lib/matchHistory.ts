@@ -112,6 +112,8 @@ export const MOST_HISTORY_LABELS: Record<CareerStatKey, string> = {
 }
 
 const HISTORY_LIMIT = 25
+/** Extra rows for Player Analyst (Most Improved needs a longer timeline). */
+export const ANALYST_HISTORY_LIMIT = 80
 
 async function ensureAnonymousAuth() {
   if (!isFirebaseConfigured || !auth) return false
@@ -507,6 +509,36 @@ function readMatchStats(raw: unknown): MatchHistoryPlayerStat[] {
     .filter((entry): entry is MatchHistoryPlayerStat => entry != null)
 }
 
+function readFinishedAt(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value
+  }
+  if (
+    value &&
+    typeof value === 'object' &&
+    'toMillis' in value &&
+    typeof (value as { toMillis?: unknown }).toMillis === 'function'
+  ) {
+    const ms = (value as { toMillis: () => number }).toMillis()
+    return Number.isFinite(ms) && ms > 0 ? ms : 0
+  }
+  if (
+    value &&
+    typeof value === 'object' &&
+    'seconds' in value &&
+    typeof (value as { seconds?: unknown }).seconds === 'number'
+  ) {
+    const seconds = (value as { seconds: number }).seconds
+    const nanos =
+      typeof (value as { nanoseconds?: unknown }).nanoseconds === 'number'
+        ? (value as { nanoseconds: number }).nanoseconds
+        : 0
+    const ms = seconds * 1000 + Math.floor(nanos / 1e6)
+    return Number.isFinite(ms) && ms > 0 ? ms : 0
+  }
+  return 0
+}
+
 function parseHistoryDoc(
   id: string,
   data: Partial<MatchHistoryEntry>,
@@ -516,7 +548,7 @@ function parseHistoryDoc(
     code: String(data.code ?? ''),
     gameMode: (data.gameMode ?? 'classic') as GameMode,
     gameModeLabel: data.gameModeLabel ?? String(data.gameMode ?? 'classic'),
-    finishedAt: typeof data.finishedAt === 'number' ? data.finishedAt : 0,
+    finishedAt: readFinishedAt(data.finishedAt),
     hostId: String(data.hostId ?? ''),
     hostName: String(data.hostName ?? 'Host'),
     loginPlayerCount:
