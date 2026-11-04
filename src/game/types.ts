@@ -243,6 +243,17 @@ export interface Token {
   progress: number;
 }
 
+/**
+ * Temporary safe star left where a Flash (Super) leap ended. It is safe while its
+ * player has a token there; once they leave it turns into a red (no longer safe) star.
+ */
+export interface TempStar {
+  cell: number;
+  playerId: string;
+  /** Set once the player has left, so the star can never come back. */
+  left?: boolean;
+}
+
 export interface MovingToken {
   playerId: string;
   id: number;
@@ -415,6 +426,10 @@ export interface PlayerStats {
   plus10?: number;
   /** Times this player broke another player's shield. */
   shieldBreaks?: number;
+  /** Super Guns earned this match (after using every Super/Flash leap). */
+  superGuns?: number;
+  /** Super Gun hits: victim player id -> how many times this player shot them. */
+  gunHits?: Record<string, number>;
 }
 
 export interface GameState {
@@ -437,9 +452,13 @@ export interface GameState {
   powerTiles?: Record<number, PowerUpType>;
   /**
    * Steps from each seat start to that path's safe star.
-   * Default 8. Random Flash may move this so Super leaps still land on a star.
+   * Always the default now; random Flash no longer moves the stars.
    */
   starOffset?: number | null;
+  /** Random Flash was enabled for this match (stars stay put; leaps drop temp stars). */
+  randomFlash?: boolean;
+  /** Temporary stars dropped by Flash leaps (random Flash only). */
+  tempStars?: TempStar[];
   shieldBuff?: Record<string, boolean>;
   /** Super (⚡) leaps used this match, keyed by player id. */
   superUses?: Record<string, number>;

@@ -9,6 +9,7 @@ import {
   homeEntryProgress,
   homeLengthForBoard,
   movableTokens,
+  redStarCells,
   safeCells,
 } from '../game/engine'
 import {
@@ -433,6 +434,7 @@ function TokenDisc({
 
 function SquareBoard({ room }: { room: Room }) {
   const safe = safeCells(room)
+  const redStars = redStarCells(room)
   const boardPlayers = allSeatPlayers(room)
   return (
     <>
@@ -505,6 +507,9 @@ function SquareBoard({ room }: { room: Room }) {
             />
             {safe.has(index) && !owner && (
               <text x={cell.x} y={cell.y + 7} textAnchor="middle" className="safe-star">☆</text>
+            )}
+            {redStars.has(index) && !safe.has(index) && !owner && (
+              <text x={cell.x} y={cell.y + 7} textAnchor="middle" className="safe-star red-star">☆</text>
             )}
           </g>
         )
@@ -601,6 +606,7 @@ function PolygonBoard({ room, geometry }: { room: Room; geometry: BoardGeometry 
   const boardPlayers = allSeatPlayers(room)
   const largeNgon = count >= 5 && count <= 7
   const safe = safeCells(room)
+  const redStars = redStarCells(room)
   const boardClass = largeNgon ? 'large-ngon-bg' : ''
   const sectorClass = largeNgon ? 'large-ngon-sector' : ''
   const yardClass = largeNgon ? 'large-ngon-yard' : ''
@@ -719,6 +725,16 @@ function PolygonBoard({ room, geometry }: { room: Room; geometry: BoardGeometry 
                 y={cellPoint.y + 4}
                 textAnchor="middle"
                 className={`radial-star ${starClass}`}
+              >
+                ★
+              </text>
+            )}
+            {redStars.has(trackCell.index) && !safe.has(trackCell.index) && !owner && (
+              <text
+                x={cellPoint.x}
+                y={cellPoint.y + 4}
+                textAnchor="middle"
+                className={`radial-star red-star ${starClass}`}
               >
                 ★
               </text>

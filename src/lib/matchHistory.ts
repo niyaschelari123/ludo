@@ -107,6 +107,7 @@ export const MOST_HISTORY_LABELS: Record<CareerStatKey, string> = {
   motmPoints: 'Most MotM points',
   negativePowers: 'Most Oonjaal',
   superPowers: 'Most Super ⚡',
+  superGuns: 'Most Super Guns',
   plus10: 'Most +10',
   bestFinishMs: 'Fastest finish',
 }

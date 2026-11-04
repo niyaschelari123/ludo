@@ -3027,6 +3027,15 @@ select:focus {
   pointer-events: none;
 }
 
+/* Spent temporary Flash star: the player left, so it is no longer safe. */
+.safe-star.red-star,
+.radial-star.red-star {
+  fill: #dc2626;
+  stroke: #fecaca;
+  animation: none;
+  opacity: 0.9;
+}
+
 @keyframes safe-cell-glow {
 
   0%,

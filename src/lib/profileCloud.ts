@@ -51,12 +51,16 @@ export type CareerBoardEntry = {
   negativePowers: number
   /** Career Super (⚡) leaps used. */
   superPowers: number
+  /** Career Super Guns earned (after using every Super leap). */
+  superGuns: number
   /** Career landings on the +10 power tile. */
   plus10: number
   /** Best (lowest) all-tokens-home finish time in ms; 0 = none. */
   bestFinishMs: number
   /** Career eliminations of each rival login account (victimId → count). */
   elimPairs: Record<string, number>
+  /** Career Super Gun hits on each rival login account (victimId → count). */
+  gunPairs?: Record<string, number>
 }
 
 export type CareerStatKey =
@@ -72,6 +76,7 @@ export type CareerStatKey =
   | 'motmPoints'
   | 'negativePowers'
   | 'superPowers'
+  | 'superGuns'
   | 'plus10'
   | 'bestFinishMs'
 
@@ -88,6 +93,7 @@ const CAREER_STAT_KEYS: CareerStatKey[] = [
   'motmPoints',
   'negativePowers',
   'superPowers',
+  'superGuns',
   'plus10',
   'bestFinishMs',
 ]
@@ -121,6 +127,7 @@ function emptyCareerStats(accountId: string): Pick<
     motmPoints: 0,
     negativePowers: 0,
     superPowers: 0,
+    superGuns: 0,
     plus10: 0,
     bestFinishMs: 0,
   }
@@ -154,10 +161,13 @@ export type CloudProfile = {
   motmPoints?: number
   negativePowers?: number
   superPowers?: number
+  superGuns?: number
   plus10?: number
   bestFinishMs?: number
   /** victimAccountId → career elimination count. */
   elimPairs?: Record<string, number>
+  /** victimAccountId → career Super Gun hit count. */
+  gunPairs?: Record<string, number>
 }
 
 function readStatCount(
@@ -181,6 +191,12 @@ function readWins(data: Partial<CloudProfile> | undefined, accountId: string) {
 
 function readMotm(data: Partial<CloudProfile> | undefined, accountId: string) {
   return readStatCount(data, 'motm', accountId)
+}
+
+function readGunPairs(
+  data: Partial<CloudProfile> | undefined,
+): Record<string, number> {
+  return readElimPairs({ elimPairs: data?.gunPairs })
 }
 
 function readElimPairs(
@@ -261,6 +277,19 @@ export function buildElimPairLeaders(
     .slice(0, Math.max(0, limit))
 }
 
+export type GunPairLeader = ElimPairLeader
+
+/** Top career “A shot B with the Super Gun” pairs across all login players. */
+export function buildGunPairLeaders(
+  board: CareerBoardEntry[],
+  limit = 8,
+): GunPairLeader[] {
+  return buildElimPairLeaders(
+    board.map((entry) => ({ ...entry, elimPairs: entry.gunPairs ?? {} })),
+    limit,
+  )
+}
+
 function readCareerStats(
   data: Partial<CloudProfile> | undefined,
   accountId: string,
@@ -278,6 +307,7 @@ function readCareerStats(
     motmPoints: readStatCount(data, 'motmPoints', accountId),
     negativePowers: readStatCount(data, 'negativePowers', accountId),
     superPowers: readStatCount(data, 'superPowers', accountId),
+    superGuns: readStatCount(data, 'superGuns', accountId),
     plus10: readStatCount(data, 'plus10', accountId),
     bestFinishMs: readStatCount(data, 'bestFinishMs', accountId),
   }
@@ -426,6 +456,7 @@ export async function fetchCareerBoard(
         color: '',
         ...emptyCareerStats(account.accountId),
         elimPairs: {},
+        gunPairs: {},
       } satisfies CareerBoardEntry,
     ]),
   )
@@ -439,6 +470,7 @@ export async function fetchCareerBoard(
         color: '',
         ...emptyCareerStats(id),
         elimPairs: {},
+        gunPairs: {},
       })
     }
   }
@@ -479,6 +511,7 @@ export async function fetchCareerBoard(
             : (prev?.color ?? ''),
         ...readCareerStats(data, accountId),
         elimPairs: readElimPairs(data),
+        gunPairs: readGunPairs(data),
       })
     })
     if (found.size === 0 && ids.length > 0) {
@@ -574,10 +607,13 @@ export type MatchCareerExtras = {
     motmPoints: number
     negativePowers: number
     superPowers: number
+    superGuns?: number
     plus10: number
     finishTimeMs: number
     /** victimAccountId → eliminations this match. */
     elimPairs?: Record<string, number>
+    /** victimAccountId → Super Gun hits this match. */
+    gunPairs?: Record<string, number>
   }>
 }
 
@@ -607,9 +643,11 @@ export async function recordMatchCareerExtras(
       motmPoints: roundCareerPoints(entry.motmPoints),
       negativePowers: Math.max(0, Math.floor(entry.negativePowers)),
       superPowers: Math.max(0, Math.floor(entry.superPowers)),
+      superGuns: Math.max(0, Math.floor(entry.superGuns ?? 0)),
       plus10: Math.max(0, Math.floor(entry.plus10)),
       finishTimeMs: Math.max(0, Math.floor(entry.finishTimeMs)),
       elimPairs: sanitizeElimPairDelta(entry.elimPairs),
+      gunPairs: sanitizeElimPairDelta(entry.gunPairs),
     }))
 
   if (!worstId && !secondId && !thirdId && deltas.length === 0) return false
@@ -640,6 +678,7 @@ export async function recordMatchCareerExtras(
             profileRef,
             stats: readCareerStats(data, accountId),
             elimPairs: readElimPairs(data),
+            gunPairs: readGunPairs(data),
           }
         }),
       )
@@ -656,6 +695,7 @@ export async function recordMatchCareerExtras(
       for (const entry of profiles) {
         const next = { ...entry.stats }
         let nextElimPairs = { ...entry.elimPairs }
+        let nextGunPairs = { ...entry.gunPairs }
         if (entry.accountId === worstId) next.worst += 1
         if (entry.accountId === secondId) next.second += 1
         if (entry.accountId === thirdId) next.third += 1
@@ -670,6 +710,7 @@ export async function recordMatchCareerExtras(
           )
           next.negativePowers += delta.negativePowers
           next.superPowers += delta.superPowers
+          next.superGuns += delta.superGuns
           next.plus10 += delta.plus10
           if (
             delta.finishTimeMs > 0 &&
@@ -678,6 +719,7 @@ export async function recordMatchCareerExtras(
             next.bestFinishMs = delta.finishTimeMs
           }
           nextElimPairs = mergeElimPairs(nextElimPairs, delta.elimPairs)
+          nextGunPairs = mergeElimPairs(nextGunPairs, delta.gunPairs)
         }
         tx.set(
           entry.profileRef,
@@ -693,9 +735,11 @@ export async function recordMatchCareerExtras(
             motmPoints: next.motmPoints,
             negativePowers: next.negativePowers,
             superPowers: next.superPowers,
+            superGuns: next.superGuns,
             plus10: next.plus10,
             bestFinishMs: next.bestFinishMs,
             elimPairs: nextElimPairs,
+            gunPairs: nextGunPairs,
             updatedAt: serverTimestamp(),
           },
           { merge: true },

@@ -6,6 +6,7 @@ import type {
   Player,
   PlayerStats,
   Room,
+  TempStar,
   Token,
 } from "./types";
 import {
@@ -122,7 +123,8 @@ export function starOffsetForRoom(room: Room) {
   return DEFAULT_STAR_OFFSET;
 }
 
-export const safeCells = (room: Room) => {
+/** The permanent safes: each seat's start and its star. */
+export const baseSafeCells = (room: Room) => {
   const length = trackLength(room);
   const starOffset = starOffsetForRoom(room);
   return new Set(
@@ -132,6 +134,66 @@ export const safeCells = (room: Room) => {
     }),
   );
 };
+
+function playerHasTokenOnCell(room: Room, playerId: string, cell: number) {
+  return (room.game?.tokens ?? []).some(
+    (token) => token.playerId === playerId && globalCell(token, room) === cell,
+  );
+}
+
+function tempStarIsActive(room: Room, star: TempStar) {
+  return !star.left && playerHasTokenOnCell(room, star.playerId, star.cell);
+}
+
+/** Temporary Flash stars whose player is still standing on them. */
+export function activeTempStarCells(room: Room) {
+  return new Set(
+    (room.game?.tempStars ?? [])
+      .filter((star) => tempStarIsActive(room, star))
+      .map((star) => star.cell),
+  );
+}
+
+/** Former temporary stars: the player left, so they show red and are no longer safe. */
+export function redStarCells(room: Room) {
+  const base = baseSafeCells(room);
+  const active = activeTempStarCells(room);
+  return new Set(
+    (room.game?.tempStars ?? [])
+      .filter(
+        (star) =>
+          !base.has(star.cell) &&
+          !active.has(star.cell) &&
+          !tempStarIsActive(room, star),
+      )
+      .map((star) => star.cell),
+  );
+}
+
+export const safeCells = (room: Room) =>
+  new Set([...baseSafeCells(room), ...activeTempStarCells(room)]);
+
+/** Drop a temporary star where a Flash leap ended (random Flash only). */
+export function registerTempStar(room: Room, token: Token) {
+  const game = room.game;
+  if (!game || !game.randomFlash) return;
+  if (token.progress <= 0 || token.progress >= homeEntryProgress(room)) return;
+  const cell = globalCell(token, room);
+  if (cell === null || baseSafeCells(room).has(cell)) return;
+  game.tempStars = (game.tempStars ?? []).filter((star) => star.cell !== cell);
+  game.tempStars.push({ cell, playerId: token.playerId });
+}
+
+/** Mark temporary stars as spent once their player is no longer on them. */
+export function settleTempStars(room: Room) {
+  const stars = room.game?.tempStars;
+  if (!stars?.length) return;
+  for (const star of stars) {
+    if (!star.left && !playerHasTokenOnCell(room, star.playerId, star.cell)) {
+      star.left = true;
+    }
+  }
+}
 
 function beginRollPhase(game: GameState) {
   game.phase = "roll";
@@ -151,6 +213,8 @@ function emptyPlayerStats(): PlayerStats {
     plus3: 0,
     plus10: 0,
     shieldBreaks: 0,
+    superGuns: 0,
+    gunHits: {},
   };
 }
 
@@ -168,6 +232,8 @@ export function ensurePlayerStats(
     game.stats[playerId].plus3 ??= 0;
     game.stats[playerId].plus10 ??= 0;
     game.stats[playerId].shieldBreaks ??= 0;
+    game.stats[playerId].superGuns ??= 0;
+    game.stats[playerId].gunHits ??= {};
   }
   return game.stats[playerId];
 }
@@ -187,6 +253,23 @@ export function recordCapture(
   attacker.eliminatedPlayers[victimId] =
     (attacker.eliminatedPlayers[victimId] ?? 0) + 1;
   ensurePlayerStats(game, victimId).eliminated += 1;
+}
+
+/** A player used every Super leap and so earned their Super Gun. */
+export function recordSuperGunEarned(game: GameState, playerId: string) {
+  const stats = ensurePlayerStats(game, playerId);
+  stats.superGuns = (stats.superGuns ?? 0) + 1;
+}
+
+/** Who the Super Gun hit: shooter -> victim. */
+export function recordSuperGunHit(
+  game: GameState,
+  shooterId: string,
+  victimId: string,
+) {
+  const stats = ensurePlayerStats(game, shooterId);
+  stats.gunHits ??= {};
+  stats.gunHits[victimId] = (stats.gunHits[victimId] ?? 0) + 1;
 }
 
 export function recordEliminated(game: GameState, playerId: string) {
@@ -215,9 +298,11 @@ export function createGame(
         : gameMode === "power"
           ? generatePowerTiles(boardPlayerCount)
           : {};
-  let starOffset = DEFAULT_STAR_OFFSET;
+  // Random Flash only moves the Flash tiles; the stars never move. A Flash leap
+  // drops a temporary star where it ends instead.
+  const starOffset = DEFAULT_STAR_OFFSET;
   if (options?.randomFlash) {
-    starOffset = randomizeFlashSupers(tiles, boardPlayerCount);
+    randomizeFlashSupers(tiles, boardPlayerCount);
     sanitizePowerTiles(tiles, boardPlayerCount, {
       relocateFivePlayerLayout: false,
       starOffset,
@@ -258,7 +343,9 @@ export function createGame(
     ),
     activeMove: null,
     powerTiles: tiles,
-    starOffset: options?.randomFlash ? starOffset : DEFAULT_STAR_OFFSET,
+    starOffset,
+    randomFlash: Boolean(options?.randomFlash),
+    tempStars: [],
     shieldBuff: {},
     superUses: {},
     superGunReady: {},
@@ -533,7 +620,7 @@ function passTurn(room: Room, game: GameState) {
   beginRollPhase(game);
 }
 
-export function applyRoll(room: Room, value: number) {
+function applyRollInner(room: Room, value: number) {
   const game = room.game;
   if (!game || game.phase !== "roll")
     throw new Error("Dice cannot be rolled now.");
@@ -728,7 +815,7 @@ function notePlayerFinished(room: Room, game: GameState, player: Player) {
   }
 }
 
-export function applyPendingPower(room: Room, startedAt = Date.now()) {
+function applyPendingPowerInner(room: Room, startedAt = Date.now()) {
   const game = room.game;
   if (!game || game.phase !== "power" || !game.pendingPower) {
     throw new Error("No power to resolve.");
@@ -843,7 +930,7 @@ export function performLocalResolvePower(room: Room, userId: string) {
   return next;
 }
 
-export function applyMove(room: Room, tokenId: number, smokeSteps?: number) {
+function applyMoveInner(room: Room, tokenId: number, smokeSteps?: number) {
   const game = room.game;
   const dice = game?.dice;
   if (!game || game.phase !== "move" || !dice) {
@@ -1044,4 +1131,28 @@ export function activeMoveToMovingToken(active: ActiveMove): MovingToken {
     willCapture: active.willCapture,
     warp: active.warp,
   };
+}
+
+
+// Temporary Flash stars expire as soon as their player leaves the cell, so every
+// action that can move a token settles them afterwards.
+export function applyRoll(room: Room, value: number) {
+  settleTempStars(room);
+  applyRollInner(room, value);
+}
+
+export function applyPendingPower(room: Room, startedAt = Date.now()) {
+  try {
+    applyPendingPowerInner(room, startedAt);
+  } finally {
+    settleTempStars(room);
+  }
+}
+
+export function applyMove(room: Room, tokenId: number, smokeSteps?: number) {
+  try {
+    applyMoveInner(room, tokenId, smokeSteps);
+  } finally {
+    settleTempStars(room);
+  }
 }

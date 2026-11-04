@@ -42,6 +42,8 @@ function emptyStats(): PlayerStats {
     plus3: 0,
     plus10: 0,
     shieldBreaks: 0,
+    superGuns: 0,
+    gunHits: {},
   }
 }
 
@@ -59,6 +61,8 @@ export function readPlayerStats(
     plus3: stats.plus3 ?? 0,
     plus10: stats.plus10 ?? 0,
     shieldBreaks: stats.shieldBreaks ?? 0,
+    superGuns: stats.superGuns ?? 0,
+    gunHits: stats.gunHits ?? {},
   }
 }
 

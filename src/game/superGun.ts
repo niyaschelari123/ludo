@@ -14,6 +14,8 @@ import {
   recordShieldBreak,
   resumeAfterSuperGun,
   safeCells,
+  recordSuperGunHit,
+  settleTempStars,
 } from './engine'
 import { boardCenterPoint, boardSizeForRoom, tokenBoardPoint } from './tokenPoints'
 import { areTeammates } from './teams'
@@ -353,12 +355,14 @@ export function applySuperGunShot(
 
   const fromProgress = traced.hit.progress
   traced.hit.progress = -1
+  settleTempStars(room)
   game.shieldBuff ??= {}
   if (game.shieldBuff[traced.hit.playerId]) {
     game.shieldBuff[traced.hit.playerId] = false
     recordShieldBreak(game, shooter.id)
   }
   recordCapture(game, shooter.id, traced.hit.playerId)
+  recordSuperGunHit(game, shooter.id, traced.hit.playerId)
   game.activeMove = {
     playerId: traced.hit.playerId,
     tokenId: traced.hit.id,

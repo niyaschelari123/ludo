@@ -115,6 +115,7 @@ import {
 } from './lib/profileCloud'
 import {
   CareerElimPairsBoard,
+  CareerGunPairsBoard,
   CareerLobbyBoard,
   formatCareerMotmPoints,
 } from './components/CareerBoards'
@@ -705,12 +706,18 @@ function App() {
           motmPoints: motmById.get(player.id) ?? 0,
           negativePowers: stats.negativePowers ?? 0,
           superPowers: stats.superPowers ?? 0,
+          superGuns: stats.superGuns ?? 0,
           plus10: stats.plus10 ?? 0,
           finishTimeMs: countsForFastestFinish(finishedRoom)
             ? (finishedRoom.game?.finishTimesMs?.[player.id] ?? 0)
             : 0,
           elimPairs: Object.fromEntries(
             Object.entries(stats.eliminatedPlayers ?? {}).filter(([victimId]) =>
+              isCareerAccountId(victimId),
+            ),
+          ),
+          gunPairs: Object.fromEntries(
+            Object.entries(stats.gunHits ?? {}).filter(([victimId]) =>
               isCareerAccountId(victimId),
             ),
           ),
@@ -3994,6 +4001,17 @@ function App() {
                 roomPlayers={room.players}
                 statKey="superPowers"
                 formatCount={(value) => `${value}`}
+              />
+              <CareerLobbyBoard
+                title="Most Super Guns"
+                board={careerBoard}
+                roomPlayers={room.players}
+                statKey="superGuns"
+                formatCount={(value) => `${value}`}
+              />
+              <CareerGunPairsBoard
+                board={careerBoard}
+                roomPlayers={room.players}
               />
               <CareerLobbyBoard
                 title="Most +10"

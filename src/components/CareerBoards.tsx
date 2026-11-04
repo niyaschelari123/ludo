@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from 'react'
 import {
   buildElimPairLeaders,
+  buildGunPairLeaders,
   formatCareerFinishTime,
   sortCareerBoard,
   sortCareerBoardAscending,
@@ -96,20 +97,60 @@ export function CareerLobbyBoard({
   )
 }
 
-export function CareerElimPairsBoard({
-  board,
-  roomPlayers = [],
-  previewLimit = ELIM_PAIRS_PREVIEW,
-  expandedLimit = ELIM_PAIRS_EXPANDED,
-}: {
+type PairsBoardProps = {
   board: CareerBoardEntry[] | null
   roomPlayers?: Room['players']
   previewLimit?: number
   expandedLimit?: number
+}
+
+/** “Who eliminated whom” — token captures. */
+export function CareerElimPairsBoard(props: PairsBoardProps) {
+  return (
+    <CareerPairsBoard
+      {...props}
+      title="Who eliminated whom (most)"
+      emptyText="No eliminations yet"
+      careerNote="Career eliminations"
+      buildLeaders={buildElimPairLeaders}
+    />
+  )
+}
+
+/** “Who shot whom” — Super Gun hits (the gun earned after using every Flash). */
+export function CareerGunPairsBoard(props: PairsBoardProps) {
+  return (
+    <CareerPairsBoard
+      {...props}
+      title="Who shot whom — Super Gun (most)"
+      emptyText="No Super Gun shots yet"
+      careerNote="Career Super Gun hits"
+      attackerLabel="Shooter in room"
+      buildLeaders={buildGunPairLeaders}
+    />
+  )
+}
+
+function CareerPairsBoard({
+  board,
+  roomPlayers = [],
+  previewLimit = ELIM_PAIRS_PREVIEW,
+  expandedLimit = ELIM_PAIRS_EXPANDED,
+  title,
+  emptyText,
+  careerNote,
+  attackerLabel = 'Attacker in room',
+  buildLeaders,
+}: PairsBoardProps & {
+  title: string
+  emptyText: string
+  careerNote: string
+  attackerLabel?: string
+  buildLeaders: (board: CareerBoardEntry[], limit?: number) => ElimPairLeader[]
 }) {
   const [expanded, setExpanded] = useState(false)
   const leaders: ElimPairLeader[] | null = board
-    ? buildElimPairLeaders(board, expandedLimit)
+    ? buildLeaders(board, expandedLimit)
     : null
   const visible = leaders
     ? leaders.slice(0, expanded ? expandedLimit : previewLimit)
@@ -118,11 +159,11 @@ export function CareerElimPairsBoard({
   const hasRoomContext = roomPlayers.length > 0
   return (
     <aside className="lobby-wins-board lobby-stat-board lobby-elim-pairs-board">
-      <h3>Who eliminated whom (most)</h3>
+      <h3>{title}</h3>
       {visible === null ? (
         <p className="lobby-wins-loading">Loading…</p>
       ) : visible.length === 0 ? (
-        <p className="lobby-wins-loading">No eliminations yet</p>
+        <p className="lobby-wins-loading">{emptyText}</p>
       ) : (
         <>
           <ol className="lobby-wins-list lobby-elim-pair-list">
@@ -148,9 +189,9 @@ export function CareerElimPairsBoard({
                     <small>
                       {hasRoomContext
                         ? attackerInRoom
-                          ? 'Attacker in room'
+                          ? attackerLabel
                           : 'Career total'
-                        : 'Career eliminations'}
+                        : careerNote}
                     </small>
                   </div>
                   <em className="lobby-wins-count">×{entry.count}</em>
@@ -299,6 +340,17 @@ export function MostStatsPanels({
             roomPlayers={roomPlayers}
             statKey="superPowers"
             formatCount={(value) => `${value}`}
+          />
+          <CareerLobbyBoard
+            title="Most Super Guns"
+            board={board}
+            roomPlayers={roomPlayers}
+            statKey="superGuns"
+            formatCount={(value) => `${value}`}
+          />
+          <CareerGunPairsBoard
+            board={board}
+            roomPlayers={roomPlayers}
           />
           <CareerLobbyBoard
             title="Most +10"

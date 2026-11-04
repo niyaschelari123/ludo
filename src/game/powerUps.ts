@@ -5,12 +5,14 @@ import {
   ensurePlayerStats,
   finishedProgress,
   recordShieldBreak,
+  recordSuperGunEarned,
   globalCell,
   homeEntryProgress,
   isSoleTokenProtected,
   recordCapture,
   recordEliminated,
   safeCells,
+  registerTempStar,
   tokensPerPlayer,
   trackLength,
 } from "./engine";
@@ -963,6 +965,16 @@ function applySuperLeap(token: Token, player: Player, room: Room): string {
   }
 
   const ideal = projected;
+
+  // Random Flash: stars stay where they are. The leap ends exactly on the
+  // half-board cell and drops a temporary star there for as long as this
+  // player stays on it.
+  if (room.game?.randomFlash) {
+    token.progress = ideal;
+    registerTempStar(room, token);
+    return `${player.name} leapt halfway around the board and lit a temporary star`;
+  }
+
   const safes = safeCells(room);
   const startCell = player.seat * CELLS_PER_PLAYER;
 
@@ -1141,6 +1153,7 @@ export function applyPowerUp(
       const leap = applySuperLeap(token, player, room);
       if (game.superUses[player.id] >= limit && !game.superGunUsed?.[player.id]) {
         game.superGunReady = { ...(game.superGunReady ?? {}), [player.id]: true };
+        recordSuperGunEarned(game, player.id);
         game.superGunDeadline = Date.now() + SUPER_GUN_TIMEOUT_MS;
         return `${leap} — Super Gun ready. Left-click to fire within 30s`;
       }
