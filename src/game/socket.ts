@@ -24,7 +24,8 @@ export function getSocket() {
   if (!socket) {
     socket = io(SOCKET_URL, {
       autoConnect: true,
-      transports: ['websocket', 'polling'],
+      // WebSocket only: skips the slow HTTP long-polling handshake/fallback.
+      transports: ['websocket'],
     })
   }
   return socket

@@ -33,6 +33,7 @@ import { normalizeColorKey, resolveColorHex } from '../../src/game/colors.js'
 import { sanitizePowerTiles } from '../../src/game/powerUps.js'
 import { sanitizePhotoDataUrl } from '../../src/lib/profilePhoto.js'
 import { clearRoomChat } from './chat.js'
+import { photoUrlFor } from './photoStore.js'
 import { clearRoomReactions } from './reactions.js'
 
 const rooms = new Map<string, Room>()
@@ -261,6 +262,24 @@ export function roomViewFor(room: Room, viewerId: string | null | undefined): Ro
     })
   }
   const view = structuredClone(room) as Room
+  // Photos are served from /photo/:id and cached by the browser, so state
+  // updates carry a short URL instead of a ~400KB base64 image.
+  const swapPhotos = <T extends { photoUrl?: string }>(
+    source: T[] | undefined,
+    target: T[] | undefined,
+  ) => {
+    if (!source || !target) return
+    source.forEach((entry, index) => {
+      const slim = target[index]
+      if (!slim || !entry.photoUrl) return
+      const url = photoUrlFor(entry.photoUrl)
+      if (url) slim.photoUrl = url
+      else delete slim.photoUrl
+    })
+  }
+  swapPhotos(room.players, view.players)
+  swapPhotos(room.departedPlayers, view.departedPlayers)
+  swapPhotos(room.joinRequests, view.joinRequests)
   if (viewerId && viewerId === room.hostId) return view
   for (const player of view.players) {
     delete player.rejoinCode

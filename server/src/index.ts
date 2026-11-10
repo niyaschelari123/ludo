@@ -9,6 +9,7 @@
 import cors from 'cors'
 import express from 'express'
 import { handleAnalyst } from './analyst.js'
+import { readPhoto } from './photoStore.js'
 import { createServer } from 'node:http'
 import { Server, type Socket } from 'socket.io'
 import {
@@ -100,6 +101,18 @@ app.use(cors({ origin: CORS_ORIGIN }))
 app.get('/health', (_request, response) => {
   response.json({ ok: true, service: 'ludo-socket-server' })
 })
+app.get('/photo/:id', (request, response) => {
+  const photo = readPhoto(request.params.id ?? '')
+  if (!photo) {
+    response.status(404).end()
+    return
+  }
+  // Content-addressed, so the browser can keep it forever.
+  response.setHeader('Content-Type', photo.mime)
+  response.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+  response.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  response.send(photo.body)
+})
 app.get('/api/player-analyst', handleAnalyst)
 app.post(
   '/api/player-analyst',
@@ -115,23 +128,52 @@ const io = new Server(httpServer, {
 const sessions = new Map<string, SocketSession>()
 
 function emitStateToRoom(room: Room) {
-  void io
-    .in(room.id)
-    .fetchSockets()
-    .then((sockets) => {
-      for (const socket of sockets) {
-        const session = sessions.get(socket.id)
-        socket.emit('stateUpdate', roomViewFor(room, session?.userId))
-      }
-    })
-    .catch((error) => {
-      console.error(`Failed to broadcast room ${room.id}:`, error)
-      io.to(room.id).emit('stateUpdate', roomViewFor(room, null))
-    })
+  // Build at most two views (host sees rejoin codes, everyone else does not)
+  // and let Socket.IO encode the guest view once for the whole room, instead
+  // of cloning + serialising the room separately for every socket.
+  const socketIds = io.sockets.adapter.rooms.get(room.id)
+  if (!socketIds || socketIds.size === 0) return
+
+  const hostSocketIds: string[] = []
+  for (const socketId of socketIds) {
+    if (sessions.get(socketId)?.userId === room.hostId) hostSocketIds.push(socketId)
+  }
+
+  const guestView = roomViewFor(room, null)
+  if (hostSocketIds.length === 0) {
+    io.to(room.id).emit('stateUpdate', guestView)
+    return
+  }
+
+  io.to(room.id).except(hostSocketIds).emit('stateUpdate', guestView)
+  const hostView = roomViewFor(room, room.hostId)
+  for (const socketId of hostSocketIds) {
+    io.to(socketId).emit('stateUpdate', hostView)
+  }
 }
 
+const LIVE_MATCHES_MIN_INTERVAL_MS = 2_000
+let liveMatchesLastSent = 0
+let liveMatchesLastJson = ''
+let liveMatchesTimer: ReturnType<typeof setTimeout> | null = null
+
+function flushLiveMatches() {
+  liveMatchesTimer = null
+  liveMatchesLastSent = Date.now()
+  const notices = listLiveMatchNotices()
+  const json = JSON.stringify(notices)
+  // Dice rolls / moves rarely change the list, so most calls send nothing.
+  if (json === liveMatchesLastJson) return
+  liveMatchesLastJson = json
+  io.emit('liveMatchesUpdate', notices)
+}
+
+/** Send the live-match list to everyone, but only when it changed and at most every 2s. */
 function broadcastLiveMatches() {
-  io.emit('liveMatchesUpdate', listLiveMatchNotices())
+  if (liveMatchesTimer) return
+  const wait = liveMatchesLastSent + LIVE_MATCHES_MIN_INTERVAL_MS - Date.now()
+  if (wait <= 0) flushLiveMatches()
+  else liveMatchesTimer = setTimeout(flushLiveMatches, wait)
 }
 
 function broadcastState(room: Room) {
